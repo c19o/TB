@@ -4927,8 +4927,8 @@ def _add_trend_cross_features(df, tf_name='1h'):
     close_vs_vwap = _safe_col('close_vs_vwap')
     vwap_signal = avwap_pos if avwap_pos is not None else close_vs_vwap
     if vwap_signal is not None:
-        above_vwap = (vwap_signal > 0).astype(float).fillna(0)
-        below_vwap = (vwap_signal <= 0).astype(float).fillna(0)
+        above_vwap = (vwap_signal > 0).astype(float)
+        below_vwap = (vwap_signal <= 0).astype(float)
 
         # Cross all bull/bear columns (tx_ and px_) with VWAP
         _existing_bull = [c for c in df.columns if (c.startswith('tx_') or c.startswith('px_')) and c.endswith('_x_bull')]
@@ -4955,8 +4955,8 @@ def _add_trend_cross_features(df, tf_name='1h'):
     # ================================================================
     rng_pos = _safe_col('range_position')
     if rng_pos is not None:
-        range_top = (rng_pos > 0.75).astype(float).fillna(0)
-        range_bottom = (rng_pos < 0.25).astype(float).fillna(0)
+        range_top = (rng_pos > 0.75).astype(float)
+        range_bottom = (rng_pos < 0.25).astype(float)
 
         # Cross all bull columns (tx_ and px_) with range position
         _existing_bull = [c for c in df.columns if (c.startswith('tx_') or c.startswith('px_')) and c.endswith('_x_bull')]
