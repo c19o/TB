@@ -1,0 +1,50 @@
+# Secrets
+.env
+*.env
+
+# Databases (large binary files)
+*.db
+
+# Feature data (large)
+*.parquet
+*.npz
+
+# Model files (large binary)
+*.pt
+*.pth
+*.pkl
+*.ubj
+
+# Cached/compiled
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+logs/
+
+# Node modules (dashboard)
+node_modules/
+.next/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Backup files
+*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.swp
+
+# RunPod output
+runpod_output/
+
+# Large data
+kp_history.txt
