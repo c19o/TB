@@ -274,32 +274,7 @@ def extract_signal_groups(df, ctx_names, ctx_arrays):
 # HELPERS: dict -> COO triplet conversion
 # ============================================================
 
-def _dict_to_coo_triplets(result_dict, N, col_offset):
-    """
-    Convert a dict of {name: float32_array} to COO triplet arrays.
-    Returns (names_list, rows, cols, data, n_new_cols).
-    Columns are offset by col_offset for global assembly.
-    Frees the dict contents after conversion.
-    """
-    if not result_dict:
-        return [], None, None, None, 0
-    names = list(result_dict.keys())
-    rows_list = []
-    cols_list = []
-    data_list = []
-    for j, k in enumerate(names):
-        arr = result_dict[k].astype(np.float32)
-        nz = np.nonzero(arr)[0]
-        if len(nz) > 0:
-            rows_list.append(nz)
-            cols_list.append(np.full(len(nz), col_offset + j, dtype=np.int64))
-            data_list.append(arr[nz])
-    n_new_cols = len(names)
-    result_dict.clear()
-    if rows_list:
-        return names, np.concatenate(rows_list), np.concatenate(cols_list), np.concatenate(data_list), n_new_cols
-    else:
-        return names, np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.float32), n_new_cols
+    # _dict_to_coo_triplets removed — GPU/CPU chunks now return COO directly
 
 
 # ============================================================
@@ -346,38 +321,36 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
         r_arrays_chunk = right_arrays[rc_start:rc_end]
         right_mat_chunk = np.column_stack(r_arrays_chunk)  # (N, <=RIGHT_CHUNK)
 
-        chunk_result = {}
-
         if GPU:
             try:
-                chunk_result = _gpu_cross_chunk(
+                c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
                     left_names, left_mat, r_names_chunk, right_mat_chunk,
-                    prefix, gpu_id, min_nonzero, max_features, total_feats
+                    prefix, gpu_id, min_nonzero, max_features, total_feats,
+                    col_offset=current_offset
                 )
             except Exception as e:
                 log(f"  GPU failed ({e}), falling back to CPU for chunk")
-                chunk_result = _cpu_cross_chunk(
+                c_names, c_rows, c_cols, c_data, c_ncols = _cpu_cross_chunk(
                     left_names, left_mat, r_names_chunk, right_mat_chunk,
-                    prefix, min_nonzero, max_features, total_feats
+                    prefix, min_nonzero, max_features, total_feats,
+                    col_offset=current_offset
                 )
         else:
-            chunk_result = _cpu_cross_chunk(
+            c_names, c_rows, c_cols, c_data, c_ncols = _cpu_cross_chunk(
                 left_names, left_mat, r_names_chunk, right_mat_chunk,
-                prefix, min_nonzero, max_features, total_feats
+                prefix, min_nonzero, max_features, total_feats,
+                col_offset=current_offset
             )
 
-        # Convert this chunk's results to COO triplets immediately
-        if chunk_result:
-            names, rows, cols, data, n_new = _dict_to_coo_triplets(chunk_result, N, current_offset)
-            all_names.extend(names)
-            if rows is not None and len(rows) > 0:
-                all_rows.append(rows)
-                all_cols.append(cols)
-                all_data.append(data)
-            current_offset += n_new
-            total_feats += len(names)
+        if c_names:
+            all_names.extend(c_names)
+            all_rows.extend(c_rows)
+            all_cols.extend(c_cols)
+            all_data.extend(c_data)
+            current_offset += c_ncols
+            total_feats += len(c_names)
 
-        del right_mat_chunk, r_arrays_chunk, chunk_result
+        del right_mat_chunk, r_arrays_chunk
 
         if max_features and total_feats >= max_features:
             break
@@ -388,16 +361,20 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
 
 
 def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
-                     gpu_id, min_nonzero, max_features, feats_so_far):
+                     gpu_id, min_nonzero, max_features, feats_so_far,
+                     col_offset=0):
     """
-    GPU cross multiply left_mat against one right_mat chunk.
-    Returns dict of {feature_name: float32_array}.
+    GPU cross multiply — returns COO triplets directly, never stores dense columns.
+    Peak memory = tensor (N × BATCH × n_right) + COO triplets (sparse, tiny).
     """
-    result = {}
+    names = []
+    rows_list = []
+    cols_list = []
+    data_list = []
     n_right = right_mat.shape[1]
     n_bars = left_mat.shape[0]
+    col_idx = 0
 
-    # VRAM-adaptive batch sizing
     gpu_vram_gb = _get_gpu_vram_gb(gpu_id=gpu_id)
     BATCH = _get_optimal_batch(n_bars, n_right, gpu_vram_gb, gpu_id=gpu_id)
     log(f"  GPU VRAM: {gpu_vram_gb:.1f} GB | n_bars={n_bars} n_right={n_right} -> BATCH={BATCH}")
@@ -413,49 +390,77 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
         # GPU outer product: (N, batch, 1) * (N, 1, n_right) = (N, batch, n_right)
         crosses = left_batch[:, :, None] * right_gpu[:, None, :]
 
-        # Sum to find non-empty
-        sums = cp.asnumpy(cp.sum(crosses, axis=0))  # (batch, n_right)
-        crosses_cpu = cp.asnumpy(crosses)
+        # Sum along rows on GPU to check co-occurrence threshold
+        sums = cp.sum(crosses, axis=0)  # (batch, n_right)
 
-        for i in range(b_end - b_start):
-            ln = left_names[b_start + i]
-            for j in range(len(right_names)):
-                if sums[i, j] >= min_nonzero:
-                    rn = right_names[j]
-                    fname = f'{prefix}_{ln[:40]}_{rn[:40]}'
-                    result[fname] = crosses_cpu[:, i, j]
+        # Find valid (i, j) pairs on GPU — avoids transferring entire tensor
+        valid_ij = cp.argwhere(sums >= min_nonzero)  # (K, 2)
 
-        del crosses, left_batch, sums, crosses_cpu
+        if len(valid_ij) > 0:
+            valid_ij_cpu = cp.asnumpy(valid_ij)
+            for idx in range(len(valid_ij_cpu)):
+                i, j = int(valid_ij_cpu[idx, 0]), int(valid_ij_cpu[idx, 1])
+                ln = left_names[b_start + i]
+                rn = right_names[j]
+                fname = f'{prefix}_{ln[:40]}_{rn[:40]}'
+
+                # Extract single column from GPU, get nonzeros directly
+                col_gpu = crosses[:, i, j]
+                nz_mask = col_gpu != 0
+                nz_rows = cp.asnumpy(cp.flatnonzero(nz_mask))
+                nz_vals = cp.asnumpy(col_gpu[nz_mask]).astype(np.float32)
+
+                if len(nz_rows) > 0:
+                    names.append(fname)
+                    rows_list.append(nz_rows)
+                    cols_list.append(np.full(len(nz_rows), col_offset + col_idx, dtype=np.int64))
+                    data_list.append(nz_vals)
+                    col_idx += 1
+
+                if max_features and (feats_so_far + col_idx) >= max_features:
+                    break
+
+        del crosses, left_batch, sums, valid_ij
         cp.get_default_memory_pool().free_all_blocks()
 
-        if max_features and (feats_so_far + len(result)) >= max_features:
+        if max_features and (feats_so_far + col_idx) >= max_features:
             break
 
     del right_gpu
     cp.get_default_memory_pool().free_all_blocks()
-    return result
+    return names, rows_list, cols_list, data_list, col_idx
 
 
 def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
-                     min_nonzero, max_features, feats_so_far):
+                     min_nonzero, max_features, feats_so_far, col_offset=0):
     """
-    CPU cross multiply left_mat against one right_mat chunk.
-    Returns dict of {feature_name: float32_array}.
+    CPU cross multiply — returns COO triplets directly, never stores dense columns.
     """
-    result = {}
+    names = []
+    rows_list = []
+    cols_list = []
+    data_list = []
+    col_idx = 0
+
     for i in range(left_mat.shape[1]):
         la = left_mat[:, i]
         ln = left_names[i]
         for j in range(right_mat.shape[1]):
             ra = right_mat[:, j]
-            rn = right_names[j]
             cross = la * ra
             if cross.sum() >= min_nonzero:
+                rn = right_names[j]
                 fname = f'{prefix}_{ln[:40]}_{rn[:40]}'
-                result[fname] = cross
-        if max_features and (feats_so_far + len(result)) >= max_features:
+                nz = np.nonzero(cross)[0]
+                if len(nz) > 0:
+                    names.append(fname)
+                    rows_list.append(nz)
+                    cols_list.append(np.full(len(nz), col_offset + col_idx, dtype=np.int64))
+                    data_list.append(cross[nz].astype(np.float32))
+                    col_idx += 1
+        if max_features and (feats_so_far + col_idx) >= max_features:
             break
-    return result
+    return names, rows_list, cols_list, data_list, col_idx
 
 
 def cpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
