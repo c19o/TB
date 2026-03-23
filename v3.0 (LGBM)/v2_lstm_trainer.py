@@ -226,7 +226,7 @@ def train_one_tf(tf, epochs=100, lr=0.0005, resume=False):
     log.info(f"Train sequences: {len(train_ds)} | Val sequences: {len(val_ds)}")
 
     # ── DataLoaders (optimized) ──
-    n_workers = min(8, max(1, cpu_count() // 4))
+    n_workers = min(32, max(1, cpu_count() // 8))  # 48 workers on 384-core, 8 on local
     log.info(f"DataLoader: num_workers={n_workers}, pin_memory=True, persistent_workers=True")
 
     train_loader = DataLoader(
@@ -567,7 +567,7 @@ def search_alpha(tf, xgb_probs_path):
 
     window = cfg['window']
     val_ds = SequenceDataset(X_val, y_val, window)
-    n_workers = min(8, max(1, cpu_count() // 4))
+    n_workers = min(32, max(1, cpu_count() // 8))  # 48 workers on 384-core, 8 on local
     val_loader = DataLoader(
         val_ds, batch_size=cfg['batch'], shuffle=False,
         num_workers=n_workers, pin_memory=True, persistent_workers=True

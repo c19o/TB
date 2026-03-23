@@ -478,7 +478,8 @@ if __name__ == '__main__':
       log("PARALLEL SPLITS: disabled (--no-parallel-splits)")
   else:
       import multiprocessing as _mp
-      _n_workers = max(1, _mp.cpu_count() // 2)
+      _n_workers = max(1, min(_mp.cpu_count() // 2, 15))  # Cap at 15: CPCV k=6 → C(6,2)=15 paths max
+      _n_workers = int(os.environ.get('V3_CPCV_WORKERS', _n_workers))
       log(f"PARALLEL SPLITS: enabled ({_n_workers} workers, use --no-parallel-splits to disable)")
 
   # ============================================================
@@ -794,6 +795,10 @@ if __name__ == '__main__':
               # NOTE: per-fold HMM re-fitting is skipped in parallel mode (HMM fitted once before loop).
               # This is the same tradeoff v2_multi_asset_trainer.py makes.
               log(f"\n  PARALLEL CPCV: distributing {len(splits)} splits across {_n_workers} CPU workers")
+              # Set num_threads per worker to avoid oversubscription (each worker gets fair share of cores)
+              _base_lgb_params = _base_lgb_params.copy()
+              _base_lgb_params['num_threads'] = max(1, os.cpu_count() // _n_workers)
+              log(f"  num_threads per worker: {_base_lgb_params['num_threads']}")
               X_csr = X_all.tocsr()
               worker_args = []
               for wi, (train_idx, test_idx) in enumerate(splits):

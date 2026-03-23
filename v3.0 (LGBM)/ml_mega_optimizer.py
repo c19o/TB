@@ -781,22 +781,14 @@ print(f"  Test period: {dates[valid_indices[train_size]]} to {dates[valid_indice
 print("  Training LightGBM (primary)...")
 import lightgbm as lgb_pkg
 
-try:
-    xgb_model = lgb_pkg.LGBMClassifier(
-        n_estimators=500, max_depth=6, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
-        random_state=42, verbose=-1, device='gpu',
-    )
-    xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
-    print("  LightGBM (primary): GPU mode")
-except Exception:
-    xgb_model = lgb_pkg.LGBMClassifier(
-        n_estimators=500, max_depth=6, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
-        random_state=42, verbose=-1,
-    )
-    xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
-    print("  LightGBM (primary): CPU mode")
+# LightGBM CUDA does NOT support sparse — always use device='cpu' with force_col_wise=True
+xgb_model = lgb_pkg.LGBMClassifier(
+    n_estimators=500, max_depth=6, learning_rate=0.05,
+    subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
+    random_state=42, verbose=-1, device='cpu', force_col_wise=True,
+)
+xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
+print("  LightGBM (primary): CPU mode (force_col_wise=True, sparse-compatible)")
 
 xgb_acc = xgb_model.score(X_test, y_test)
 xgb_preds = xgb_model.predict(X_test)

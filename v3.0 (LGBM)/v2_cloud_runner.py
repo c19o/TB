@@ -741,6 +741,10 @@ def _lstm_one_tf(tf, state, manifest, gpu_id=None):
         cmd += f" --xgb-probs {oos_probs}"
         log(f"  [{tf}] Blending with XGB probs: {os.path.basename(oos_probs)}")
 
+    # GPU pinning: 1 GPU per LSTM TF in parallel is the right tradeoff.
+    # DataParallel in v2_lstm_trainer.py becomes a no-op (sees only 1 GPU),
+    # but running 6 TFs concurrently on dedicated GPUs saturates the machine
+    # better than 1 TF on N GPUs via DataParallel (communication overhead).
     env_overrides = {}
     if gpu_id is not None:
         env_overrides['CUDA_VISIBLE_DEVICES'] = str(gpu_id)

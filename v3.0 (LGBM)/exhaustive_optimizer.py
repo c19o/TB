@@ -778,7 +778,8 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
     )
 
     print(f"\n  Starting Optuna optimization ({n_trials} trials)...")
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    # n_jobs=4: CuPy releases GIL during kernel execution, so parallel trial evaluation is safe
+    study.optimize(objective, n_trials=n_trials, n_jobs=4, show_progress_bar=False)
 
     total_time = time.time() - t_start
     print(f"\n  Completed {n_trials} trials in {total_time:.1f}s "

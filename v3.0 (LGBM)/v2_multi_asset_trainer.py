@@ -553,11 +553,15 @@ def train_model(X_sparse, y, weights, feature_names, params=None,
     splits = generate_cpcv_splits(n, n_groups, n_test_groups, max_hold_bars)
     log(f"CPCV: {len(splits)} paths ({n_groups} groups, {n_test_groups} test)")
 
-    n_workers = max(1, os.cpu_count() // 4) if parallel_splits else 1
+    n_workers = max(1, min(os.cpu_count() // 4, 15)) if parallel_splits else 1  # Cap at 15: CPCV k=6 → C(6,2)=15 paths max
+    n_workers = int(os.environ.get('V3_CPCV_WORKERS', n_workers))
     use_parallel = parallel_splits and n_workers > 1
 
     if use_parallel:
         log(f"  PARALLEL: distributing {len(splits)} splits across {n_workers} workers")
+        # Set num_threads per worker to avoid oversubscription (each worker gets fair share of cores)
+        params['num_threads'] = max(1, os.cpu_count() // n_workers)
+        log(f"  num_threads per worker: {params['num_threads']}")
 
         X_csr = X_sparse.tocsr()
         worker_args = []

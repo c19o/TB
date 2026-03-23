@@ -445,16 +445,9 @@ else:
 print(f"{elapsed()} Data: {X.shape[0]} rows x {X.shape[1]} features")
 print(f"  Target: {np.sum(y==1)} up / {np.sum(y==0)} down")
 
-# Check GPU
+# LightGBM CUDA does NOT support sparse — always use device='cpu' with force_col_wise=True
 USE_GPU = False
-try:
-    _test_ds = lgb.Dataset(np.random.rand(10, 5), label=np.random.randint(0, 2, 10))
-    _test_params = {'device': 'gpu', 'num_leaves': 4, 'verbose': -1}
-    lgb.train(_test_params, _test_ds, num_boost_round=2)
-    USE_GPU = True
-    print(f"{elapsed()} GPU available - using LightGBM gpu")
-except Exception:
-    print(f"{elapsed()} GPU not available - using LightGBM CPU")
+print(f"{elapsed()} LightGBM: device='cpu', force_col_wise=True (sparse-compatible)")
 
 # Walk-forward windows (using timestamps)
 windows = [
@@ -499,21 +492,13 @@ for wname, tr_start, tr_end, te_start, te_end in windows:
 
     # --- LightGBM ---
     t0 = time.time()
-    try:
-        lgb_model = lgb.LGBMClassifier(
-            max_depth=6, learning_rate=0.05, n_estimators=500,
-            subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
-            objective='binary', random_state=42, verbose=-1,
-            device='gpu' if USE_GPU else 'cpu',
-        )
-        lgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
-    except Exception:
-        lgb_model = lgb.LGBMClassifier(
-            max_depth=6, learning_rate=0.05, n_estimators=500,
-            subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
-            objective='binary', random_state=42, verbose=-1,
-        )
-        lgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
+    lgb_model = lgb.LGBMClassifier(
+        max_depth=6, learning_rate=0.05, n_estimators=500,
+        subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
+        objective='binary', random_state=42, verbose=-1,
+        device='cpu', force_col_wise=True,
+    )
+    lgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
 
     lgb_pred = lgb_model.predict(X_test)
     lgb_prob = lgb_model.predict_proba(X_test)[:, 1]
