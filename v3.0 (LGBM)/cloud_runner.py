@@ -148,7 +148,7 @@ def build_and_train_tf(tf, state):
         state.active.pop(tf, None)
         return
 
-    # 2. TRAIN XGBoost CPCV
+    # 2. TRAIN LightGBM CPCV
     model_path = f'{WORKSPACE}/model_{tf}.json'
     if os.path.exists(model_path):
         log(f"[{tf}] SKIP train — model_{tf}.json exists")
@@ -281,12 +281,10 @@ def sanity_check():
         return False
 
     try:
-        import xgboost as xgb
-        dm = xgb.DMatrix(np.random.rand(10, 5), label=np.zeros(10))
-        xgb.train({'tree_method': 'hist', 'device': 'cuda', 'max_depth': 2}, dm, num_boost_round=2)
-        log(f"  XGBoost GPU: OK")
+        import lightgbm as lgb
+        log(f"  LightGBM: v{lgb.__version__} OK")
     except Exception as e:
-        log(f"  XGBoost GPU: FAIL ({e})")
+        log(f"  LightGBM: FAIL ({e})")
 
     try:
         import psutil
@@ -418,7 +416,7 @@ def main():
     for pattern in ['model_*.json', 'features_*_all.json', 'features_*.parquet',
                      'cpcv_*.pkl', 'meta_model_*.pkl', 'platt_*.pkl',
                      'validation_report_*.json', 'feature_importance_*.json',
-                     'exhaustive_configs*.json']:
+                     'optuna_configs*.json']:
         for f in sorted(glob.glob(f'{WORKSPACE}/{pattern}')):
             sz = os.path.getsize(f) / 1e6
             log(f"  {os.path.basename(f)} ({sz:.1f}MB)")

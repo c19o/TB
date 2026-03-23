@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ML Mega Optimizer - Complete ML Trading Optimization System
-Loads all available data, engineers 300+ features, trains XGBoost/RF/LASSO,
+Loads all available data, engineers 300+ features, trains LightGBM/RF/LASSO,
 then runs genetic algorithm to find optimal trading parameters.
 """
 
@@ -777,31 +777,31 @@ print(f"  Train: {len(X_train)}, Test: {len(X_test)}")
 print(f"  Train period: {dates[valid_indices[0]]} to {dates[valid_indices[train_size-1]]}")
 print(f"  Test period: {dates[valid_indices[train_size]]} to {dates[valid_indices[-1]]}")
 
-# --- XGBoost ---
-print("  Training XGBoost...")
-import xgboost as xgb
+# --- LightGBM (primary) ---
+print("  Training LightGBM (primary)...")
+import lightgbm as lgb_pkg
 
 try:
-    xgb_model = xgb.XGBClassifier(
-        tree_method='gpu_hist', n_estimators=500, max_depth=6,
-        learning_rate=0.05, subsample=0.8, colsample_bytree=0.8,
-        eval_metric='logloss', random_state=42, use_label_encoder=False
+    xgb_model = lgb_pkg.LGBMClassifier(
+        n_estimators=500, max_depth=6, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
+        random_state=42, verbose=-1, device='gpu',
     )
-    xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-    print("  XGBoost: GPU mode")
+    xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
+    print("  LightGBM (primary): GPU mode")
 except Exception:
-    xgb_model = xgb.XGBClassifier(
-        tree_method='hist', n_estimators=500, max_depth=6,
-        learning_rate=0.05, subsample=0.8, colsample_bytree=0.8,
-        eval_metric='logloss', random_state=42, use_label_encoder=False
+    xgb_model = lgb_pkg.LGBMClassifier(
+        n_estimators=500, max_depth=6, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
+        random_state=42, verbose=-1,
     )
-    xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-    print("  XGBoost: CPU mode (hist)")
+    xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
+    print("  LightGBM (primary): CPU mode")
 
 xgb_acc = xgb_model.score(X_test, y_test)
 xgb_preds = xgb_model.predict(X_test)
 xgb_probs = xgb_model.predict_proba(X_test)[:, 1]
-print(f"  XGBoost accuracy: {xgb_acc*100:.2f}%")
+print(f"  LightGBM (primary) accuracy: {xgb_acc*100:.2f}%")
 
 # Feature importance
 xgb_importance = dict(zip(feature_names, xgb_model.feature_importances_))
@@ -851,7 +851,7 @@ nonzero_lasso = {k: v for k, v in sorted(lasso_weights.items(), key=lambda x: -a
 ensemble_probs = (xgb_probs + lgb_probs) / 2
 ensemble_preds = (ensemble_probs > 0.5).astype(int)
 ensemble_acc = accuracy_score(y_test, ensemble_preds)
-print(f"  Ensemble (XGB+LGB) accuracy: {ensemble_acc*100:.2f}%")
+print(f"  Ensemble (LGB1+LGB2) accuracy: {ensemble_acc*100:.2f}%")
 
 print(f"  Models trained in {time.time()-t0:.1f}s")
 print()
@@ -874,7 +874,7 @@ TRAIL_OPTIONS = [0.5, 0.8, 1.0, 1.5, 2.0]
 HOLD_OPTIONS = [2, 4, 6, 8, 10, 14, 20]
 PARTIAL_OPTIONS = [0.0, 0.25, 0.50, 0.75]
 
-# Top 20 features from XGBoost
+# Top 20 features from LightGBM (primary)
 top20_features = [f for f, _ in xgb_sorted[:20]]
 
 def evaluate_genome(genome, probs, all_closes, all_atrs, start_idx):
@@ -1102,7 +1102,7 @@ output.append(f"Train: {train_size} samples, Test: {len(X_test)} samples")
 output.append("")
 
 output.append("=" * 80)
-output.append("1. FEATURE IMPORTANCE - TOP 30 (XGBoost)")
+output.append("1. FEATURE IMPORTANCE - TOP 30 (LightGBM Primary)")
 output.append("=" * 80)
 for rank, (feat, imp) in enumerate(xgb_sorted[:30], 1):
     bar = "#" * int(imp * 500)
@@ -1137,7 +1137,7 @@ output.append("")
 output.append("=" * 80)
 output.append("5. MODEL ACCURACY (Walk-Forward Test)")
 output.append("=" * 80)
-output.append(f"  XGBoost:     {xgb_acc*100:.2f}%")
+output.append(f"  LightGBM(1): {xgb_acc*100:.2f}%")
 output.append(f"  Random Forest: {rf_acc*100:.2f}%")
 output.append(f"  LightGBM:    {lgb_acc*100:.2f}%")
 output.append(f"  LASSO:       {lasso_acc*100:.2f}%")
@@ -1151,7 +1151,7 @@ for thresh in [0.55, 0.60, 0.65]:
         output.append(f"  Ensemble (>{thresh:.0%} conf): {filtered_acc*100:.2f}% ({mask.sum()} signals)")
 
 output.append("")
-output.append("  Classification Report (XGBoost):")
+output.append("  Classification Report (LightGBM Primary):")
 report = classification_report(y_test, xgb_preds, target_names=['DOWN', 'UP'])
 for line in report.split('\n'):
     output.append(f"    {line}")
@@ -1195,7 +1195,7 @@ for rank, (feat, avg_r) in enumerate(consensus_sorted[:15], 1):
     xr = xgb_ranks.get(feat, 999) + 1
     rr = rf_ranks.get(feat, 999) + 1
     lr = lgb_ranks.get(feat, 999) + 1
-    output.append(f"  {rank:2d}. {feat:30s} avg_rank={avg_r+1:5.1f} (XGB:{xr:3d} RF:{rr:3d} LGB:{lr:3d})")
+    output.append(f"  {rank:2d}. {feat:30s} avg_rank={avg_r+1:5.1f} (LGB1:{xr:3d} RF:{rr:3d} LGB2:{lr:3d})")
 
 # Compare to baseline
 output.append("")
@@ -1235,7 +1235,7 @@ for feat in esoteric_features:
         xgb_rank = [i for i, (f, _) in enumerate(xgb_sorted) if f == feat][0] + 1
         rf_rank = [i for i, (f, _) in enumerate(rf_sorted) if f == feat][0] + 1
         lasso_w = lasso_weights.get(feat, 0)
-        output.append(f"  {feat:25s} XGB_rank={xgb_rank:3d} RF_rank={rf_rank:3d} LASSO={lasso_w:+.4f}")
+        output.append(f"  {feat:25s} LGB1_rank={xgb_rank:3d} RF_rank={rf_rank:3d} LASSO={lasso_w:+.4f}")
 
 output.append("")
 output.append("=" * 80)
@@ -1253,7 +1253,7 @@ for feat in sentiment_features:
         xgb_rank = [i for i, (f, _) in enumerate(xgb_sorted) if f == feat][0] + 1
         rf_rank = [i for i, (f, _) in enumerate(rf_sorted) if f == feat][0] + 1
         lasso_w = lasso_weights.get(feat, 0)
-        output.append(f"  {feat:25s} XGB_rank={xgb_rank:3d} RF_rank={rf_rank:3d} LASSO={lasso_w:+.4f}")
+        output.append(f"  {feat:25s} LGB1_rank={xgb_rank:3d} RF_rank={rf_rank:3d} LASSO={lasso_w:+.4f}")
 
 # Print everything
 result_text = "\n".join(output)
@@ -1274,7 +1274,7 @@ print(f"  Saved: ml_mega_results_v2.txt")
 config = {
     "generated": datetime.now().isoformat(),
     "model_accuracy": {
-        "xgboost": round(xgb_acc * 100, 2),
+        "lightgbm_primary": round(xgb_acc * 100, 2),
         "random_forest": round(rf_acc * 100, 2),
         "lightgbm": round(lgb_acc * 100, 2),
         "lasso": round(lasso_acc * 100, 2),
@@ -1295,7 +1295,7 @@ config = {
         "total_trades": int(best_result[4])
     },
     "selected_features": selected_features,
-    "top_30_features_xgboost": [{"name": f, "importance": round(float(imp), 6)} for f, imp in xgb_sorted[:30]],
+    "top_30_features_lgb_primary": [{"name": f, "importance": round(float(imp), 6)} for f, imp in xgb_sorted[:30]],
     "top_30_features_rf": [{"name": f, "importance": round(float(imp), 6)} for f, imp in rf_sorted[:30]],
     "top_30_features_lgb": [{"name": f, "importance": int(imp)} for f, imp in lgb_sorted[:30]],
     "lasso_nonzero_weights": {k: round(float(v), 6) for k, v in nonzero_lasso.items()},

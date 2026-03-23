@@ -8,7 +8,7 @@ except (ImportError, Exception):
 build_4h_features.py
 =====================
 Build 4H feature matrix (~14K samples x 400+ features) from BTC/USDT 4H candles,
-then train ML (XGBoost, LightGBM, RF, LASSO) on walk-forward windows,
+then train ML (LightGBM, RF, LASSO) on walk-forward windows,
 then run GA strategy optimization.
 
 This should dramatically improve over the daily model (2,367 samples -> 14,194 samples).
@@ -422,18 +422,13 @@ print("STEP 2: TRAIN ML ON 4H DATA (~14K samples)")
 print(f"{'='*70}")
 
 # Re-establish feature/target arrays
-import xgboost as xgb
-try:
-    import lightgbm as lgb
-    HAS_LGB = True
-except:
-    HAS_LGB = False
+import lightgbm as lgb
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 from sklearn.preprocessing import StandardScaler
 
-X = df_save[feature_cols].values.astype(np.float32)  # NaN preserved — XGBoost DMatrix handles missing natively
+X = df_save[feature_cols].values.astype(np.float32)  # NaN preserved — LightGBM handles missing natively
 # Drop rows where label is NaN (can't train on unknown direction)
 valid_label_mask = df_save['next_4h_direction'].notna().values
 X = X[valid_label_mask]
@@ -453,19 +448,13 @@ print(f"  Target: {np.sum(y==1)} up / {np.sum(y==0)} down")
 # Check GPU
 USE_GPU = False
 try:
-    test_dmat = xgb.DMatrix(np.random.rand(10, 5), label=np.random.randint(0, 2, 10))
-    test_params = {'tree_method': 'gpu_hist', 'device': 'cuda', 'max_depth': 3}
-    bst = xgb.train(test_params, test_dmat, num_boost_round=2)
+    _test_ds = lgb.Dataset(np.random.rand(10, 5), label=np.random.randint(0, 2, 10))
+    _test_params = {'device': 'gpu', 'num_leaves': 4, 'verbose': -1}
+    lgb.train(_test_params, _test_ds, num_boost_round=2)
     USE_GPU = True
-    print(f"{elapsed()} GPU available - using gpu_hist")
-except:
-    try:
-        test_params = {'tree_method': 'gpu_hist', 'max_depth': 3}
-        bst = xgb.train(test_params, test_dmat, num_boost_round=2)
-        USE_GPU = True
-        print(f"{elapsed()} GPU available (legacy)")
-    except:
-        print(f"{elapsed()} GPU not available - using hist (CPU)")
+    print(f"{elapsed()} GPU available - using LightGBM gpu")
+except Exception:
+    print(f"{elapsed()} GPU not available - using LightGBM CPU")
 
 # Walk-forward windows (using timestamps)
 windows = [
@@ -475,7 +464,7 @@ windows = [
 ]
 
 all_results = {}
-xgb_importances_all = np.zeros(len(feature_cols))
+lgb_importances_all = np.zeros(len(feature_cols))
 lasso_weights_all = np.zeros(len(feature_cols))
 lasso_count = 0
 
@@ -508,68 +497,40 @@ for wname, tr_start, tr_end, te_start, te_end in windows:
 
     results = {}
 
-    # --- XGBoost ---
+    # --- LightGBM ---
     t0 = time.time()
-    xgb_params = {
-        'max_depth': 6,
-        'learning_rate': 0.05,
-        'n_estimators': 500,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
-        'min_child_weight': 20,
-        'objective': 'binary:logistic',
-        'eval_metric': 'logloss',
-        'tree_method': 'gpu_hist' if USE_GPU else 'hist',
-        'random_state': 42,
-        'verbosity': 0,
-    }
-    if USE_GPU:
-        xgb_params['device'] = 'cuda'
+    try:
+        lgb_model = lgb.LGBMClassifier(
+            max_depth=6, learning_rate=0.05, n_estimators=500,
+            subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
+            objective='binary', random_state=42, verbose=-1,
+            device='gpu' if USE_GPU else 'cpu',
+        )
+        lgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
+    except Exception:
+        lgb_model = lgb.LGBMClassifier(
+            max_depth=6, learning_rate=0.05, n_estimators=500,
+            subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=20,
+            objective='binary', random_state=42, verbose=-1,
+        )
+        lgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
 
-    xgb_model = xgb.XGBClassifier(**xgb_params)
-    xgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-    xgb_pred = xgb_model.predict(X_test)
-    xgb_prob = xgb_model.predict_proba(X_test)[:, 1]
+    lgb_pred = lgb_model.predict(X_test)
+    lgb_prob = lgb_model.predict_proba(X_test)[:, 1]
 
-    acc = accuracy_score(y_test, xgb_pred)
-    prec = precision_score(y_test, xgb_pred, zero_division=0)
-    rec = recall_score(y_test, xgb_pred, zero_division=0)
-    results['XGBoost'] = {'acc': acc, 'prec': prec, 'rec': rec}
-    print(f"  XGBoost:  Acc={acc:.4f}  Prec={prec:.4f}  Rec={rec:.4f}  ({time.time()-t0:.1f}s)")
-    xgb_importances_all += xgb_model.feature_importances_
+    acc = accuracy_score(y_test, lgb_pred)
+    prec = precision_score(y_test, lgb_pred, zero_division=0)
+    rec = recall_score(y_test, lgb_pred, zero_division=0)
+    results['LightGBM'] = {'acc': acc, 'prec': prec, 'rec': rec}
+    print(f"  LightGBM: Acc={acc:.4f}  Prec={prec:.4f}  Rec={rec:.4f}  ({time.time()-t0:.1f}s)")
+    lgb_importances_all += lgb_model.feature_importances_
 
     all_test_indices.extend(test_idx.tolist())
-    all_test_probs.extend(xgb_prob.tolist())
+    all_test_probs.extend(lgb_prob.tolist())
     all_test_y.extend(y_test.tolist())
     all_test_returns.extend(test_returns.tolist())
     all_test_closes.extend(test_closes_w.tolist())
     all_test_atrs.extend(test_atrs_w.tolist())
-
-    # --- LightGBM ---
-    if HAS_LGB:
-        t0 = time.time()
-        try:
-            lgb_model = lgb.LGBMClassifier(
-                max_depth=6, learning_rate=0.05, n_estimators=500,
-                subsample=0.8, colsample_bytree=0.8, min_child_weight=20,
-                objective='binary', random_state=42, verbose=-1,
-                device='gpu' if USE_GPU else 'cpu',
-            )
-            lgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
-        except:
-            lgb_model = lgb.LGBMClassifier(
-                max_depth=6, learning_rate=0.05, n_estimators=500,
-                subsample=0.8, colsample_bytree=0.8, min_child_weight=20,
-                objective='binary', random_state=42, verbose=-1,
-            )
-            lgb_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
-
-        lgb_pred = lgb_model.predict(X_test)
-        acc = accuracy_score(y_test, lgb_pred)
-        prec = precision_score(y_test, lgb_pred, zero_division=0)
-        rec = recall_score(y_test, lgb_pred, zero_division=0)
-        results['LightGBM'] = {'acc': acc, 'prec': prec, 'rec': rec}
-        print(f"  LightGBM: Acc={acc:.4f}  Prec={prec:.4f}  Rec={rec:.4f}  ({time.time()-t0:.1f}s)")
 
     # --- Random Forest ---
     t0 = time.time()
@@ -591,7 +552,7 @@ for wname, tr_start, tr_end, te_start, te_end in windows:
     X_train_sc = scaler.fit_transform(X_train)
     X_test_sc = scaler.transform(X_test)
     # sklearn LinearModel (LASSO) cannot handle NaN — nan_to_num required here only.
-    # XGBoost paths above preserve NaN natively; this is sklearn-specific.
+    # LightGBM paths above preserve NaN natively; this is sklearn-specific.
     X_train_sc = np.nan_to_num(X_train_sc, nan=0.0, posinf=0.0, neginf=0.0)
     X_test_sc = np.nan_to_num(X_test_sc, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -613,20 +574,20 @@ for wname, tr_start, tr_end, te_start, te_end in windows:
 
 # Average importances
 n_windows = max(len([w for w in windows if np.sum((timestamps >= w[3]) & (timestamps <= w[4] + ' 23:59:59')) > 0]), 1)
-xgb_importances_avg = xgb_importances_all / n_windows
+lgb_importances_avg = lgb_importances_all / n_windows
 if lasso_count > 0:
     lasso_weights_avg = lasso_weights_all / lasso_count
 else:
     lasso_weights_avg = lasso_weights_all
 
-# TOP 40 XGBoost features
-xgb_top_idx = np.argsort(xgb_importances_avg)[::-1][:40]
+# TOP 40 LightGBM features
+lgb_top_idx = np.argsort(lgb_importances_avg)[::-1][:40]
 print(f"\n{'='*70}")
-print("TOP 40 FEATURES BY XGBOOST IMPORTANCE (4H)")
+print("TOP 40 FEATURES BY LIGHTGBM IMPORTANCE (4H)")
 print(f"{'='*70}")
-for rank, idx in enumerate(xgb_top_idx):
+for rank, idx in enumerate(lgb_top_idx):
     fname = feature_cols[idx]
-    imp = xgb_importances_avg[idx]
+    imp = lgb_importances_avg[idx]
     print(f"  {rank+1:2d}. {fname:45s} {imp:.6f}")
 
 # LASSO non-zero weights
@@ -691,10 +652,10 @@ POP_SIZE = 150
 N_GENS = 200
 
 # Consensus top 30 for GA
-xgb_rank = {feature_cols[idx]: rank for rank, idx in enumerate(np.argsort(xgb_importances_avg)[::-1])}
+lgb_rank = {feature_cols[idx]: rank for rank, idx in enumerate(np.argsort(lgb_importances_avg)[::-1])}
 consensus = {}
 for f in feature_cols:
-    consensus[f] = xgb_rank.get(f, len(feature_cols))
+    consensus[f] = lgb_rank.get(f, len(feature_cols))
 top30_features = sorted(consensus, key=consensus.get)[:30]
 
 def decode_genome(genome):
@@ -963,11 +924,11 @@ with open(results_file, 'w', encoding='utf-8') as f:
     f.write(f"  Daily: 2,367 samples, 477 features, ~62.9% accuracy\n")
     f.write(f"  4H:    {len(df_save)} samples, {len(feature_cols)} features\n\n")
 
-    f.write("TOP 40 FEATURES (XGBoost)\n")
+    f.write("TOP 40 FEATURES (LightGBM)\n")
     f.write("-" * 50 + "\n")
-    for rank, idx in enumerate(xgb_top_idx):
+    for rank, idx in enumerate(lgb_top_idx):
         fname = feature_cols[idx]
-        imp = xgb_importances_avg[idx]
+        imp = lgb_importances_avg[idx]
         f.write(f"  {rank+1:2d}. {fname:45s} {imp:.6f}\n")
 
     f.write(f"\nLASSO NON-ZERO ({len(lasso_sorted)} features)\n")

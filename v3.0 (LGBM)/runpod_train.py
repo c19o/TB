@@ -4,8 +4,8 @@
 runpod_train.py -- Automated RunPod Training Pipeline for Savage22
 ==================================================================
 Creates an H200 SXM pod, uploads data in waves (train while uploading),
-runs full pipeline: XGBoost retrain + LSTM train + Optuna LSTM tuning +
-exhaustive optimizer.
+runs full pipeline: LightGBM retrain + LSTM train + Optuna LSTM tuning +
+Optuna optimizer.
 
 Wave strategy (train while big files upload):
   Wave 1: Scripts + small DBs (1W, 1D) -> start training 1W/1D immediately
@@ -16,7 +16,7 @@ Usage:
     python runpod_train.py              # Full pipeline
     python runpod_train.py --dry-run    # Show plan without creating pod
     python runpod_train.py --skip-upload # Skip upload (data already on pod)
-    python runpod_train.py --xgboost-only  # Only retrain XGBoost
+    python runpod_train.py --xgboost-only  # Only retrain LightGBM
     python runpod_train.py --lstm-only     # Only train LSTM
     python runpod_train.py --optimizer-only # Only run exhaustive optimizer
 """
@@ -81,14 +81,14 @@ DOWNLOAD_PATTERNS = [
     "lstm_*.pt",
     "ml_multi_tf_results.txt",
     "ml_multi_tf_configs.json",
-    "exhaustive_configs.json",
+    "optuna_configs*.json",
     "lstm_optuna_results.json",
     "training.log",
 ]
 
 # Pip packages needed on the pod
 PIP_PACKAGES = [
-    "xgboost",
+    "lightgbm",
     "scikit-learn",
     "pandas",
     "numpy",
@@ -415,7 +415,7 @@ def upload_wave(host, port, files, wave_name):
     print("  %s upload complete." % wave_name)
 
 
-def run_full_pipeline(host, port, pod_info, xgboost=True, lstm=True, optimizer=True):
+def run_full_pipeline(host, port, pod_info, xgboost=True, lstm=True, optimizer=True):  # param name kept for CLI compat
     """Run the full training pipeline with wave-based uploading."""
     env = "SAVAGE22_DB_DIR=%s SKIP_LLM=1" % REMOTE_DIR
 
@@ -430,16 +430,16 @@ def run_full_pipeline(host, port, pod_info, xgboost=True, lstm=True, optimizer=T
         print("  %s" % out.strip().replace("\n", "\n  "))
 
     # ================================================================
-    # PHASE 1: XGBoost retrain (all 6 TFs)
+    # PHASE 1: LightGBM retrain (all 6 TFs)
     # ================================================================
     if xgboost:
         print("\n" + "=" * 60)
-        print("[PHASE 1] XGBoost Retrain — All 6 Timeframes")
+        print("[PHASE 1] LightGBM Retrain — All 6 Timeframes")
         print("=" * 60)
 
         train_cmd = "cd %s && %s python -u ml_multi_tf.py 2>&1 | tee training.log" % (REMOTE_DIR, env)
-        rc, elapsed = stream_ssh_command(host, port, train_cmd, pod_info, "XGBoost")
-        print("\n  XGBoost retrain: %s in %.0fs" % ("OK" if rc == 0 else "FAILED", elapsed))
+        rc, elapsed = stream_ssh_command(host, port, train_cmd, pod_info, "LightGBM")
+        print("\n  LightGBM retrain: %s in %.0fs" % ("OK" if rc == 0 else "FAILED", elapsed))
 
     # ================================================================
     # PHASE 2: LSTM training (all 6 TFs, all features)
@@ -820,9 +820,9 @@ def main():
     parser = argparse.ArgumentParser(description="RunPod training pipeline for Savage22")
     parser.add_argument("--dry-run", action="store_true", help="Show plan without creating pod")
     parser.add_argument("--skip-upload", action="store_true", help="Skip file upload")
-    parser.add_argument("--xgboost-only", action="store_true", help="Only retrain XGBoost")
+    parser.add_argument("--xgboost-only", action="store_true", help="Only retrain LightGBM")
     parser.add_argument("--lstm-only", action="store_true", help="Only train LSTM + Optuna")
-    parser.add_argument("--optimizer-only", action="store_true", help="Only run exhaustive optimizer")
+    parser.add_argument("--optimizer-only", action="store_true", help="Only run Optuna optimizer")
     args = parser.parse_args()
 
     api_key = load_api_key()
