@@ -31,7 +31,8 @@ Usage:
   python v2_multi_asset_trainer.py --mode all --tf 1d
   python v2_multi_asset_trainer.py --mode unified --tf 1d --engine lightgbm
   python v2_multi_asset_trainer.py --mode unified --tf 1d --engine both
-  python v2_multi_asset_trainer.py --mode unified --tf 1d --parallel-splits  # multi-GPU CPCV splits
+  python v2_multi_asset_trainer.py --mode unified --tf 1d                    # auto-parallel if N_GPUS > 1
+  python v2_multi_asset_trainer.py --mode unified --tf 1d --no-parallel-splits  # force sequential
   python v2_multi_asset_trainer.py --mode unified --tf 1d --use-dask        # Dask distributed multi-GPU
 """
 
@@ -82,7 +83,7 @@ USE_GPU = False
 N_GPUS = 0
 _hw = {}
 try:
-    _test = xgb.DMatrix(np.random.rand(10, 5), label=np.random.randint(0, 2, 10))
+    _test = xgb.DMatrix(np.random.rand(10, 5), label=np.random.randint(0, 2, 10), nthread=-1)
     xgb.train({'tree_method': 'hist', 'device': 'cuda', 'max_depth': 2}, _test, num_boost_round=2)
     USE_GPU = True
     _hw = detect_hardware()
@@ -534,12 +535,12 @@ def _xgb_split_worker(args):
     try:
         dtrain = xgb.DeviceQuantileDMatrix(X_train_es, label=y_train_es, weight=w_train_es,
                                             feature_names=feature_names,
-                                            max_bin=params.get('max_bin', 32))
-        dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names)
+                                            max_bin=params.get('max_bin', 32), nthread=-1)
+        dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names, nthread=-1)
     except Exception:
         dtrain = xgb.DMatrix(X_train_es, label=y_train_es, weight=w_train_es,
-                             feature_names=feature_names)
-        dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names)
+                             feature_names=feature_names, nthread=-1)
+        dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names, nthread=-1)
 
     model = xgb.train(
         params, dtrain,
@@ -550,7 +551,7 @@ def _xgb_split_worker(args):
     )
 
     # OOS prediction on the held-out test set (NOT used for early stopping)
-    dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_names)
+    dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_names, nthread=-1)
     preds = model.predict(dtest)
     pred_labels = np.argmax(preds, axis=1)
     acc = accuracy_score(y_test, pred_labels)
@@ -717,13 +718,18 @@ def train_model(X_sparse, y, weights, feature_names, params=None,
         client = Client(cluster)
         try:
             # Convert sparse to dense for Dask (Dask arrays don't support scipy sparse)
-            # Use float32 to minimize memory
+            # Chunk the conversion to avoid peak memory spike from one massive .toarray()
+            chunk_rows = max(1, X_sparse.shape[0] // N_GPUS)
             if sparse.issparse(X_sparse):
-                X_dense = X_sparse.toarray().astype(np.float32)
+                n_rows, n_cols = X_sparse.shape
+                dense_chunks = []
+                for start in range(0, n_rows, chunk_rows):
+                    end = min(start + chunk_rows, n_rows)
+                    dense_chunks.append(X_sparse[start:end].toarray().astype(np.float32))
+                X_dense = np.concatenate(dense_chunks, axis=0)
+                del dense_chunks
             else:
                 X_dense = np.asarray(X_sparse, dtype=np.float32)
-
-            chunk_rows = max(1, X_dense.shape[0] // N_GPUS)
             X_dask = da.from_array(X_dense, chunks=(chunk_rows, X_dense.shape[1]))
             y_dask = da.from_array(y.astype(np.float32), chunks=chunk_rows)
             w_dask = da.from_array(weights, chunks=chunk_rows)
@@ -884,16 +890,16 @@ def train_model(X_sparse, y, weights, feature_names, params=None,
                 try:
                     dtrain = xgb.DeviceQuantileDMatrix(X_train_es, label=y_train_es, weight=w_train_es,
                                                         feature_names=feature_names,
-                                                        max_bin=params.get('max_bin', 32))
-                    dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names)
+                                                        max_bin=params.get('max_bin', 32), nthread=-1)
+                    dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names, nthread=-1)
                 except Exception:
                     dtrain = xgb.DMatrix(X_train_es, label=y_train_es, weight=w_train_es,
-                                         feature_names=feature_names)
-                    dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names)
+                                         feature_names=feature_names, nthread=-1)
+                    dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names, nthread=-1)
             else:
                 dtrain = xgb.DMatrix(X_train_es, label=y_train_es, weight=w_train_es,
-                                     feature_names=feature_names)
-                dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names)
+                                     feature_names=feature_names, nthread=-1)
+                dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_names, nthread=-1)
 
             model = xgb.train(
                 params, dtrain,
@@ -904,7 +910,7 @@ def train_model(X_sparse, y, weights, feature_names, params=None,
             )
 
             # OOS prediction on the held-out test set (NOT used for early stopping)
-            dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_names)
+            dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_names, nthread=-1)
             preds = model.predict(dtest)
             pred_labels = np.argmax(preds, axis=1)
             acc = accuracy_score(y_test, pred_labels)
@@ -1289,19 +1295,27 @@ def main():
                         default='xgboost',
                         help='Training engine: xgboost (default), lightgbm, or both (benchmark)')
     parser.add_argument('--parallel-splits', action='store_true', default=False,
-                        help='Parallelize CPCV splits across multiple GPUs (auto-detects GPU count)')
+                        help='(legacy, now auto-detected) Kept for backward compat with cloud runners')
+    parser.add_argument('--no-parallel-splits', action='store_true', default=False,
+                        help='Force sequential CPCV splits even with multiple GPUs')
     parser.add_argument('--use-dask', action='store_true', default=False,
                         help='Use Dask-XGBoost for distributed multi-GPU training (unified/all mode only)')
     parser.add_argument('--resume', action='store_true',
                         help='Skip models that already exist')
     args = parser.parse_args()
 
-    # Auto-enable parallel splits if multiple GPUs detected
-    if args.parallel_splits and N_GPUS <= 1:
-        log("WARNING: --parallel-splits requested but only 1 GPU detected, using sequential mode")
+    # Auto-detect parallel splits: ON by default when multiple GPUs available
+    # Use --no-parallel-splits to force sequential
+    if args.no_parallel_splits:
         args.parallel_splits = False
-    elif args.parallel_splits:
-        log(f"PARALLEL SPLITS: enabled across {N_GPUS} GPUs")
+        log("PARALLEL SPLITS: disabled (--no-parallel-splits)")
+    elif USE_GPU and N_GPUS > 1:
+        args.parallel_splits = True
+        log(f"PARALLEL SPLITS: auto-enabled across {N_GPUS} GPUs (use --no-parallel-splits to disable)")
+    else:
+        args.parallel_splits = False
+        if N_GPUS <= 1:
+            log("PARALLEL SPLITS: off (single GPU detected)")
 
     # Dask-XGBoost validation
     if args.use_dask:

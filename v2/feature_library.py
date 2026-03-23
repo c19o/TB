@@ -37,6 +37,8 @@ except (ImportError, Exception):
     _HAS_GPU = False
     _N_GPUS = 0
 
+# GPU pinning handled by caller (build_single_asset sets cp.cuda.Device)
+
 try:
     import cudf
     _HAS_CUDF = _HAS_GPU  # Only use cuDF if GPU is available
@@ -683,10 +685,23 @@ def compute_rsi(series, period):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
+    # cuDF ewm doesn't support min_periods — use try/except for compat
+    _cudf_fallback = False
+    try:
+        avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
+        avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
+    except (NotImplementedError, TypeError):
+        avg_gain = gain.ewm(alpha=1 / period).mean()
+        avg_loss = loss.ewm(alpha=1 / period).mean()
+        _cudf_fallback = True
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    # When min_periods was dropped (cuDF path), manually NaN-out the first
+    # `period` values so output matches pandas semantics.  Works for both
+    # pandas Series and cuDF Series (.iloc is supported by both).
+    if _cudf_fallback:
+        rsi.iloc[:period] = float("nan")
+    return rsi
 
 
 def _digital_root(n):
@@ -843,7 +858,10 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['bb_lower_20'] = mid - 2 * std
     out['bb_width_20'] = (out['bb_upper_20'] - out['bb_lower_20']) / mid
     out['bb_pctb_20'] = (c - out['bb_lower_20']) / (out['bb_upper_20'] - out['bb_lower_20'])
-    out['bb_squeeze_20'] = (out['bb_width_20'] < out['bb_width_20'].rolling(500).quantile(0.1)).astype(int)
+    # cuDF rolling doesn't support .quantile() — compute on CPU
+    _bbw = _np(out['bb_width_20'])
+    _bbw_s = pd.Series(_bbw).rolling(500).quantile(0.1).values
+    out['bb_squeeze_20'] = (_np(out['bb_width_20']) < _bbw_s).astype(np.int32)
 
     # --- MACD ---
     ema12 = c.ewm(span=12, adjust=False).mean()
@@ -1269,9 +1287,12 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['near_fib_13'] = ((c - out['fib_13_from_high']).abs() / c < 0.02).astype(int)
 
     # --- Interaction features ---
-    out['rsi_x_bbpctb'] = out.get('rsi_14', 0) * out.get('bb_pctb_20', 0)
-    out['volume_x_atr'] = out.get('volume_ratio', 0) * out.get('atr_14_pct', 0)
-    out['consec_red_x_bb_os'] = out['consec_red'] * (out.get('bb_pctb_20', 0.5) < 0).astype(int)
+    def _col_or(df, col, default=0):
+        """Like .get() but works with both pandas and cuDF."""
+        return df[col] if col in df.columns else default
+    out['rsi_x_bbpctb'] = _col_or(out, 'rsi_14', 0) * _col_or(out, 'bb_pctb_20', 0)
+    out['volume_x_atr'] = _col_or(out, 'volume_ratio', 0) * _col_or(out, 'atr_14_pct', 0)
+    out['consec_red_x_bb_os'] = out['consec_red'] * (_col_or(out, 'bb_pctb_20', 0.5) < 0).astype(int)
 
     price_low_w = max(cfg['vol_long'] * 20, 480)
     price_low = (c == c.rolling(price_low_w).min()).astype(int)
@@ -1279,7 +1300,7 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['rsi_bullish_div'] = (price_low & ~rsi_low.astype(bool)).astype(int)
 
     # --- Drawdown ---
-    rolling_max_price = c.expanding().max()
+    rolling_max_price = c.cummax()  # cuDF-compatible (no .expanding())
     out['current_dd_depth'] = (c - rolling_max_price) / rolling_max_price
     out['dd_from_ath'] = out['current_dd_depth']
 
@@ -1301,7 +1322,7 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['num_bearish_signals'] = out[existing_bear].sum(axis=1)
     out['signal_agreement'] = out['num_bullish_signals'] - out['num_bearish_signals']
 
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -1361,7 +1382,7 @@ def compute_time_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame
     out['is_friday'] = (dow == 4).astype(int)
     out['is_weekend'] = (dow >= 5).astype(int)
 
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -1582,7 +1603,7 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
     out['price_contains_37'] = _c_str.str.contains('37', regex=False).astype(np.int32)
     out['price_contains_73'] = _c_str.str.contains('73', regex=False).astype(np.int32)
 
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -3141,7 +3162,7 @@ def compute_higher_tf_features(df: pd.DataFrame, htf_data: dict) -> pd.DataFrame
                 s.index = _cpu_idx
                 out[col] = s
 
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -3176,7 +3197,7 @@ def compute_regime_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFra
     rng = hi20 - lo20
     out['range_position'] = ((c - lo20) / rng.replace(0, np.nan)).clip(0, 1)
 
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -3516,7 +3537,7 @@ def compute_composite_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.Data
     quarter = _df_cpu_idx.quarter.astype(np.float64)
     out['seasonal_vol_direction'] = (quarter / 4.0) * _np(out['esoteric_vol_score'])
 
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -3923,7 +3944,7 @@ def compute_knn_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
             out[col] = vals
     except Exception:
         pass
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -4238,7 +4259,7 @@ def compute_targets(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     })
     out['triple_barrier_label'] = compute_triple_barrier_labels(_tb_df, tf_name)
 
-    return out.to_pandas() if _gpu else out
+    return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
 
 # ============================================================
@@ -5662,10 +5683,12 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     for col in decay_feats.columns:
         result[col] = decay_feats[col]
 
-    # 12c. Trend-context cross features (ALL events x bull/bear regime)
-    t0 = time.time()
-    _add_trend_cross_features(result, tf_name)
-    print(f"    Trend cross features: {time.time()-t0:.1f}s")
+    # 12c. Trend-context cross features — SKIPPED
+    # These (tx_, ex_, dx_, vwap, range, ex_adv) are ALL generated by
+    # v2_cross_generator.py as GPU sparse matrices. Generating them here
+    # as DataFrame columns is a CPU bottleneck (239K+ pd.DataFrame(dict) calls)
+    # and the cross generator explicitly skips these prefixes anyway.
+    print(f"    Trend cross features: SKIPPED (handled by v2_cross_generator)")
 
     # 12d. LLM sentiment features (Haiku -- cached, cheap)
     if _HAS_LLM:
@@ -5740,6 +5763,12 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         result = result.drop(columns=str_cols, errors='ignore')
 
     # Ensure all numeric
+    # Deduplicate columns (multiple compute functions may produce the same column name)
+    if result.columns.duplicated().any():
+        n_dupes = result.columns.duplicated().sum()
+        print(f"    Deduplicating {n_dupes} duplicate columns...", flush=True)
+        result = result.loc[:, ~result.columns.duplicated()]
+
     for col in result.columns:
         if result[col].dtype not in ['float64', 'int64', 'float32', 'int32', 'bool']:
             result[col] = pd.to_numeric(result[col], errors='coerce')

@@ -316,7 +316,7 @@ class MultiTFPredictor:
         feat_names = self.features[tf]
         values = [float(feature_dict.get(f, float('nan'))) for f in feat_names]
         X = np.array([values], dtype=np.float32)
-        dmat = xgb.DMatrix(X, feature_names=feat_names)
+        dmat = xgb.DMatrix(X, feature_names=feat_names, nthread=-1)
         prob = float(self.models[tf].predict(dmat)[0])
 
         return prob, prob
@@ -393,7 +393,7 @@ def backtest_portfolio():
                 col_idx = available_feats.index(fn)
                 full_X[:, i] = X[:, col_idx]
 
-        dmat = xgb.DMatrix(full_X, feature_names=feat_names)
+        dmat = xgb.DMatrix(full_X, feature_names=feat_names, nthread=-1)
         probs = model.predict(dmat)
 
         trade_count = 0

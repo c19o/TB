@@ -58,6 +58,7 @@ V1_DBS = {
 def _connect(db_path):
     """Open a read-only SQLite connection."""
     if not os.path.exists(db_path):
+        print(f"WARNING: DB missing: {db_path}", flush=True)
         return None
     return sqlite3.connect(db_path, timeout=10)
 
@@ -68,6 +69,64 @@ def _safe_read_sql(conn, query, params=None):
         return pd.read_sql_query(query, conn, params=params)
     except Exception:
         return pd.DataFrame()
+
+
+# Module-level flag: only validate DBs once per process
+_validated = False
+
+
+def validate_required_dbs():
+    """
+    Check all V1 + V2 databases and print a summary of what's available vs missing.
+    Called once on the first load_all_data_for_asset() call so the user knows
+    immediately if the model will train on partial data.
+    """
+    global _validated
+    if _validated:
+        return
+    _validated = True
+
+    print("\n" + "=" * 60, flush=True)
+    print("DATABASE AVAILABILITY CHECK", flush=True)
+    print("=" * 60, flush=True)
+
+    missing = []
+    present = []
+
+    # V1 databases
+    for name, path in V1_DBS.items():
+        if os.path.exists(path):
+            size_mb = os.path.getsize(path) / (1024 * 1024)
+            present.append((f"V1/{name}", path, size_mb))
+        else:
+            missing.append((f"V1/{name}", path))
+
+    # V2 databases
+    for name, path in [("V2/multi_asset_prices", MULTI_ASSET_DB),
+                        ("V2/v2_signals", V2_SIGNALS_DB)]:
+        if os.path.exists(path):
+            size_mb = os.path.getsize(path) / (1024 * 1024)
+            present.append((name, path, size_mb))
+        else:
+            missing.append((name, path))
+
+    # Print present
+    for name, path, size_mb in present:
+        print(f"  OK   {name:30s} ({size_mb:,.1f} MB)", flush=True)
+
+    # Print missing with loud warnings
+    if missing:
+        print(flush=True)
+        print("!" * 60, flush=True)
+        print(f"WARNING: {len(missing)} DATABASE(S) MISSING — model trains WITHOUT these signals!", flush=True)
+        print("!" * 60, flush=True)
+        for name, path in missing:
+            print(f"  MISSING  {name:30s}  ({path})", flush=True)
+        print("!" * 60, flush=True)
+    else:
+        print(f"\n  All {len(present)} databases present.", flush=True)
+
+    print("=" * 60 + "\n", flush=True)
 
 
 # ============================================================
@@ -508,6 +567,8 @@ class V2OfflineDataLoader:
         Load ALL data needed to build features for a given asset + timeframe.
         Returns dict ready for feature_library_v2.build_all_features().
         """
+        validate_required_dbs()
+
         data = {
             'ohlcv': self.load_ohlcv(symbol, tf),
             'symbol': symbol,

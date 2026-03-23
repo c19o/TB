@@ -450,8 +450,8 @@ def run_smoke_test(tf_name='1h', max_rows=None):
                 smoke_log("XGBoost GPU: not available, using CPU")
 
             w_train = uniqueness[train_idx][train_valid].astype(np.float32)
-            dtrain = xgb.DMatrix(X_train, label=y_train, weight=w_train, feature_names=feature_cols)
-            dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_cols)
+            dtrain = xgb.DMatrix(X_train, label=y_train, weight=w_train, feature_names=feature_cols, nthread=-1)
+            dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_cols, nthread=-1)
 
             model = xgb.train(
                 params, dtrain,

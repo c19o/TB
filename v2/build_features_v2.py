@@ -13,7 +13,9 @@ Usage:
   python build_features_v2.py --symbol BTC --tf 1h 4h 1d
 """
 
-import os, sys, time, argparse, warnings, gc
+import os, sys, time, argparse, warnings, gc, multiprocessing
+
+os.environ['PYTHONUNBUFFERED'] = '1'
 import numpy as np
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -85,8 +87,21 @@ def build_base_features(ohlcv_df, symbol, tf, astro_cache, tweets=None, news=Non
 
 
 
-def build_single_asset(symbol, tf, loader, save=True):
+def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=False, gpu_id=0):
     """Build all features for a single asset + timeframe."""
+    # CUDA_VISIBLE_DEVICES is set per-subprocess by cloud runner (round-robin).
+    # It remaps so the subprocess always sees its assigned GPU as device 0.
+    # When called in-process (mini_train), gpu_id param is used directly.
+    if os.environ.get('CUDA_VISIBLE_DEVICES'):
+        _gpu_id = 0  # remapped by env var
+    else:
+        _gpu_id = gpu_id  # direct assignment
+    try:
+        import cupy as cp
+        cp.cuda.Device(_gpu_id).use()
+    except Exception:
+        pass
+
     t0 = time.time()
     log(f"\n{'='*60}")
     log(f"Building {symbol} — {tf}")
@@ -104,7 +119,7 @@ def build_single_asset(symbol, tf, loader, save=True):
     # Checkpoint: skip if already built
     out_path = os.path.join(V2_DIR, f'features_{symbol}_{tf}.parquet')
     sparse_path = os.path.join(V2_DIR, f'v2_crosses_{symbol}_{tf}.npz')
-    if os.path.exists(out_path) and os.path.exists(sparse_path):
+    if not force and os.path.exists(out_path) and os.path.exists(sparse_path):
         log(f"  [SKIP] Already built: {out_path}")
         return None
 
@@ -126,6 +141,11 @@ def build_single_asset(symbol, tf, loader, save=True):
         htf_data=data.get('htf_data'),
     )
 
+    # Deduplicate columns (can happen when cross sections overlap)
+    if df.columns.duplicated().any():
+        dupes = df.columns[df.columns.duplicated()].tolist()
+        log(f"  WARNING: {len(dupes)} duplicate columns removed: {dupes[:5]}...")
+        df = df.loc[:, ~df.columns.duplicated()]
     log(f"  Base features: {len(df.columns):,} cols")
 
     # Step 2: V2 feature layers (all 20 new layers)
@@ -138,12 +158,18 @@ def build_single_asset(symbol, tf, loader, save=True):
         astro_cache=data['astro_cache'],
         inverse_signals=inverse_signals,
     )
+    # Verify no duplicate columns (root-caused: V2 layers use distinct names)
+    if df.columns.duplicated().any():
+        dupes = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError(f"Unexpected duplicate columns after V2 layers: {dupes[:10]}")
     log(f"  After V2 layers: {len(df.columns):,} cols")
 
     # Step 3: Cross generation (everything × everything → sparse)
     log("  Step 3: Cross generation...")
     df._v2_symbol = symbol  # Tag for per-symbol sparse output naming
-    df = generate_all_crosses(df, tf=tf, save_sparse=True, output_dir=V2_DIR)
+    _gpu_id = int(os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')[0])
+    df = generate_all_crosses(df, tf=tf, gpu_id=_gpu_id, save_sparse=True, output_dir=V2_DIR,
+                              max_crosses=max_crosses)
     # Note: crosses saved as sparse .npz separately (too big for dense DataFrame)
     # df only contains base + V2 layer features
 
@@ -167,7 +193,7 @@ def build_single_asset(symbol, tf, loader, save=True):
 
 def build_worker(args_tuple):
     """Worker for builds. Each asset is independent.
-    ALL GPUs visible — no CUDA_VISIBLE_DEVICES pinning."""
+    GPU routed via CUDA_VISIBLE_DEVICES environment variable."""
     symbol, tf = args_tuple[0], args_tuple[1]
     try:
         loader = V2OfflineDataLoader()
@@ -201,6 +227,7 @@ def _parallel_build(tasks, max_workers, label='builds'):
 
 
 def main():
+    multiprocessing.set_start_method('spawn', force=True)
     parser = argparse.ArgumentParser(description='V2 Multi-Asset Feature Builder')
     parser.add_argument('--symbol', nargs='+', help='Asset symbol(s)')
     parser.add_argument('--tf', nargs='+', default=['1d'], help='Timeframe(s)')

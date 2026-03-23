@@ -76,14 +76,21 @@ except ImportError:
 # Check GPU
 USE_GPU = False
 USE_GPU_XGB = False
+N_GPUS = 0
 try:
-    test_dmat = xgb.DMatrix(np.random.rand(10, 5), label=np.random.randint(0, 2, 10))
+    test_dmat = xgb.DMatrix(np.random.rand(10, 5), label=np.random.randint(0, 2, 10), nthread=-1)
     bst = xgb.train({'tree_method': 'hist', 'device': 'cuda', 'max_depth': 3}, test_dmat, num_boost_round=2)
     USE_GPU = True
     USE_GPU_XGB = True
+    try:
+        from hardware_detect import detect_hardware
+        _hw = detect_hardware()
+        N_GPUS = _hw['n_gpus'] or 1
+    except Exception:
+        N_GPUS = 1
 except:
     pass
-log(f"GPU: {'ENABLED' if USE_GPU else 'CPU only'}")
+log(f"GPU: {'ENABLED' if USE_GPU else 'CPU only'} ({N_GPUS} device{'s' if N_GPUS != 1 else ''})")
 log(f"Dask multi-GPU: {'AVAILABLE' if DASK_AVAILABLE else 'not installed (pip install dask-cuda)'}")
 
 
@@ -270,6 +277,106 @@ def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
     return splits
 
 
+def _cpcv_split_worker(args_tuple):
+    """Train a single XGBoost CPCV split on a specific GPU.
+    Runs in a subprocess for multi-GPU parallelism.
+    Returns: (wi, acc, prec_long, prec_short, mlogloss, best_iter,
+              model_bytes, preds_3c, y_test, test_idx_valid,
+              importance, is_acc, is_mlogloss, is_sharpe)
+    """
+    (wi, train_idx, test_idx, X_data, X_indices, X_indptr, X_shape,
+     y_3class, sample_weights, feature_cols, xgb_params,
+     num_boost_round, tf_name, gpu_id) = args_tuple
+
+    import numpy as np
+    from scipy import sparse
+    import xgboost as xgb
+    from sklearn.metrics import accuracy_score, precision_score, log_loss
+
+    # Reconstruct sparse matrix in worker
+    X_all = sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
+
+    y_train_raw = y_3class[train_idx]
+    y_test_raw = y_3class[test_idx]
+    train_valid = ~np.isnan(y_train_raw)
+    test_valid = ~np.isnan(y_test_raw)
+
+    X_train = X_all[train_idx][train_valid]
+    y_train = y_train_raw[train_valid].astype(int)
+    X_test = X_all[test_idx][test_valid]
+    y_test = y_test_raw[test_valid].astype(int)
+    test_idx_valid = test_idx[test_valid]
+
+    min_train = 50 if tf_name in ('1w', '1d') else 300
+    min_test = 20 if tf_name in ('1w', '1d') else 50
+    n_train = X_train.shape[0]
+    n_test = X_test.shape[0]
+    if n_train < min_train or n_test < min_test:
+        return (wi, None, None, None, None, None, None, None, None, None, None, None, None, None)
+
+    w_train = sample_weights[train_idx][train_valid]
+
+    params = xgb_params.copy()
+    params['device'] = f'cuda:{gpu_id}'
+
+    # 85/15 train/val split for early stopping
+    val_size = max(int(n_train * 0.15), 100)
+    if val_size >= n_train:
+        val_size = max(n_train // 5, 20)
+    X_val_es = X_train[-val_size:]
+    y_val_es = y_train[-val_size:]
+    w_val_es = w_train[-val_size:]
+    X_train_es = X_train[:-val_size]
+    y_train_es = y_train[:-val_size]
+    w_train_es = w_train[:-val_size]
+
+    dtrain = xgb.DMatrix(X_train_es, label=y_train_es, weight=w_train_es,
+                         feature_names=feature_cols, nthread=-1)
+    dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_cols, nthread=-1)
+    model = xgb.train(
+        params, dtrain,
+        num_boost_round=num_boost_round,
+        evals=[(dtrain, 'train'), (dval, 'val')],
+        early_stopping_rounds=50,
+        verbose_eval=0,
+    )
+
+    # OOS predictions
+    dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_cols, nthread=-1)
+    preds_3c = model.predict(dtest)
+    pred_labels = np.argmax(preds_3c, axis=1)
+    acc = float(accuracy_score(y_test, pred_labels))
+    prec_long = float(precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0))
+    prec_short = float(precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0))
+    mlogloss = float(log_loss(y_test, preds_3c, labels=[0, 1, 2]))
+
+    # IS metrics for PBO
+    dtrain_is = xgb.DMatrix(X_train, label=y_train, feature_names=feature_cols, nthread=-1)
+    is_preds_3c = model.predict(dtrain_is)
+    is_pred_labels = np.argmax(is_preds_3c, axis=1)
+    is_acc = float(accuracy_score(y_train, is_pred_labels))
+    is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
+    _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
+    _is_std = np.std(_is_sim_ret, ddof=1)
+    is_sharpe = float(np.mean(_is_sim_ret) / max(_is_std, 1e-10) * np.sqrt(252))
+
+    importance = model.get_score(importance_type='gain')
+
+    # Serialize model
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix='.ubj', delete=False)
+    tmp.close()
+    model.save_model(tmp.name)
+    with open(tmp.name, 'rb') as f:
+        model_bytes = f.read()
+    import os as _os
+    _os.unlink(tmp.name)
+
+    return (wi, acc, prec_long, prec_short, mlogloss, model.best_iteration,
+            model_bytes, preds_3c.copy(), y_test.copy(), test_idx_valid.copy(),
+            importance, is_acc, is_mlogloss, is_sharpe)
+
+
 def _train_xgb_dask(client, params, X_train, y_train, X_test, y_test,
                      w_train=None, feature_names=None,
                      num_boost_round=800, early_stopping_rounds=50):
@@ -331,7 +438,10 @@ if __name__ == '__main__':
   # LOAD DAILY DATA FOR HMM (will re-fit per window)
   # ============================================================
   log(f"\n{elapsed()} Loading daily closes for HMM...")
-  conn = sqlite3.connect(f'{DB_DIR}/btc_prices.db')
+  _btc_db = f'{DB_DIR}/btc_prices.db'
+  if not os.path.exists(_btc_db) or os.path.getsize(_btc_db) == 0:
+      _btc_db = os.path.join(os.path.dirname(DB_DIR), 'btc_prices.db')
+  conn = sqlite3.connect(_btc_db)
   daily = pd.read_sql_query("""
       SELECT open_time, close FROM ohlcv
       WHERE timeframe='1d' AND symbol='BTC/USDT' ORDER BY open_time
@@ -490,10 +600,29 @@ if __name__ == '__main__':
   # CLI ARGS
   # ============================================================
   import argparse
+  from concurrent.futures import ProcessPoolExecutor
   _parser = argparse.ArgumentParser()
   _parser.add_argument('--tf', action='append', help='Only train specific TFs (can repeat)')
+  _parser.add_argument('--boost-rounds', type=int, default=800, help='XGBoost num_boost_round (default 800)')
+  _parser.add_argument('--n-groups', type=int, default=None, help='Override CPCV n_groups (default: per-TF)')
+  _parser.add_argument('--parallel-splits', action='store_true', default=False,
+                        help='(legacy, now auto-detected) Kept for backward compat')
+  _parser.add_argument('--no-parallel-splits', action='store_true', default=False,
+                        help='Force sequential CPCV splits even with multiple GPUs')
   _args, _unknown = _parser.parse_known_args()  # ignore unknown args (e.g. from smoke_test)
   _tf_filter = set(_args.tf) if _args.tf else None
+
+  # Auto-detect parallel splits: ON by default when N_GPUS > 1
+  if _args.no_parallel_splits:
+      _use_parallel_splits = False
+      log("PARALLEL SPLITS: disabled (--no-parallel-splits)")
+  elif USE_GPU and N_GPUS > 1:
+      _use_parallel_splits = True
+      log(f"PARALLEL SPLITS: auto-enabled across {N_GPUS} GPUs (use --no-parallel-splits to disable)")
+  else:
+      _use_parallel_splits = False
+      if N_GPUS <= 1:
+          log("PARALLEL SPLITS: off (single GPU detected)")
 
   # ============================================================
   # MAIN TRAINING LOOP
@@ -510,6 +639,10 @@ if __name__ == '__main__':
 
           db_path = f"{DB_DIR}/{cfg['db']}"
           parquet_path = db_path.replace('.db', '.parquet')
+          # V2 naming: features_BTC_{tf}.parquet (asset-prefixed)
+          v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
+          if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
+              parquet_path = v2_parquet
 
           # Try parquet first (no column limit), fall back to SQLite
           if os.path.exists(parquet_path):
@@ -606,11 +739,7 @@ if __name__ == '__main__':
           if os.path.exists(npz_path):
               try:
                   log(f"  {elapsed()} Loading sparse cross matrix: {npz_path}")
-                  npz_data = np.load(npz_path, allow_pickle=True)
-                  cross_matrix = sp_sparse.csr_matrix(
-                      (npz_data['data'], npz_data['indices'], npz_data['indptr']),
-                      shape=tuple(npz_data['shape'])
-                  )
+                  cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
                   # Load column names (try both naming conventions)
                   cols_path = npz_path.replace('.npz', '_columns.json')
                   if os.path.exists(cols_path):
@@ -704,7 +833,7 @@ if __name__ == '__main__':
                   f"({X_all.nnz / max(1, X_all.shape[0] * X_all.shape[1]) * 100:.2f}% non-zero)")
           else:
               nan_counts = np.isnan(X_all).sum(axis=0)
-              nan_pct = nan_counts / len(X_all) * 100
+              nan_pct = nan_counts / X_all.shape[0] * 100
               sparse_features = (nan_pct > 10).sum()
               log(f"  Sparse features (>10% NaN): {sparse_features} of {len(feature_cols)} — these are esoteric signals")
 
@@ -732,8 +861,11 @@ if __name__ == '__main__':
           log(f"  Sample uniqueness: min={uniqueness.min():.3f} max={uniqueness.max():.3f} mean={uniqueness.mean():.3f}")
 
           # Generate CPCV splits
-          # For small TFs (1w, 1d): fewer groups to avoid tiny folds
-          if tf_name in ('1w', '1d'):
+          if _args.n_groups is not None:
+              n_groups = _args.n_groups
+              n_test_groups = 1
+              log(f"  CPCV override: n_groups={n_groups}, n_test=1 (--n-groups flag)")
+          elif tf_name in ('1w', '1d'):
               n_groups = 4
               n_test_groups = 1
           elif tf_name == '4h':
@@ -767,35 +899,168 @@ if __name__ == '__main__':
           best_model_obj = None
           best_acc = 0
 
-          for wi, (train_idx, test_idx) in enumerate(splits):
-              log(f"\n  --- CPCV Path {wi+1}/{len(splits)} ---")
+          # ── CPCV fold checkpoint: resume from last completed fold on crash ──
+          _cpcv_ckpt_path = os.path.join(DB_DIR, f'cpcv_checkpoint_{tf_name}.pkl')
+          _completed_folds = set()
+          if os.path.exists(_cpcv_ckpt_path):
+              try:
+                  with open(_cpcv_ckpt_path, 'rb') as _ckf:
+                      _ckpt = pickle.load(_ckf)
+                  oos_predictions = _ckpt.get('oos_predictions', [])
+                  window_results = _ckpt.get('window_results', [])
+                  _completed_folds = set(_ckpt.get('completed_folds', []))
+                  best_acc = _ckpt.get('best_acc', 0)
+                  log(f"  CHECKPOINT LOADED: {len(_completed_folds)}/{len(splits)} folds done, resuming")
+              except Exception as _cke:
+                  log(f"  WARNING: checkpoint corrupt ({_cke}), starting fresh")
+                  _completed_folds = set()
 
-              # HMM: re-fit on training data only
-              if 'timestamp' in df.columns:
-                  train_end_date = pd.Timestamp(timestamps[train_idx[-1]])
-                  hmm_df = fit_hmm_on_window(train_end_date)
-                  if hmm_df is not None:
-                      date_norm = pd.to_datetime(timestamps)
-                      if date_norm.tz is not None:
-                          date_norm = date_norm.tz_localize(None)
-                      date_norm = date_norm.normalize()
-                      hmm_df_notz = hmm_df.copy()
-                      if hmm_df_notz.index.tz is not None:
-                          hmm_df_notz.index = hmm_df_notz.index.tz_localize(None)
-                      for hmm_col in ['hmm_bull_prob', 'hmm_bear_prob', 'hmm_neutral_prob', 'hmm_state']:
-                          hmm_mapped = pd.Series(date_norm).map(
-                              hmm_df_notz[hmm_col].to_dict()
-                          ).ffill().values.astype(np.float32)
-                          col_idx = feature_cols.index(hmm_col) if hmm_col in feature_cols else -1
-                          if col_idx >= 0:
-                              if _X_all_is_sparse:
-                                  # Update column in sparse matrix: convert col to dense, update, put back
-                                  X_all = X_all.tolil()
-                                  X_all[:, col_idx] = hmm_mapped.reshape(-1, 1)
-                                  X_all = X_all.tocsr()
+          # Build XGBoost params once (shared by all paths)
+          _base_xgb_params = {**cfg['xgb'], 'objective': 'multi:softprob', 'num_class': 3,
+                              'eval_metric': 'mlogloss', 'verbosity': 0,
+                              'tree_method': 'hist'}
+          if USE_GPU:
+              _base_xgb_params['device'] = 'cuda'
+
+          # Interaction constraints (compute once, used by all paths)
+          _doy_names = [f for f in feature_cols if f.startswith('doy_')]
+          if _doy_names:
+              _trend_kw = ('regime', 'ema50', 'bull', 'bear', 'hmm_', 'trend')
+              _ta_kw = ('rsi_', 'macd', 'bb_', 'atr_', 'sma_', 'ema_', 'adx_', 'stoch_', 'obv', 'vwap', 'cci_', 'mfi_', 'williams', 'ichimoku', 'keltner', 'donchian', 'supertrend', 'sar_')
+              _trend_names = [f for f in feature_cols if any(kw in f for kw in _trend_kw)]
+              _ta_names = [f for f in feature_cols if any(kw in f for kw in _ta_kw)]
+              _constrained = _doy_names + _trend_names + _ta_names
+              if _constrained:
+                  _base_xgb_params['interaction_constraints'] = [_constrained]
+              log(f"  Interaction constraints: 1 group with DOY({len(_doy_names)}) + TREND({len(_trend_names)}) + TA({len(_ta_names)}) = {len(_constrained)} constrained, rest free")
+
+          if _use_parallel_splits and _X_all_is_sparse:
+              # ── Multi-GPU parallel CPCV path ──
+              # NOTE: per-fold HMM re-fitting is skipped in parallel mode (HMM fitted once before loop).
+              # This is the same tradeoff v2_multi_asset_trainer.py makes.
+              log(f"\n  PARALLEL CPCV: distributing {len(splits)} splits across {N_GPUS} GPUs")
+              X_csr = X_all.tocsr()
+              worker_args = []
+              for wi, (train_idx, test_idx) in enumerate(splits):
+                  if wi in _completed_folds:
+                      log(f"  Path {wi+1}/{len(splits)}: SKIP (checkpoint)")
+                      continue
+                  gpu_id = wi % N_GPUS
+                  worker_args.append((
+                      wi, train_idx, test_idx,
+                      X_csr.data, X_csr.indices, X_csr.indptr, X_csr.shape,
+                      y_3class, sample_weights, feature_cols, _base_xgb_params,
+                      _args.boost_rounds, tf_name, gpu_id
+                  ))
+
+              with ProcessPoolExecutor(max_workers=N_GPUS) as executor:
+                  for result in executor.map(_cpcv_split_worker, worker_args):
+                      (wi, acc, prec_long, prec_short, mlogloss_val, best_iter,
+                       model_bytes, preds_3c, y_test, test_idx_valid,
+                       importance, is_acc, is_mlogloss, is_sharpe) = result
+
+                      if acc is None:
+                          log(f"  Path {wi+1}/{len(splits)} (GPU {wi % N_GPUS}): SKIP -- not enough samples")
+                          continue
+
+                      oos_predictions.append({
+                          'path': wi,
+                          'test_indices': test_idx_valid,
+                          'y_true': y_test,
+                          'y_pred_probs': preds_3c,
+                          'y_pred_labels': np.argmax(preds_3c, axis=1),
+                          'is_accuracy': is_acc,
+                          'is_mlogloss': is_mlogloss,
+                          'is_sharpe': is_sharpe,
+                      })
+                      window_results.append({
+                          'window': wi + 1, 'accuracy': acc,
+                          'prec_long': prec_long, 'prec_short': prec_short,
+                          'mlogloss': mlogloss_val,
+                          'train_size': 0, 'test_size': len(y_test),
+                          'n_trees': best_iter,
+                          'importance': importance,
+                      })
+                      log(f"  Path {wi+1}/{len(splits)} (GPU {wi % N_GPUS}): "
+                          f"Acc={acc:.3f} PrecL={prec_long:.3f} PrecS={prec_short:.3f} mlogloss={mlogloss_val:.4f} Trees={best_iter}")
+
+                      if acc > best_acc:
+                          best_acc = acc
+                          # Deserialize best model
+                          import tempfile as _tmpmod
+                          _tmp = _tmpmod.NamedTemporaryFile(suffix='.ubj', delete=False)
+                          _tmp.write(model_bytes)
+                          _tmp.close()
+                          best_model_obj = xgb.Booster()
+                          best_model_obj.load_model(_tmp.name)
+                          os.unlink(_tmp.name)
+
+                      # Checkpoint after each fold (crash-safe resume)
+                      _completed_folds.add(wi)
+                      try:
+                          from atomic_io import atomic_save_pickle
+                          atomic_save_pickle({
+                              'oos_predictions': oos_predictions,
+                              'window_results': window_results,
+                              'completed_folds': list(_completed_folds),
+                              'best_acc': best_acc,
+                          }, _cpcv_ckpt_path)
+                      except ImportError:
+                          with open(_cpcv_ckpt_path, 'wb') as _ckf:
+                              pickle.dump({
+                                  'oos_predictions': oos_predictions,
+                                  'window_results': window_results,
+                                  'completed_folds': list(_completed_folds),
+                                  'best_acc': best_acc,
+                              }, _ckf)
+
+          else:
+              # ── Sequential CPCV path (single GPU or dense matrix) ──
+              for wi, (train_idx, test_idx) in enumerate(splits):
+                  if wi in _completed_folds:
+                      log(f"\n  --- CPCV Path {wi+1}/{len(splits)} --- SKIP (checkpoint)")
+                      continue
+                  log(f"\n  --- CPCV Path {wi+1}/{len(splits)} ---")
+
+                  # HMM: re-fit on training data only
+                  if 'timestamp' in df.columns:
+                      train_end_date = pd.Timestamp(timestamps[train_idx[-1]])
+                      hmm_df = fit_hmm_on_window(train_end_date)
+                      if hmm_df is not None:
+                          date_norm = pd.to_datetime(timestamps)
+                          if date_norm.tz is not None:
+                              date_norm = date_norm.tz_localize(None)
+                          date_norm = date_norm.normalize()
+                          hmm_df_notz = hmm_df.copy()
+                          if hmm_df_notz.index.tz is not None:
+                              hmm_df_notz.index = hmm_df_notz.index.tz_localize(None)
+                          # Batch HMM column update: ONE format conversion instead of 4
+                          _hmm_update_indices = []
+                          _hmm_update_values = []
+                          _hmm_append_cols = []
+                          for hmm_col in ['hmm_bull_prob', 'hmm_bear_prob', 'hmm_neutral_prob', 'hmm_state']:
+                              hmm_mapped = pd.Series(date_norm).map(
+                                  hmm_df_notz[hmm_col].to_dict()
+                              ).ffill().values.astype(np.float32)
+                              col_idx = feature_cols.index(hmm_col) if hmm_col in feature_cols else -1
+                              if col_idx >= 0:
+                                  _hmm_update_indices.append(col_idx)
+                                  _hmm_update_values.append(hmm_mapped)
                               else:
-                                  X_all[:, col_idx] = hmm_mapped
-                          else:
+                                  _hmm_append_cols.append((hmm_col, hmm_mapped))
+                          # Apply batched column updates (single tolil/tocsr round-trip)
+                          if _hmm_update_indices:
+                              if _X_all_is_sparse:
+                                  X_lil = X_all.tolil()
+                                  for ci, cv in zip(_hmm_update_indices, _hmm_update_values):
+                                      X_lil[:, ci] = cv.reshape(-1, 1)
+                                  X_all = X_lil.tocsr()
+                                  del X_lil
+                              else:
+                                  for ci, cv in zip(_hmm_update_indices, _hmm_update_values):
+                                      X_all[:, ci] = cv
+                          # Append any new HMM columns
+                          for hmm_col, hmm_mapped in _hmm_append_cols:
                               if _X_all_is_sparse:
                                   hmm_sparse = sp_sparse.csr_matrix(hmm_mapped.reshape(-1, 1))
                                   X_all = sp_sparse.hstack([X_all, hmm_sparse], format='csr')
@@ -803,143 +1068,143 @@ if __name__ == '__main__':
                                   X_all = np.column_stack([X_all, hmm_mapped])
                               feature_cols.append(hmm_col)
 
-              # Extract train/test using CPCV index arrays
-              y_train_raw = y_3class[train_idx]
-              y_test_raw = y_3class[test_idx]
+                  # Extract train/test using CPCV index arrays
+                  y_train_raw = y_3class[train_idx]
+                  y_test_raw = y_3class[test_idx]
 
-              # Filter out NaN labels
-              train_valid = ~np.isnan(y_train_raw)
-              test_valid = ~np.isnan(y_test_raw)
+                  # Filter out NaN labels
+                  train_valid = ~np.isnan(y_train_raw)
+                  test_valid = ~np.isnan(y_test_raw)
 
-              # Extract train/test — sparse indexing uses same [idx] syntax
-              X_train = X_all[train_idx][train_valid]
-              y_train = y_train_raw[train_valid].astype(int)
-              X_test = X_all[test_idx][test_valid]
-              y_test = y_test_raw[test_valid].astype(int)
-              test_idx_valid = test_idx[test_valid]  # for OOS prediction storage
+                  # Extract train/test — sparse indexing uses same [idx] syntax
+                  X_train = X_all[train_idx][train_valid]
+                  y_train = y_train_raw[train_valid].astype(int)
+                  X_test = X_all[test_idx][test_valid]
+                  y_test = y_test_raw[test_valid].astype(int)
+                  test_idx_valid = test_idx[test_valid]  # for OOS prediction storage
 
-              # NO pre-filtering: XGBoost decides via tree splits, not us.
-              # Zero-variance features get 0 gain naturally. MI screening removed.
-              # Esoteric signals are sparse and low-MI — filtering them kills the edge.
-              _fold_feature_cols = feature_cols
+                  # NO pre-filtering: XGBoost decides via tree splits, not us.
+                  _fold_feature_cols = feature_cols
 
-              # Lower threshold for sparse TFs
-              min_train = 50 if tf_name in ('1w', '1d') else 300
-              min_test = 20 if tf_name in ('1w', '1d') else 50
-              if len(X_train) < min_train or len(X_test) < min_test:
-                  log(f"    SKIP -- not enough valid samples (train={len(X_train)}, test={len(X_test)})")
-                  continue
+                  # Lower threshold for sparse TFs
+                  min_train = 50 if tf_name in ('1w', '1d') else 300
+                  min_test = 20 if tf_name in ('1w', '1d') else 50
+                  _n_train = X_train.shape[0] if hasattr(X_train, 'shape') else len(X_train)
+                  _n_test = X_test.shape[0] if hasattr(X_test, 'shape') else len(X_test)
+                  if _n_train < min_train or _n_test < min_test:
+                      log(f"    SKIP -- not enough valid samples (train={_n_train}, test={_n_test})")
+                      continue
 
-              n_tr_long = (y_train == 2).sum()
-              n_tr_short = (y_train == 0).sum()
-              n_tr_flat = (y_train == 1).sum()
-              log(f"    Train: {len(X_train)} (L={n_tr_long} F={n_tr_flat} S={n_tr_short}), Test: {len(X_test)}")
+                  n_tr_long = (y_train == 2).sum()
+                  n_tr_short = (y_train == 0).sum()
+                  n_tr_flat = (y_train == 1).sum()
+                  log(f"    Train: {_n_train} (L={n_tr_long} F={n_tr_flat} S={n_tr_short}), Test: {_n_test}")
 
-              # XGBoost params — institutional v4 with CPCV
-              params = {**cfg['xgb'], 'objective': 'multi:softprob', 'num_class': 3,
-                        'eval_metric': 'mlogloss', 'verbosity': 0,
-                        'tree_method': 'hist'}
-              if USE_GPU:
-                  params['device'] = 'cuda'
+                  params = _base_xgb_params.copy()
 
-              # Interaction constraints: DOY+TREND+TA in one group, everything else unconstrained
-              # XGBoost 3.x: only constrained features need to be listed. Unlisted = free.
-              _doy_names = [f for f in _fold_feature_cols if f.startswith('doy_')]
-              if _doy_names:
-                  _trend_kw = ('regime', 'ema50', 'bull', 'bear', 'hmm_', 'trend')
-                  _ta_kw = ('rsi_', 'macd', 'bb_', 'atr_', 'sma_', 'ema_', 'adx_', 'stoch_', 'obv', 'vwap', 'cci_', 'mfi_', 'williams', 'ichimoku', 'keltner', 'donchian', 'supertrend', 'sar_')
-                  _trend_names = [f for f in _fold_feature_cols if any(kw in f for kw in _trend_kw)]
-                  _ta_names = [f for f in _fold_feature_cols if any(kw in f for kw in _ta_kw)]
-                  _constrained = _doy_names + _trend_names + _ta_names
-                  if _constrained:
-                      params['interaction_constraints'] = [_constrained]
-                  if wi == 0:
-                      log(f"  Interaction constraints: 1 group with DOY({len(_doy_names)}) + TREND({len(_trend_names)}) + TA({len(_ta_names)}) = {len(_constrained)} constrained, rest free")
+                  w_train = sample_weights[train_idx][train_valid]
 
-              w_train = sample_weights[train_idx][train_valid]
+                  # Split training fold into 85% train + 15% validation for early stopping
+                  # (never use test set for model selection — preserves OOS integrity)
+                  n_tr = X_train.shape[0]
+                  val_size = max(int(n_tr * 0.15), 100)
+                  if val_size >= n_tr:
+                      val_size = max(n_tr // 5, 20)  # fallback for tiny folds
+                  X_val_es = X_train[-val_size:]
+                  y_val_es = y_train[-val_size:]
+                  w_val_es = w_train[-val_size:]
+                  X_train_es = X_train[:-val_size]
+                  y_train_es = y_train[:-val_size]
+                  w_train_es = w_train[:-val_size]
 
-              # Split training fold into 85% train + 15% validation for early stopping
-              # (never use test set for model selection — preserves OOS integrity)
-              n_tr = len(X_train)
-              val_size = max(int(n_tr * 0.15), 100)
-              if val_size >= n_tr:
-                  val_size = max(n_tr // 5, 20)  # fallback for tiny folds
-              X_val_es = X_train[-val_size:]
-              y_val_es = y_train[-val_size:]
-              w_val_es = w_train[-val_size:]
-              X_train_es = X_train[:-val_size]
-              y_train_es = y_train[:-val_size]
-              w_train_es = w_train[:-val_size]
+                  model = None
+                  if DASK_AVAILABLE and USE_GPU_XGB:
+                      client = _get_dask_client()
+                      if client is not None:
+                          model = _train_xgb_dask(
+                              client, params, X_train_es, y_train_es, X_test, y_test,
+                              w_train=w_train_es, feature_names=_fold_feature_cols,
+                              num_boost_round=_args.boost_rounds, early_stopping_rounds=50,
+                          )
 
-              model = None
-              if DASK_AVAILABLE and USE_GPU_XGB:
-                  client = _get_dask_client()
-                  if client is not None:
-                      model = _train_xgb_dask(
-                          client, params, X_train_es, y_train_es, X_test, y_test,
-                          w_train=w_train_es, feature_names=_fold_feature_cols,
-                          num_boost_round=800, early_stopping_rounds=50,
+                  if model is None:
+                      dtrain = xgb.DMatrix(X_train_es, label=y_train_es, weight=w_train_es, feature_names=_fold_feature_cols, nthread=-1)
+                      dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=_fold_feature_cols, nthread=-1)
+                      model = xgb.train(
+                          params, dtrain,
+                          num_boost_round=_args.boost_rounds,
+                          evals=[(dtrain, 'train'), (dval, 'val')],
+                          early_stopping_rounds=50,
+                          verbose_eval=100,
                       )
 
-              if model is None:
-                  dtrain = xgb.DMatrix(X_train_es, label=y_train_es, weight=w_train_es, feature_names=_fold_feature_cols)
-                  dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=_fold_feature_cols)
-                  model = xgb.train(
-                      params, dtrain,
-                      num_boost_round=800,
-                      evals=[(dtrain, 'train'), (dval, 'val')],
-                      early_stopping_rounds=50,
-                      verbose_eval=100,
-                  )
+                  # Predict OOS
+                  dtest_pred = xgb.DMatrix(X_test, label=y_test, feature_names=_fold_feature_cols, nthread=-1)
+                  preds_3c = model.predict(dtest_pred)  # shape (N, 3)
+                  pred_labels = np.argmax(preds_3c, axis=1)
+                  acc = accuracy_score(y_test, pred_labels)
+                  prec_long = precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0)
+                  prec_short = precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0)
+                  mlogloss = log_loss(y_test, preds_3c, labels=[0, 1, 2])
 
-              # Predict OOS
-              dtest_pred = xgb.DMatrix(X_test, label=y_test, feature_names=_fold_feature_cols)
-              preds_3c = model.predict(dtest_pred)  # shape (N, 3)
-              pred_labels = np.argmax(preds_3c, axis=1)
-              acc = accuracy_score(y_test, pred_labels)
-              prec_long = precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0)
-              prec_short = precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0)
-              mlogloss = log_loss(y_test, preds_3c, labels=[0, 1, 2])
+                  # Evaluate IS (full training data) for proper PBO
+                  dtrain_is = xgb.DMatrix(X_train, label=y_train, feature_names=_fold_feature_cols, nthread=-1)
+                  is_preds_3c = model.predict(dtrain_is)
+                  is_pred_labels = np.argmax(is_preds_3c, axis=1)
+                  is_acc = float(accuracy_score(y_train, is_pred_labels))
+                  is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
+                  # IS Sharpe from simulated returns: +1 correct, -1 wrong
+                  _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
+                  _is_std = np.std(_is_sim_ret, ddof=1)
+                  is_sharpe = float(np.mean(_is_sim_ret) / max(_is_std, 1e-10) * np.sqrt(252))
 
-              # Evaluate IS (full training data) for proper PBO
-              dtrain_is = xgb.DMatrix(X_train, label=y_train, feature_names=_fold_feature_cols)
-              is_preds_3c = model.predict(dtrain_is)
-              is_pred_labels = np.argmax(is_preds_3c, axis=1)
-              is_acc = float(accuracy_score(y_train, is_pred_labels))
-              is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
-              # IS Sharpe from simulated returns: +1 correct, -1 wrong
-              _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
-              _is_std = np.std(_is_sim_ret, ddof=1)
-              is_sharpe = float(np.mean(_is_sim_ret) / max(_is_std, 1e-10) * np.sqrt(252))
+                  # Store OOS predictions + IS metrics for meta-labeling and PBO
+                  oos_predictions.append({
+                      'path': wi,
+                      'test_indices': test_idx_valid,
+                      'y_true': y_test,
+                      'y_pred_probs': preds_3c,
+                      'y_pred_labels': pred_labels,
+                      'is_accuracy': is_acc,
+                      'is_mlogloss': is_mlogloss,
+                      'is_sharpe': is_sharpe,
+                  })
 
-              # Store OOS predictions + IS metrics for meta-labeling and PBO
-              oos_predictions.append({
-                  'path': wi,
-                  'test_indices': test_idx_valid,
-                  'y_true': y_test,
-                  'y_pred_probs': preds_3c,
-                  'y_pred_labels': pred_labels,
-                  'is_accuracy': is_acc,
-                  'is_mlogloss': is_mlogloss,
-                  'is_sharpe': is_sharpe,
-              })
+                  # Feature importance for this fold (gain-based)
+                  importance = model.get_score(importance_type='gain')
 
-              # Feature importance for this fold (gain-based)
-              importance = model.get_score(importance_type='gain')
+                  window_results.append({
+                      'window': wi + 1, 'accuracy': acc,
+                      'prec_long': prec_long, 'prec_short': prec_short,
+                      'mlogloss': mlogloss,
+                      'train_size': X_train.shape[0], 'test_size': X_test.shape[0],
+                      'n_trees': model.best_iteration,
+                      'importance': importance,
+                  })
+                  log(f"    Acc={acc:.3f} PrecL={prec_long:.3f} PrecS={prec_short:.3f} mlogloss={mlogloss:.4f} Trees={model.best_iteration}")
 
-              window_results.append({
-                  'window': wi + 1, 'accuracy': acc,
-                  'prec_long': prec_long, 'prec_short': prec_short,
-                  'mlogloss': mlogloss,
-                  'train_size': len(X_train), 'test_size': len(X_test),
-                  'n_trees': model.best_iteration,
-                  'importance': importance,
-              })
-              log(f"    Acc={acc:.3f} PrecL={prec_long:.3f} PrecS={prec_short:.3f} mlogloss={mlogloss:.4f} Trees={model.best_iteration}")
+                  if acc > best_acc:
+                      best_acc = acc
+                      best_model_obj = model
 
-              if acc > best_acc:
-                  best_acc = acc
-                  best_model_obj = model
+                  # Checkpoint after each fold (crash-safe resume)
+                  _completed_folds.add(wi)
+                  try:
+                      from atomic_io import atomic_save_pickle
+                      atomic_save_pickle({
+                          'oos_predictions': oos_predictions,
+                          'window_results': window_results,
+                          'completed_folds': list(_completed_folds),
+                          'best_acc': best_acc,
+                      }, _cpcv_ckpt_path)
+                  except ImportError:
+                      with open(_cpcv_ckpt_path, 'wb') as _ckf:
+                          pickle.dump({
+                              'oos_predictions': oos_predictions,
+                              'window_results': window_results,
+                              'completed_folds': list(_completed_folds),
+                              'best_acc': best_acc,
+                          }, _ckf)
 
           if not window_results:
               log(f"  SKIP -- no valid CPCV paths")
@@ -950,6 +1215,11 @@ if __name__ == '__main__':
           avg_prec_s = np.mean([w['prec_short'] for w in window_results])
           avg_mlogloss = np.mean([w['mlogloss'] for w in window_results])
           log(f"\n  {tf_name.upper()} CPCV AVG ({len(window_results)} paths): Acc={avg_acc:.3f} PrecL={avg_prec_l:.3f} PrecS={avg_prec_s:.3f} mlogloss={avg_mlogloss:.4f}")
+
+          # Clean up CPCV checkpoint — all folds done
+          if os.path.exists(_cpcv_ckpt_path):
+              os.remove(_cpcv_ckpt_path)
+              log(f"  CPCV checkpoint cleaned: {os.path.basename(_cpcv_ckpt_path)}")
 
           # Save OOS predictions for meta-labeling and PBO
           oos_path = os.path.join(DB_DIR, f'cpcv_oos_predictions_{tf_name}.pkl')
@@ -1051,13 +1321,13 @@ if __name__ == '__main__':
                   final_model = _train_xgb_dask(
                       client, final_params, X_tr, y_tr, X_te, y_te,
                       w_train=w_tr, feature_names=feature_cols,
-                      num_boost_round=800, early_stopping_rounds=50,
+                      num_boost_round=_args.boost_rounds, early_stopping_rounds=50,
                   )
 
           if final_model is None:
               print(f"    [Dask fallback] Using single-GPU training")
               # Split train into 85% train + 15% val for early stopping
-              n_tr_final = len(X_tr)
+              n_tr_final = X_tr.shape[0]
               val_sz = max(int(n_tr_final * 0.15), 100)
               if val_sz >= n_tr_final:
                   val_sz = max(n_tr_final // 5, 20)
@@ -1066,14 +1336,14 @@ if __name__ == '__main__':
               X_tr_f = X_tr[:-val_sz]
               y_tr_f = y_tr[:-val_sz]
               w_tr_f = w_tr[:-val_sz]
-              dtrain = xgb.DMatrix(X_tr_f, label=y_tr_f, weight=w_tr_f, feature_names=feature_cols)
-              dval = xgb.DMatrix(X_val_f, label=y_val_f, feature_names=feature_cols)
+              dtrain = xgb.DMatrix(X_tr_f, label=y_tr_f, weight=w_tr_f, feature_names=feature_cols, nthread=-1)
+              dval = xgb.DMatrix(X_val_f, label=y_val_f, feature_names=feature_cols, nthread=-1)
               final_model = xgb.train(
-                  final_params, dtrain, num_boost_round=800,
+                  final_params, dtrain, num_boost_round=_args.boost_rounds,
                   evals=[(dtrain, 'train'), (dval, 'val')], early_stopping_rounds=50, verbose_eval=100,
               )
 
-          dtest_final = xgb.DMatrix(X_te, label=y_te, feature_names=feature_cols)
+          dtest_final = xgb.DMatrix(X_te, label=y_te, feature_names=feature_cols, nthread=-1)
           final_preds_3c = final_model.predict(dtest_final)  # shape (N, 3)
           final_labels = np.argmax(final_preds_3c, axis=1)
           final_acc = accuracy_score(y_te, final_labels)
@@ -1122,7 +1392,7 @@ if __name__ == '__main__':
 
           # Outer fold validation
           log(f"\n  {elapsed()} OUTER FOLD VALIDATION...")
-          dtest_outer = xgb.DMatrix(X_te, feature_names=feature_cols)
+          dtest_outer = xgb.DMatrix(X_te, feature_names=feature_cols, nthread=-1)
           outer_raw_3c = final_model.predict(dtest_outer)  # shape (N, 3)
 
           if platt is not None:

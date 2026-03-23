@@ -61,6 +61,8 @@ def atomic_save_json(obj, path, indent=2):
             return float(o)
         if isinstance(o, np.ndarray):
             return o.tolist()
+        if isinstance(o, (np.str_, np.bytes_)):
+            return str(o)
         raise TypeError(f"Not serializable: {type(o)}")
 
     with atomic_save(path) as tmp:

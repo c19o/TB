@@ -186,7 +186,9 @@ def load_tf_data(tf_name: str):
     features_all_path = f"{DB_DIR}/features_{tf_name}_all.json"
     features_pruned_path = f"{DB_DIR}/features_{tf_name}_pruned.json"
 
-    if not os.path.exists(db_path):
+    # V2 naming: features_BTC_{tf}.parquet
+    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
+    if not os.path.exists(db_path) and not os.path.exists(db_path.replace('.db', '.parquet')) and not os.path.exists(v2_parquet):
         print(f"  SKIP {tf_name} — {cfg['db']} not found")
         return None
     if not os.path.exists(model_path):
@@ -206,6 +208,8 @@ def load_tf_data(tf_name: str):
 
     # Load data — try parquet first (no column limit), fall back to SQLite
     parquet_path = db_path.replace('.db', '.parquet')
+    if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
+        parquet_path = v2_parquet
     if os.path.exists(parquet_path):
         df = pd.read_parquet(parquet_path)
         print(f"  Loaded from parquet: {parquet_path}")
@@ -314,7 +318,7 @@ def load_tf_data(tf_name: str):
         model.set_param({'device': 'cuda'})
 
     # Predict on full test window (3-class softprob: SHORT=0, FLAT=1, LONG=2)
-    dtest_all = xgb.DMatrix(X_model[vs:ve], feature_names=model_features)
+    dtest_all = xgb.DMatrix(X_model[vs:ve], feature_names=model_features, nthread=-1)
     raw_preds = model.predict(dtest_all)
 
     # For 3-class: raw_preds shape is (N, 3) -> use max class prob as confidence

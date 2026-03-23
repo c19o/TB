@@ -42,7 +42,7 @@ def compute_rsi(series, period=14):
 # Check GPU
 USE_GPU = False
 try:
-    d = xgb.DMatrix(np.random.rand(10, 5), label=np.random.randint(0, 2, 10))
+    d = xgb.DMatrix(np.random.rand(10, 5), label=np.random.randint(0, 2, 10), nthread=-1)
     xgb.train({'tree_method': 'gpu_hist', 'device': 'cuda', 'max_depth': 3}, d, num_boost_round=2)
     USE_GPU = True
 except:
@@ -146,11 +146,7 @@ npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
 if os.path.exists(npz_path):
     try:
         print(f"  Loading sparse cross matrix: {npz_path}", flush=True)
-        npz_data = np.load(npz_path, allow_pickle=True)
-        cross_matrix = sp_sparse.csr_matrix(
-            (npz_data['data'], npz_data['indices'], npz_data['indptr']),
-            shape=tuple(npz_data['shape'])
-        )
+        cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
         # Load column names — try both naming conventions
         cols_path_v1 = npz_path.replace('.npz', '_columns.json')
         cols_path_v2 = os.path.join(DB_DIR, f'v2_cross_names_BTC_{tf_name}.json')
@@ -204,8 +200,8 @@ if USE_GPU:
     params['device'] = 'cuda'
 
 # Normal accuracy
-dtrain = xgb.DMatrix(X_train, label=y_train)
-dtest = xgb.DMatrix(X_test, label=y_test)
+dtrain = xgb.DMatrix(X_train, label=y_train, nthread=-1)
+dtest = xgb.DMatrix(X_test, label=y_test, nthread=-1)
 model = xgb.train(params, dtrain, num_boost_round=500,
                    evals=[(dtest, 'test')], early_stopping_rounds=50, verbose_eval=False)
 normal_preds = np.argmax(model.predict(dtest).reshape(-1, 3), axis=1)
@@ -216,7 +212,7 @@ np.random.seed(42)
 y_train_shuffled = y_train.copy()
 np.random.shuffle(y_train_shuffled)
 
-dtrain_shuf = xgb.DMatrix(X_train, label=y_train_shuffled)
+dtrain_shuf = xgb.DMatrix(X_train, label=y_train_shuffled, nthread=-1)
 model_shuf = xgb.train(params, dtrain_shuf, num_boost_round=500,
                         evals=[(dtest, 'test')], early_stopping_rounds=50, verbose_eval=False)
 shuf_preds = np.argmax(model_shuf.predict(dtest).reshape(-1, 3), axis=1)
@@ -248,8 +244,8 @@ own_idx = [feature_cols.index(c) for c in own_cols]
 X_train_own = X[:split][tradeable_train][:, own_idx]
 X_test_own = X[test_start:][tradeable_test][:, own_idx]
 
-dtrain_own = xgb.DMatrix(X_train_own, label=y_train)
-dtest_own = xgb.DMatrix(X_test_own, label=y_test)
+dtrain_own = xgb.DMatrix(X_train_own, label=y_train, nthread=-1)
+dtest_own = xgb.DMatrix(X_test_own, label=y_test, nthread=-1)
 model_own = xgb.train(params, dtrain_own, num_boost_round=500,
                        evals=[(dtest_own, 'test')], early_stopping_rounds=50, verbose_eval=False)
 own_preds = np.argmax(model_own.predict(dtest_own).reshape(-1, 3), axis=1)

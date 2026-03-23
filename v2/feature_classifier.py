@@ -175,8 +175,8 @@ def train_dual_models(features, forward_return, direction, use_gpu):
     # --- Model A: Direction classifier ---
     print(f"  {elapsed_str(start)} Training Model A (direction classifier)...")
     params_a = {**base_params, "objective": "binary:logistic", "eval_metric": "auc"}
-    dtrain_a = xgb.DMatrix(X_train, label=y_dir_train)
-    dtest_a = xgb.DMatrix(X_test, label=y_dir_test)
+    dtrain_a = xgb.DMatrix(X_train, label=y_dir_train, nthread=-1)
+    dtest_a = xgb.DMatrix(X_test, label=y_dir_test, nthread=-1)
     model_a = xgb.train(params_a, dtrain_a, num_boost_round=500,
                          evals=[(dtest_a, "test")],
                          early_stopping_rounds=50, verbose_eval=False)
@@ -187,8 +187,8 @@ def train_dual_models(features, forward_return, direction, use_gpu):
     # --- Model B: Volatility regressor ---
     print(f"  {elapsed_str(start)} Training Model B (volatility regressor)...")
     params_b = {**base_params, "objective": "reg:squarederror", "eval_metric": "rmse"}
-    dtrain_b = xgb.DMatrix(X_train, label=y_vol_train)
-    dtest_b = xgb.DMatrix(X_test, label=y_vol_test)
+    dtrain_b = xgb.DMatrix(X_train, label=y_vol_train, nthread=-1)
+    dtest_b = xgb.DMatrix(X_test, label=y_vol_test, nthread=-1)
     model_b = xgb.train(params_b, dtrain_b, num_boost_round=500,
                          evals=[(dtest_b, "test")],
                          early_stopping_rounds=50, verbose_eval=False)

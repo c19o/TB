@@ -2,7 +2,7 @@
 """
 v2_cloud_runner.py — V2 Production Cloud Training Orchestrator
 ================================================================
-6-phase pipeline: manifest checkpoint/resume, heartbeat monitoring,
+7-phase pipeline: manifest checkpoint/resume, heartbeat monitoring,
 OOM retry with halved batch, background download, smart dep install.
 
 ALL GPUs work in unison per step — no CUDA_VISIBLE_DEVICES pinning.
@@ -14,6 +14,7 @@ Phases:
   4. Validation         — PBO + Deflated Sharpe from OOS predictions
   5. Meta-Labeling      — Logistic/shallow XGB meta-model per tf
   6. LSTM               — v2_lstm_trainer.py per tf, all GPUs
+  7. Audit Report       — backtesting_audit.py per tf
 
 Usage:
   python v2_cloud_runner.py                                    # full pipeline
@@ -167,17 +168,22 @@ def heartbeat_thread(state, interval=60):
 
 # ── Subprocess Execution ─────────────────────────────────────
 
-def _make_env():
-    """Env for subprocesses: unbuffered, ALL GPUs visible, V1 DB path."""
+def _make_env(env_overrides=None):
+    """Env for subprocesses: unbuffered, V1 DB path.
+    env_overrides: optional dict of extra env vars to set (thread-safe, no os.environ mutation).
+    CUDA_VISIBLE_DEVICES is passed through from env_overrides (round-robin GPU assignment).
+    """
     env = os.environ.copy()
     env['PYTHONUNBUFFERED'] = '1'
-    env.pop('CUDA_VISIBLE_DEVICES', None)  # ALL GPUs in unison
     env['SAVAGE22_V1_DIR'] = os.path.dirname(V2_DIR)
+    if env_overrides:
+        env.update(env_overrides)
     return env
 
 
-def run_step(cmd, step_name, timeout=7200):
+def run_step(cmd, step_name, timeout=7200, env_overrides=None):
     """Run subprocess with streaming output and OOM detection.
+    env_overrides: optional dict of extra env vars passed to subprocess (thread-safe).
     Returns (success, oom_detected, output_lines).
     """
     log(f"START [{step_name}]: {cmd}")
@@ -186,7 +192,7 @@ def run_step(cmd, step_name, timeout=7200):
     try:
         proc = subprocess.Popen(
             cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            universal_newlines=True, bufsize=1, env=_make_env(), cwd=V2_DIR)
+            universal_newlines=True, bufsize=1, env=_make_env(env_overrides), cwd=V2_DIR)
         deadline = time.time() + timeout if timeout else None
         for line in proc.stdout:
             text = line.rstrip('\n')
@@ -214,29 +220,31 @@ def run_step(cmd, step_name, timeout=7200):
 
 
 def run_step_with_oom_retry(cmd, step_name, timeout=7200,
-                             env_var=None, reduction=0.5, max_retries=4):
-    """Wraps run_step. On OOM + env_var provided: progressively reduce value, retry up to max_retries."""
-    success, oom, output = run_step(cmd, step_name, timeout)
+                             env_var=None, reduction=0.5, max_retries=4,
+                             env_overrides=None):
+    """Wraps run_step. On OOM + env_var provided: progressively reduce value, retry up to max_retries.
+    Thread-safe: passes env overrides to subprocess via _make_env() instead of mutating os.environ.
+    env_overrides: optional dict of extra env vars (e.g. CUDA_VISIBLE_DEVICES) forwarded to every attempt.
+    """
+    success, oom, output = run_step(cmd, step_name, timeout, env_overrides=env_overrides)
     if success or not oom or not env_var:
         return success, oom, output
 
     current = os.environ.get(env_var)
     defaults = {'V2_RIGHT_CHUNK': 500, 'V2_BATCH_SIZE': 256, 'V2_GPU_BATCH': 25}
     base = int(current) if current else defaults.get(env_var, 100)
+    out2 = output  # Initialize in case max_retries=0
 
     for attempt in range(max_retries):
         new_val = max(1, int(base * (reduction ** (attempt + 1))))
         log(f"OOM RETRY {attempt+1}/{max_retries} [{step_name}]: {env_var} -> {new_val}")
-        os.environ[env_var] = str(new_val)
-        s2, o2, out2 = run_step(cmd, f"{step_name}_retry{attempt+1}", timeout)
+        merged = dict(env_overrides) if env_overrides else {}
+        merged[env_var] = str(new_val)
+        s2, o2, out2 = run_step(cmd, f"{step_name}_retry{attempt+1}", timeout,
+                                env_overrides=merged)
         if s2 or not o2:
-            # Restore original
-            if current: os.environ[env_var] = current
-            else: os.environ.pop(env_var, None)
             return s2, o2, out2
 
-    if current: os.environ[env_var] = current
-    else: os.environ.pop(env_var, None)
     return False, True, out2
 
 
@@ -245,12 +253,16 @@ def run_step_with_oom_retry(cmd, step_name, timeout=7200,
 REQUIRED = {'lightgbm': 'lightgbm', 'sklearn': 'scikit-learn', 'scipy': 'scipy',
             'hmmlearn': 'hmmlearn', 'psutil': 'psutil', 'optuna': 'optuna',
             'numba': 'numba', 'torch': 'torch', 'xgboost': 'xgboost',
-            'cupy': 'cupy-cuda12x', 'cudf': 'cudf', 'cuml': 'cuml',
-            'pandas': 'pandas', 'dask_cuda': 'dask-cuda', 'dask': 'dask',
+            'cupy': 'cupy-cuda12x',
+            'pandas': 'pandas', 'dask': 'dask',
             'distributed': 'distributed', 'pyarrow': 'pyarrow'}
 
+# These come pre-installed in RAPIDS Docker image — can't be pip-installed.
+# Only check + warn, never pip install.
+RAPIDS_CHECK = {'cudf': 'cudf', 'cuml': 'cuml', 'dask_cuda': 'dask-cuda'}
+
 def install_deps():
-    """Only pip-install packages that fail to import."""
+    """Only pip-install packages that fail to import. RAPIDS packages are checked but not installed."""
     log("Checking dependencies...")
     missing = []
     for imp, pip in REQUIRED.items():
@@ -259,19 +271,28 @@ def install_deps():
         except ImportError:
             missing.append(pip)
     if not missing:
-        log("All dependencies installed")
-        return
-    log(f"Installing: {', '.join(missing)}")
-    run_step(f"{sys.executable} -m pip install {' '.join(missing)} --quiet",
-             'pip_install', timeout=600)
-    for imp, pip in REQUIRED.items():
+        log("All pip dependencies installed")
+    else:
+        log(f"Installing: {', '.join(missing)}")
+        run_step(f"{sys.executable} -m pip install {' '.join(missing)} --quiet",
+                 'pip_install', timeout=600)
+        for imp, pip in REQUIRED.items():
+            try:
+                __import__(imp)
+            except ImportError:
+                log(f"WARNING: {pip} still missing after install")
+    # Check RAPIDS packages (pre-installed in Docker, not pip-installable)
+    for imp, pkg in RAPIDS_CHECK.items():
         try:
             __import__(imp)
         except ImportError:
-            log(f"WARNING: {pip} still missing after install")
+            log(f"WARNING: {pkg} not available — expected in RAPIDS Docker image, not pip-installable")
 
 
 # ── Manifest (checkpoint/resume) ─────────────────────────────
+
+_manifest_lock = threading.Lock()
+
 
 def load_manifest():
     if os.path.exists(MANIFEST_PATH):
@@ -286,7 +307,8 @@ def load_manifest():
             'started_at': None, 'completed_at': None}
 
 
-def save_manifest(manifest):
+def _write_manifest(manifest):
+    """Write manifest to disk (caller must hold _manifest_lock)."""
     try:
         from atomic_io import atomic_save_json
         atomic_save_json(manifest, MANIFEST_PATH)
@@ -297,13 +319,19 @@ def save_manifest(manifest):
         os.replace(tmp, MANIFEST_PATH)
 
 
+def save_manifest(manifest):
+    with _manifest_lock:
+        _write_manifest(manifest)
+
+
 def update_step(manifest, phase, step_id, status, **kw):
-    pk = f'phase_{phase}'
-    if pk not in manifest['phases']:
-        manifest['phases'][pk] = {}
-    manifest['phases'][pk][step_id] = {
-        'status': status, 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ'), **kw}
-    save_manifest(manifest)
+    with _manifest_lock:
+        pk = f'phase_{phase}'
+        if pk not in manifest['phases']:
+            manifest['phases'][pk] = {}
+        manifest['phases'][pk][step_id] = {
+            'status': status, 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ'), **kw}
+        _write_manifest(manifest)
 
 
 def is_step_done(manifest, phase, step_id):
@@ -340,8 +368,8 @@ def run_phase_1(state, manifest, args):
     done = 0
     completed_tfs = []   # track TFs whose builds all finished (for phase pipelining)
 
-    def _build_one(symbol, tf):
-        """Build a single symbol/tf. Returns (step_id, status)."""
+    def _build_one(symbol, tf, gpu_id=0):
+        """Build a single symbol/tf on a specific GPU. Returns (step_id, status)."""
         step_id = f'build_{symbol}_{tf}'
         parquet = os.path.join(V2_DIR, f'features_{symbol}_{tf}.parquet')
         npz = os.path.join(V2_DIR, f'v2_crosses_{symbol}_{tf}.npz')
@@ -355,10 +383,11 @@ def run_phase_1(state, manifest, args):
             update_step(manifest, 1, step_id, 'OK', parquet=parquet, npz=npz)
             return step_id, 'SKIP'
 
-        state.start_step(step_id, f'Building {symbol} {tf}')
+        state.start_step(step_id, f'Building {symbol} {tf} [GPU {gpu_id}]')
         cmd = f"{sys.executable} -u build_features_v2.py --symbol {symbol} --tf {tf}"
         success, oom, _ = run_step_with_oom_retry(
-            cmd, step_id, timeout=7200, env_var='V2_RIGHT_CHUNK', reduction=0.5)
+            cmd, step_id, timeout=7200, env_var='V2_RIGHT_CHUNK', reduction=0.5,
+            env_overrides={'CUDA_VISIBLE_DEVICES': str(gpu_id)})
 
         status = 'OK' if success else ('FAIL:OOM' if oom else 'FAIL:exit')
         update_step(manifest, 1, step_id, status, parquet=parquet, npz=npz)
@@ -372,8 +401,8 @@ def run_phase_1(state, manifest, args):
     # NOTE: _build_one is a closure (captures manifest/state) so it can't be pickled
     # for ProcessPoolExecutor. We use ThreadPoolExecutor here because _build_one
     # launches subprocesses via run_step() — the actual builds run in separate
-    # Python processes, each seeing ALL GPUs. The ThreadPool just manages
-    # concurrent subprocess launches.
+    # Python processes with round-robin GPU assignment via CUDA_VISIBLE_DEVICES.
+    # The ThreadPool just manages concurrent subprocess launches.
     try:
         from hardware_detect import detect_hardware
         _hw = detect_hardware()
@@ -387,8 +416,10 @@ def run_phase_1(state, manifest, args):
         log(f"  TF={tf}: {len(assets)} assets ({build_workers} concurrent workers)")
 
         with ThreadPoolExecutor(max_workers=build_workers) as build_pool:
-            futures = {build_pool.submit(_build_one, symbol, tf): symbol
-                       for symbol in assets}
+            futures = {}
+            for i, symbol in enumerate(assets):
+                gpu_id = i % n_gpus_build
+                futures[build_pool.submit(_build_one, symbol, tf, gpu_id)] = symbol
             for future in as_completed(futures):
                 step_id, status = future.result()
                 symbol = futures[future]
@@ -539,171 +570,214 @@ def run_phase_3(state, manifest, args):
 
 # ── Phase 4: Validation (in-process) ────────────────────────
 
+def _validate_one_tf(tf, state, manifest):
+    """Validate a single TF — designed for ThreadPoolExecutor."""
+    step_id = f'validate_{tf}'
+    if is_step_done(manifest, 4, step_id):
+        log(f"SKIP {step_id} (done)")
+        return step_id, 'SKIP'
+
+    existing = glob.glob(os.path.join(V2_DIR, f'validation_report_*_{tf}.json'))
+    if existing:
+        log(f"SKIP {step_id} (report exists)")
+        update_step(manifest, 4, step_id, 'OK', report=existing[0])
+        return step_id, 'OK'
+
+    oos_files = glob.glob(os.path.join(V2_DIR, f'oos_predictions_*_{tf}.pkl'))
+    if not oos_files:
+        log(f"SKIP {step_id} — no OOS predictions for {tf}")
+        update_step(manifest, 4, step_id, 'SKIP:no_oos')
+        return step_id, 'SKIP'
+
+    state.start_step(step_id, f'Validating {tf}')
+    try:
+        import pickle
+        from backtest_validation import validation_report
+        for oos_path in oos_files:
+            bn = os.path.basename(oos_path)
+            mode_part = bn.replace('oos_predictions_', '').replace(f'_{tf}.pkl', '')
+            rpt_path = os.path.join(V2_DIR, f'validation_report_{mode_part}_{tf}.json')
+            if os.path.exists(rpt_path):
+                log(f"  Exists: {os.path.basename(rpt_path)}")
+                continue
+            log(f"  Validating: {bn}")
+            with open(oos_path, 'rb') as f:
+                oos = pickle.load(f)
+            is_metrics = None
+            if isinstance(oos, list) and oos and 'is_accuracy' in oos[0]:
+                is_metrics = [{'path': p.get('path_idx', i),
+                               'is_accuracy': p.get('is_accuracy'),
+                               'is_sharpe': p.get('is_sharpe')}
+                              for i, p in enumerate(oos)]
+                log(f"    IS metrics found: {len(is_metrics)} folds")
+            report = validation_report(oos, tf_name=tf, is_metrics=is_metrics)
+            try:
+                from atomic_io import atomic_save_json
+                atomic_save_json(report, rpt_path)
+            except ImportError:
+                with open(rpt_path, 'w') as f:
+                    json.dump(report, f, indent=2, default=str)
+            log(f"  Saved: {os.path.basename(rpt_path)}")
+            if isinstance(report, dict):
+                pbo = report.get('pbo', {})
+                if isinstance(pbo, dict):
+                    log(f"    PBO lambda={pbo.get('pbo_lambda','N/A')}, "
+                        f"p={pbo.get('pbo_pvalue','N/A')}")
+                ds = report.get('deflated_sharpe', {})
+                if isinstance(ds, dict):
+                    log(f"    Deflated Sharpe p={ds.get('p_value','N/A')}")
+        update_step(manifest, 4, step_id, 'OK')
+        state.finish_step(step_id, 'OK')
+        return step_id, 'OK'
+    except Exception as e:
+        log(f"  Validation FAILED for {tf}: {e}")
+        import traceback; traceback.print_exc()
+        update_step(manifest, 4, step_id, f'FAIL:{e}')
+        state.finish_step(step_id, f'FAIL:{e}')
+        return step_id, f'FAIL:{e}'
+
+
 def run_phase_4(state, manifest, args):
     log("=" * 60)
-    log("PHASE 4: VALIDATION")
+    log("PHASE 4: VALIDATION (parallel across TFs)")
     log("=" * 60)
-    for tf in args.tf:
-        step_id = f'validate_{tf}'
-        if is_step_done(manifest, 4, step_id):
-            log(f"SKIP {step_id} (done)")
-            continue
-
-        existing = glob.glob(os.path.join(V2_DIR, f'validation_report_*_{tf}.json'))
-        if existing:
-            log(f"SKIP {step_id} (report exists)")
-            update_step(manifest, 4, step_id, 'OK', report=existing[0])
-            continue
-
-        oos_files = glob.glob(os.path.join(V2_DIR, f'oos_predictions_*_{tf}.pkl'))
-        if not oos_files:
-            log(f"SKIP {step_id} — no OOS predictions for {tf}")
-            update_step(manifest, 4, step_id, 'SKIP:no_oos')
-            continue
-
-        state.start_step(step_id, f'Validating {tf}')
-        try:
-            import pickle
-            from backtest_validation import validation_report
-            for oos_path in oos_files:
-                bn = os.path.basename(oos_path)
-                mode_part = bn.replace('oos_predictions_', '').replace(f'_{tf}.pkl', '')
-                rpt_path = os.path.join(V2_DIR, f'validation_report_{mode_part}_{tf}.json')
-                if os.path.exists(rpt_path):
-                    log(f"  Exists: {os.path.basename(rpt_path)}")
-                    continue
-                log(f"  Validating: {bn}")
-                with open(oos_path, 'rb') as f:
-                    oos = pickle.load(f)
-                # Extract IS metrics from OOS predictions for proper PBO
-                is_metrics = None
-                if isinstance(oos, list) and oos and 'is_accuracy' in oos[0]:
-                    is_metrics = [{'path': p.get('path_idx', i),
-                                   'is_accuracy': p.get('is_accuracy'),
-                                   'is_sharpe': p.get('is_sharpe')}
-                                  for i, p in enumerate(oos)]
-                    log(f"    IS metrics found: {len(is_metrics)} folds")
-                report = validation_report(oos, tf_name=tf, is_metrics=is_metrics)
-                try:
-                    from atomic_io import atomic_save_json
-                    atomic_save_json(report, rpt_path)
-                except ImportError:
-                    with open(rpt_path, 'w') as f:
-                        json.dump(report, f, indent=2, default=str)
-                log(f"  Saved: {os.path.basename(rpt_path)}")
-                if isinstance(report, dict):
-                    pbo = report.get('pbo', {})
-                    if isinstance(pbo, dict):
-                        log(f"    PBO lambda={pbo.get('pbo_lambda','N/A')}, "
-                            f"p={pbo.get('pbo_pvalue','N/A')}")
-                    ds = report.get('deflated_sharpe', {})
-                    if isinstance(ds, dict):
-                        log(f"    Deflated Sharpe p={ds.get('p_value','N/A')}")
-            update_step(manifest, 4, step_id, 'OK')
-            state.finish_step(step_id, 'OK')
-        except Exception as e:
-            log(f"  Validation FAILED for {tf}: {e}")
-            import traceback; traceback.print_exc()
-            update_step(manifest, 4, step_id, f'FAIL:{e}')
-            state.finish_step(step_id, f'FAIL:{e}')
-        gpu_cleanup(f"phase4_validate_{tf}")
+    with ThreadPoolExecutor(max_workers=len(args.tf)) as pool:
+        futures = {pool.submit(_validate_one_tf, tf, state, manifest): tf for tf in args.tf}
+        for future in as_completed(futures):
+            step_id, status = future.result()
+            gpu_cleanup(f"phase4_validate_{futures[future]}")
     log("Phase 4 complete")
 
 
 # ── Phase 5: Meta-Labeling (in-process) ─────────────────────
 
+def _meta_label_one_tf(tf, state, manifest):
+    """Train meta-model for a single TF — designed for ThreadPoolExecutor."""
+    step_id = f'meta_{tf}'
+    if is_step_done(manifest, 5, step_id):
+        log(f"SKIP {step_id} (done)")
+        return step_id, 'SKIP'
+
+    existing = (glob.glob(os.path.join(V2_DIR, f'meta_model_{tf}.pkl'))
+                + glob.glob(os.path.join(V2_DIR, f'meta_model_*_{tf}.pkl')))
+    if existing:
+        log(f"SKIP {step_id} (model exists)")
+        update_step(manifest, 5, step_id, 'OK', model=existing[0])
+        return step_id, 'OK'
+
+    oos_files = glob.glob(os.path.join(V2_DIR, f'oos_predictions_*_{tf}.pkl'))
+    if not oos_files:
+        log(f"SKIP {step_id} — no OOS predictions for {tf}")
+        update_step(manifest, 5, step_id, 'SKIP:no_oos')
+        return step_id, 'SKIP'
+
+    state.start_step(step_id, f'Meta-labeling {tf}')
+    try:
+        import pickle
+        from meta_labeling import train_meta_model
+        for oos_path in oos_files:
+            bn = os.path.basename(oos_path)
+            mode_part = bn.replace('oos_predictions_', '').replace(f'_{tf}.pkl', '')
+            model_path = os.path.join(V2_DIR, f'meta_model_{tf}.pkl')
+            if os.path.exists(model_path):
+                log(f"  Exists: {os.path.basename(model_path)}")
+                continue
+            log(f"  Training meta-model from: {bn}")
+            with open(oos_path, 'rb') as f:
+                oos = pickle.load(f)
+            result = train_meta_model(oos, tf_name=tf, db_dir=V2_DIR)
+            if result is not None:
+                try:
+                    from atomic_io import atomic_save_pickle
+                    atomic_save_pickle(result, model_path)
+                except ImportError:
+                    with open(model_path, 'wb') as f:
+                        pickle.dump(result, f)
+                log(f"  Saved: {os.path.basename(model_path)}")
+                m = result.get('metrics', {})
+                if m:
+                    log(f"    acc={m.get('accuracy','N/A')}, "
+                        f"auc={m.get('auc','N/A')}, "
+                        f"thr={result.get('threshold','N/A')}")
+            else:
+                log(f"  Meta-model returned None for {bn}")
+        update_step(manifest, 5, step_id, 'OK')
+        state.finish_step(step_id, 'OK')
+        return step_id, 'OK'
+    except Exception as e:
+        log(f"  Meta-labeling FAILED for {tf}: {e}")
+        import traceback; traceback.print_exc()
+        update_step(manifest, 5, step_id, f'FAIL:{e}')
+        state.finish_step(step_id, f'FAIL:{e}')
+        return step_id, f'FAIL:{e}'
+
+
 def run_phase_5(state, manifest, args):
     log("=" * 60)
-    log("PHASE 5: META-LABELING")
+    log("PHASE 5: META-LABELING (parallel across TFs)")
     log("=" * 60)
-    for tf in args.tf:
-        step_id = f'meta_{tf}'
-        if is_step_done(manifest, 5, step_id):
-            log(f"SKIP {step_id} (done)")
-            continue
-
-        existing = glob.glob(os.path.join(V2_DIR, f'meta_model_*_{tf}.pkl'))
-        if existing:
-            log(f"SKIP {step_id} (model exists)")
-            update_step(manifest, 5, step_id, 'OK', model=existing[0])
-            continue
-
-        oos_files = glob.glob(os.path.join(V2_DIR, f'oos_predictions_*_{tf}.pkl'))
-        if not oos_files:
-            log(f"SKIP {step_id} — no OOS predictions for {tf}")
-            update_step(manifest, 5, step_id, 'SKIP:no_oos')
-            continue
-
-        state.start_step(step_id, f'Meta-labeling {tf}')
-        try:
-            import pickle
-            from meta_labeling import train_meta_model
-            for oos_path in oos_files:
-                bn = os.path.basename(oos_path)
-                mode_part = bn.replace('oos_predictions_', '').replace(f'_{tf}.pkl', '')
-                model_path = os.path.join(V2_DIR, f'meta_model_{tf}.pkl')
-                if os.path.exists(model_path):
-                    log(f"  Exists: {os.path.basename(model_path)}")
-                    continue
-                log(f"  Training meta-model from: {bn}")
-                with open(oos_path, 'rb') as f:
-                    oos = pickle.load(f)
-                result = train_meta_model(oos, tf_name=tf, db_dir=V2_DIR)
-                if result is not None:
-                    try:
-                        from atomic_io import atomic_save_pickle
-                        atomic_save_pickle(result, model_path)
-                    except ImportError:
-                        with open(model_path, 'wb') as f:
-                            pickle.dump(result, f)
-                    log(f"  Saved: {os.path.basename(model_path)}")
-                    m = result.get('metrics', {})
-                    if m:
-                        log(f"    acc={m.get('accuracy','N/A')}, "
-                            f"auc={m.get('auc','N/A')}, "
-                            f"thr={result.get('threshold','N/A')}")
-                else:
-                    log(f"  Meta-model returned None for {bn}")
-            update_step(manifest, 5, step_id, 'OK')
-            state.finish_step(step_id, 'OK')
-        except Exception as e:
-            log(f"  Meta-labeling FAILED for {tf}: {e}")
-            import traceback; traceback.print_exc()
-            update_step(manifest, 5, step_id, f'FAIL:{e}')
-            state.finish_step(step_id, f'FAIL:{e}')
-        gpu_cleanup(f"phase5_meta_{tf}")
+    with ThreadPoolExecutor(max_workers=len(args.tf)) as pool:
+        futures = {pool.submit(_meta_label_one_tf, tf, state, manifest): tf for tf in args.tf}
+        for future in as_completed(futures):
+            step_id, status = future.result()
+            gpu_cleanup(f"phase5_meta_{futures[future]}")
     log("Phase 5 complete")
 
 
 # ── Phase 6: LSTM ────────────────────────────────────────────
 
+def _lstm_one_tf(tf, state, manifest, gpu_id=None):
+    """Train LSTM for a single TF — designed for ThreadPoolExecutor with GPU routing."""
+    step_id = f'lstm_{tf}'
+    if is_step_done(manifest, 6, step_id):
+        log(f"SKIP {step_id} (done)")
+        return step_id, 'SKIP'
+
+    state.start_step(step_id, f'LSTM training {tf}')
+    oos_candidates = glob.glob(os.path.join(V2_DIR, f'oos_predictions_*_{tf}.pkl'))
+    oos_probs = oos_candidates[0] if oos_candidates else None
+    cmd = f"{sys.executable} -u v2_lstm_trainer.py --tf {tf} --resume --alpha-search"
+    if oos_probs and os.path.exists(oos_probs):
+        cmd += f" --xgb-probs {oos_probs}"
+        log(f"  [{tf}] Blending with XGB probs: {os.path.basename(oos_probs)}")
+
+    env_overrides = {}
+    if gpu_id is not None:
+        env_overrides['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+        log(f"  [{tf}] LSTM on GPU {gpu_id}")
+
+    success, oom, _ = run_step_with_oom_retry(
+        cmd, step_id, timeout=14400, env_var='V2_BATCH_SIZE', reduction=0.5,
+        env_overrides=env_overrides if env_overrides else None)
+
+    status = 'OK' if success else ('FAIL:OOM' if oom else 'FAIL:exit')
+    update_step(manifest, 6, step_id, status, tf=tf)
+    state.finish_step(step_id, status)
+    if not success:
+        log(f"LSTM FAILED for {tf}")
+    gpu_cleanup(f"phase6_lstm_{tf}")
+    return step_id, status
+
+
 def run_phase_6(state, manifest, args):
     log("=" * 60)
-    log("PHASE 6: LSTM TRAINING")
+    log("PHASE 6: LSTM TRAINING (parallel across TFs with GPU routing)")
     log("=" * 60)
-    for tf in args.tf:
-        step_id = f'lstm_{tf}'
-        if is_step_done(manifest, 6, step_id):
-            log(f"SKIP {step_id} (done)")
-            continue
-
-        state.start_step(step_id, f'LSTM training {tf}')
-        oos_candidates = glob.glob(os.path.join(V2_DIR, f'oos_predictions_*_{tf}.pkl'))
-        oos_probs = oos_candidates[0] if oos_candidates else None
-        cmd = f"{sys.executable} -u v2_lstm_trainer.py --tf {tf} --resume --alpha-search"
-        if oos_probs and os.path.exists(oos_probs):
-            cmd += f" --xgb-probs {oos_probs}"
-            log(f"  Blending with XGB probs: {os.path.basename(oos_probs)}")
-
-        success, oom, _ = run_step_with_oom_retry(
-            cmd, step_id, timeout=14400, env_var='V2_BATCH_SIZE', reduction=0.5)
-
-        status = 'OK' if success else ('FAIL:OOM' if oom else 'FAIL:exit')
-        update_step(manifest, 6, step_id, status, tf=tf)
-        state.finish_step(step_id, status)
-        if not success:
-            log(f"LSTM FAILED for {tf}")
-        gpu_cleanup(f"phase6_lstm_{tf}")
+    try:
+        from hardware_detect import detect_hardware
+        _hw6 = detect_hardware()
+        n_gpus_lstm = max(_hw6['n_gpus'], 1)
+    except Exception:
+        n_gpus_lstm = 1
+    lstm_workers = min(len(args.tf), n_gpus_lstm)
+    log(f"  {lstm_workers} parallel LSTM workers across {n_gpus_lstm} GPUs")
+    with ThreadPoolExecutor(max_workers=lstm_workers) as pool:
+        futures = {}
+        for i, tf in enumerate(args.tf):
+            gpu_id = i % n_gpus_lstm
+            futures[pool.submit(_lstm_one_tf, tf, state, manifest, gpu_id)] = tf
+        for future in as_completed(futures):
+            step_id, status = future.result()
     log("Phase 6 complete")
 
 
@@ -817,12 +891,13 @@ def log_data_inventory():
 
 def print_dashboard(manifest):
     names = {1: 'Feature Builds', 2: 'Training', 3: 'Optimization',
-             4: 'Validation', 5: 'Meta-Labeling', 6: 'LSTM'}
+             4: 'Validation', 5: 'Meta-Labeling', 6: 'LSTM',
+             7: 'Audit Report'}
     print('\n' + '=' * 70, flush=True)
     print('  PIPELINE DASHBOARD', flush=True)
     print('=' * 70, flush=True)
     t_ok = t_fail = t_skip = 0
-    for p in range(1, 7):
+    for p in range(1, 8):
         steps = manifest.get('phases', {}).get(f'phase_{p}', {})
         ok = sum(1 for s in steps.values() if s.get('status') == 'OK')
         fail = sum(1 for s in steps.values() if s.get('status', '').startswith('FAIL'))
@@ -854,7 +929,7 @@ def print_dashboard(manifest):
 
 def print_dry_run_plan(args, manifest):
     from config import TRAINING_CRYPTO, ALL_TRAINING
-    phases = args.phase or [1, 2, 3, 4, 5, 6]
+    phases = args.phase or [1, 2, 3, 4, 5, 6, 7]
     print('\n' + '=' * 70, flush=True)
     print('  DRY RUN PLAN', flush=True)
     print('=' * 70, flush=True)
@@ -890,6 +965,8 @@ def print_dry_run_plan(args, manifest):
                 print(f'    {tf}: {n} OOS files', flush=True)
         elif p == 6:
             print(f'  Phase 6: LSTM — TFs={args.tf}, all GPUs', flush=True)
+        elif p == 7:
+            print(f'  Phase 7: Audit Report — TFs={args.tf}', flush=True)
     if args.download_to:
         print(f'  Download: {args.download_to} ({args.download_method})', flush=True)
     print(f'  Rate: ${args.dph:.2f}/hr', flush=True)
@@ -913,7 +990,7 @@ Examples:
 """)
     # Phase selection
     parser.add_argument('--phase', nargs='+', type=int, default=None,
-                        help='Phases to run (1-6). Default: all')
+                        help='Phases to run (1-7). Default: all')
     parser.add_argument('--resume', action='store_true',
                         help='Resume from pipeline_manifest.json')
     # Phase 1
@@ -929,6 +1006,10 @@ Examples:
     parser.add_argument('--boost-rounds', type=int, default=500)
     # Infrastructure
     parser.add_argument('--skip-install', action='store_true')
+    parser.add_argument('--fail-fast', action='store_true', default=True,
+                        help='Stop pipeline on phase failure (default: True)')
+    parser.add_argument('--no-fail-fast', dest='fail_fast', action='store_false',
+                        help='Continue pipeline even if a phase fails')
     parser.add_argument('--download-to', default=None,
                         help='Auto-download target (user@IP:/path/)')
     parser.add_argument('--download-method', default='rsync',
@@ -1020,7 +1101,22 @@ Examples:
             _n_gpus_p2 = 1
         phase2_pool = ThreadPoolExecutor(max_workers=_n_gpus_p2)
 
+    def _has_model_artifacts(tfs):
+        """Check if Phase 2 produced model artifacts for at least one TF."""
+        for tf in tfs:
+            models = glob.glob(os.path.join(V2_DIR, f'model_v2_*_{tf}.*'))
+            oos = glob.glob(os.path.join(V2_DIR, f'oos_predictions_*_{tf}.pkl'))
+            if models or oos:
+                return True
+        return False
+
+    phase_failed = False
     for p in phases:
+        # Fail-fast: stop if a previous phase failed
+        if phase_failed and args.fail_fast:
+            log(f"SKIPPING Phase {p} — previous phase failed (--fail-fast)")
+            continue
+
         if p == 2:
             # Phase 2 handled specially: wait for any pipelined Phase 2 futures,
             # then run Phase 2 for remaining TFs that weren't pipelined.
@@ -1030,13 +1126,17 @@ Examples:
             log(f"{'='*60}")
 
             # Collect pipelined Phase 2 results
+            phase2_any_fail = False
             for tf, fut in phase2_futures.items():
                 try:
                     success = fut.result()
                     log(f"  Pipelined Phase 2 for {tf}: {'OK' if success else 'FAILED'}")
+                    if not success:
+                        phase2_any_fail = True
                 except Exception as e:
                     log(f"  Pipelined Phase 2 for {tf} ERROR: {e}")
                     import traceback; traceback.print_exc()
+                    phase2_any_fail = True
 
             # Run Phase 2 for any TFs not already pipelined
             try:
@@ -1052,6 +1152,13 @@ Examples:
                 log(f"Phase 2 FAILED: {e}")
                 import traceback; traceback.print_exc()
                 update_step(manifest, 2, 'phase_2_exception', f'FAIL:{e}')
+                phase2_any_fail = True
+
+            # Check if any model artifacts were produced before allowing Phase 3+
+            if phase2_any_fail or not _has_model_artifacts(args.tf):
+                if not _has_model_artifacts(args.tf):
+                    log("FAIL-FAST: No model artifacts from Phase 2 — phases 3+ would be pointless")
+                phase_failed = True
             continue
 
         if p not in phase_fns:
@@ -1060,6 +1167,13 @@ Examples:
         if args.resume and is_phase_done(manifest, p):
             log(f"Phase {p} done (manifest), skipping")
             continue
+
+        # For phases 3+, verify model artifacts exist (Phase 2 must have succeeded)
+        if p >= 3 and not _has_model_artifacts(args.tf) and not is_phase_done(manifest, 2):
+            log(f"SKIPPING Phase {p} — no model artifacts from Phase 2")
+            phase_failed = True
+            continue
+
         state.phase = p
         log(f"{'='*60}")
         log(f"ENTERING PHASE {p}")
@@ -1103,6 +1217,7 @@ Examples:
             log(f"Phase {p} FAILED: {e}")
             import traceback; traceback.print_exc()
             update_step(manifest, p, f'phase_{p}_exception', f'FAIL:{e}')
+            phase_failed = True
 
     # Shutdown phase2 pool
     if phase2_pool is not None:

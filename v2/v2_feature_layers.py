@@ -13,6 +13,14 @@ Binary features are 0/1 integers, not booleans.
 
 import numpy as np
 import pandas as pd
+
+
+def _safe_col(df, col):
+    """Get a column as Series even if the column name is duplicated."""
+    raw = df[col]
+    if isinstance(raw, pd.DataFrame):
+        return raw.iloc[:, 0]
+    return raw
 from datetime import datetime
 
 try:
@@ -36,10 +44,13 @@ def _digital_root_vec(arr):
     return result
 
 
-def _safe_col(df, col):
-    """Return column as float Series if it exists, else None."""
+def _safe_col_numeric(df, col):
+    """Return column as numeric Series if it exists, else None."""
     if col in df.columns:
-        return pd.to_numeric(df[col], errors='coerce')
+        raw = df[col]
+        if isinstance(raw, pd.DataFrame):
+            raw = raw.iloc[:, 0]
+        return pd.to_numeric(raw, errors='coerce')
     return None
 
 
@@ -121,7 +132,7 @@ def add_rate_of_change_features(df):
     new_cols = {}
     for col in high_cols:
         base = col  # e.g. rsi_14_HIGH
-        s = pd.to_numeric(df[col], errors='coerce')
+        s = pd.to_numeric(_safe_col(df, col), errors='coerce')
         s_diff = s.diff()
         # rising_into: crossed above (was 0, now 1) within last 3 bars
         crossed_above = ((s == 1) & (s.shift(1) == 0)).astype(np.float64)
@@ -131,7 +142,7 @@ def add_rate_of_change_features(df):
 
     for col in low_cols:
         base = col  # e.g. rsi_14_LOW
-        s = pd.to_numeric(df[col], errors='coerce')
+        s = pd.to_numeric(_safe_col(df, col), errors='coerce')
         # falling_into: crossed below (was 0, now 1) within last 3 bars
         crossed_below = ((s == 1) & (s.shift(1) == 0)).astype(np.float64)
         new_cols[f'{base}_falling_into'] = crossed_below.rolling(3, min_periods=1).max().astype(np.int32)
@@ -206,8 +217,9 @@ def add_price_numerology_features(df):
 
     new_cols = {}
 
-    # Digital root of price
-    new_cols['price_dr'] = np.where(np.isnan(c), np.nan, _digital_root_vec(c_int)).astype(np.float32)
+    # Digital root of price — skip if already in base features (identical computation)
+    if 'price_dr' not in df.columns:
+        new_cols['price_dr'] = np.where(np.isnan(c), np.nan, _digital_root_vec(c_int)).astype(np.float32)
 
     # Angel numbers (111, 222, ..., 999) in price string
     c_str = pd.Series(c_int, index=df.index).astype(str)
@@ -311,10 +323,12 @@ def add_calendar_anomaly_features(df):
     # Week of month (1-5)
     new_cols['week_of_month'] = ((days - 1) // 7 + 1).astype(np.int32)
 
-    # Month boundaries
-    new_cols['is_month_end'] = idx.is_month_end.astype(np.int32)
+    # Month boundaries — skip if already in base features (identical computation)
+    if 'is_month_end' not in df.columns:
+        new_cols['is_month_end'] = idx.is_month_end.astype(np.int32)
     new_cols['is_month_start'] = idx.is_month_start.astype(np.int32)
-    new_cols['is_quarter_end'] = idx.is_quarter_end.astype(np.int32)
+    if 'is_quarter_end' not in df.columns:
+        new_cols['is_quarter_end'] = idx.is_quarter_end.astype(np.int32)
 
     # FOMC days
     fomc_arr = np.isin(dates, np.array(list(_FOMC_DATES))).astype(np.int32)
@@ -422,7 +436,7 @@ def add_entropy_fractal_features(df, window=20):
             log_probs = np.zeros_like(probs)
             np.log2(probs, out=log_probs, where=probs > 0)
             ent = -np.sum(probs * log_probs, axis=1)
-            entropy_arr[window:] = ent.astype(np.float32)
+            entropy_arr[window - 1:] = ent.astype(np.float32)
     new_cols['shannon_entropy'] = entropy_arr
 
     # Approximate entropy: rolling std of first differences of returns
@@ -442,7 +456,7 @@ def add_entropy_fractal_features(df, window=20):
         rs = np.zeros(win.shape[0], dtype=np.float64)
         rs[valid] = np.log(R[valid] / S[valid]) / np.log(window)
         rs[~valid] = np.nan
-        hurst_arr[window:] = rs.astype(np.float32)
+        hurst_arr[window - 1:] = rs.astype(np.float32)
     new_cols['hurst_exponent'] = hurst_arr
 
     # Binarized flags
@@ -732,9 +746,9 @@ def add_calendar_harmonics_features(df):
 
     new_cols = {}
 
-    # DOY sin/cos (365.25 for leap year averaging)
-    new_cols['doy_sin'] = np.sin(2 * np.pi * doy / 365.25).astype(np.float32)
-    new_cols['doy_cos'] = np.cos(2 * np.pi * doy / 365.25).astype(np.float32)
+    # DOY sin/cos with leap year correction (base uses 365, V2 uses 365.25)
+    new_cols['doy_sin_leap'] = np.sin(2 * np.pi * doy / 365.25).astype(np.float32)
+    new_cols['doy_cos_leap'] = np.cos(2 * np.pi * doy / 365.25).astype(np.float32)
 
     # Moon phase sin/cos (synodic month = 29.53 days)
     # Approximate moon phase from a known new moon reference
@@ -750,13 +764,14 @@ def add_calendar_harmonics_features(df):
     new_cols['week_sin'] = np.sin(2 * np.pi * dow / 7).astype(np.float32)
     new_cols['week_cos'] = np.cos(2 * np.pi * dow / 7).astype(np.float32)
 
-    # Month sin/cos (30.44 avg days per month)
-    new_cols['month_sin'] = np.sin(2 * np.pi * dom / 30.44).astype(np.float32)
-    new_cols['month_cos'] = np.cos(2 * np.pi * dom / 30.44).astype(np.float32)
+    # Day-of-month sin/cos (different from base month_sin which uses month number)
+    new_cols['dom_sin'] = np.sin(2 * np.pi * dom / 30.44).astype(np.float32)
+    new_cols['dom_cos'] = np.cos(2 * np.pi * dom / 30.44).astype(np.float32)
 
-    # Hour sin/cos (intraday only — always compute, let caller filter)
-    new_cols['hour_sin'] = np.sin(2 * np.pi * hour / 24).astype(np.float32)
-    new_cols['hour_cos'] = np.cos(2 * np.pi * hour / 24).astype(np.float32)
+    # Hour sin/cos — skip if already in base features (identical computation)
+    if 'hour_sin' not in df.columns:
+        new_cols['hour_sin'] = np.sin(2 * np.pi * hour / 24).astype(np.float32)
+        new_cols['hour_cos'] = np.cos(2 * np.pi * hour / 24).astype(np.float32)
 
     # Batch assign
     if new_cols:
@@ -778,7 +793,7 @@ def add_autoregressive_features(df, predictions_col=None):
 
     # Model prediction history
     if predictions_col is not None and predictions_col in df.columns:
-        pred = pd.to_numeric(df[predictions_col], errors='coerce')
+        pred = pd.to_numeric(_safe_col(df, predictions_col), errors='coerce')
         new_cols['prev_prediction_1'] = pred.shift(1).astype(np.float32)
         new_cols['prev_prediction_3'] = pred.shift(3).astype(np.float32)
 
@@ -1022,7 +1037,10 @@ def add_four_tier_binarization(df):
         if col.endswith(('_HIGH', '_LOW', '_EXTREME_HIGH', '_EXTREME_LOW', '_XH', '_XL', '_H', '_L')):
             continue
 
-        s = pd.to_numeric(df[col], errors='coerce')
+        _raw = df[col]
+        if isinstance(_raw, pd.DataFrame):
+            _raw = _raw.iloc[:, 0]  # duplicate col name — take first
+        s = pd.to_numeric(_raw, errors='coerce')
         n_unique = s.dropna().nunique()
 
         # Skip binary columns (0/1 only) and constant columns
@@ -1116,13 +1134,16 @@ def add_ticker_gematria_features(df, symbol='BTCUSDT'):
 
     # Resonance: price DR matches ticker DR
     if 'price_dr' in df.columns:
-        price_dr = pd.to_numeric(df['price_dr'], errors='coerce').values
+        _pdr = df['price_dr']
+        if isinstance(_pdr, pd.DataFrame):
+            _pdr = _pdr.iloc[:, 0]
+        price_dr = pd.to_numeric(_pdr, errors='coerce').values
         new_cols['price_dr_matches_ticker_dr'] = np.where(
             np.isnan(price_dr), 0,
             (price_dr == ticker_gem_dr).astype(np.int32)
         )
     elif 'digital_root_price' in df.columns:
-        price_dr = pd.to_numeric(df['digital_root_price'], errors='coerce').values
+        price_dr = pd.to_numeric(_safe_col(df, 'digital_root_price'), errors='coerce').values
         new_cols['price_dr_matches_ticker_dr'] = np.where(
             np.isnan(price_dr), 0,
             (price_dr == ticker_gem_dr).astype(np.int32)

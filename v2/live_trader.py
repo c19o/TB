@@ -1293,7 +1293,7 @@ def run_trading_loop(mode='paper'):
                         all_feat_names = feat_names + cross_names
 
                         # Predict with sparse DMatrix (3-class softprob safe)
-                        dmat = xgb.DMatrix(X_combined, feature_names=all_feat_names)
+                        dmat = xgb.DMatrix(X_combined, feature_names=all_feat_names, nthread=-1)
                         raw_pred = models[tf].predict(dmat)
                         if raw_pred.ndim == 2 and raw_pred.shape[1] == 3:
                             p_short, p_flat, p_long = float(raw_pred[0][0]), float(raw_pred[0][1]), float(raw_pred[0][2])
@@ -1315,7 +1315,7 @@ def run_trading_loop(mode='paper'):
                             f"Cannot predict with base-only features on a V2 model. Fix and restart.")
                 else:
                     # V1 model or no crosses available — base features only
-                    dmat = xgb.DMatrix(X_base, feature_names=feat_names)
+                    dmat = xgb.DMatrix(X_base, feature_names=feat_names, nthread=-1)
                     raw_pred = models[tf].predict(dmat)
                     if raw_pred.ndim == 2 and raw_pred.shape[1] == 3:
                         p_short, p_flat, p_long = float(raw_pred[0][0]), float(raw_pred[0][1]), float(raw_pred[0][2])

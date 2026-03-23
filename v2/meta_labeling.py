@@ -141,9 +141,9 @@ def train_meta_model(oos_predictions, feature_data=None, feature_cols=None,
         meta_probs_test = model.predict_proba(X_meta_test)[:, 1]
     elif model_type == 'xgb_shallow' and xgb is not None:
         dtrain = xgb.DMatrix(X_meta_train, label=y_meta_train,
-                              feature_names=meta_feature_names)
+                              feature_names=meta_feature_names, nthread=-1)
         dtest = xgb.DMatrix(X_meta_test, label=y_meta_test,
-                             feature_names=meta_feature_names)
+                             feature_names=meta_feature_names, nthread=-1)
         params = {
             'objective': 'binary:logistic',
             'max_depth': 2,
@@ -237,7 +237,7 @@ def predict_meta(meta_result, base_pred_probs):
     if meta_result['model_type'] == 'logistic':
         meta_probs = model.predict_proba(meta_X)[:, 1]
     elif meta_result['model_type'] == 'xgb_shallow':
-        dmat = xgb.DMatrix(meta_X, feature_names=meta_result['meta_feature_names'])
+        dmat = xgb.DMatrix(meta_X, feature_names=meta_result['meta_feature_names'], nthread=-1)
         meta_probs = model.predict(dmat)
     else:
         meta_probs = np.ones(len(base_pred_probs))

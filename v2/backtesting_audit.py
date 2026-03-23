@@ -170,8 +170,11 @@ def load_full_history(tf_name):
             saved_features = json.load(f)
         print(f"  Loaded {len(saved_features)} features from features_{tf_name}_pruned.json", flush=True)
 
-    # Load data -- try parquet first, fall back to SQLite
+    # Load data -- try V2 parquet naming first, then V1, then SQLite
     parquet_path = db_path.replace('.db', '.parquet')
+    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
+    if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
+        parquet_path = v2_parquet
     if os.path.exists(parquet_path):
         df = pd.read_parquet(parquet_path)
         print(f"  Loaded from parquet: {parquet_path} ({len(df):,} rows)", flush=True)
@@ -243,11 +246,7 @@ def load_full_history(tf_name):
     if os.path.exists(npz_path):
         try:
             print(f"  Loading sparse cross matrix: {npz_path}", flush=True)
-            npz_data = np.load(npz_path, allow_pickle=True)
-            cross_matrix = sp_sparse.csr_matrix(
-                (npz_data['data'], npz_data['indices'], npz_data['indptr']),
-                shape=tuple(npz_data['shape'])
-            )
+            cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
             # Load column names — try both naming conventions
             cols_path_v1 = npz_path.replace('.npz', '_columns.json')
             cols_path_v2 = os.path.join(DB_DIR, f'v2_cross_names_BTC_{tf_name}.json')
@@ -297,7 +296,7 @@ def load_full_history(tf_name):
     if USE_GPU_XGB:
         model.set_param({'device': 'cuda'})
 
-    dmat = xgb.DMatrix(X, feature_names=model_features)
+    dmat = xgb.DMatrix(X, feature_names=model_features, nthread=-1)
     raw_preds = model.predict(dmat)
 
     if raw_preds.ndim == 2 and raw_preds.shape[1] == 3:

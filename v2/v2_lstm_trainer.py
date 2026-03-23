@@ -420,7 +420,11 @@ def train_one_tf(tf, epochs=100, lr=0.0005, resume=False):
     total_time = time.time() - t0
     log.info(f"Training complete for {tf}: {total_time:.1f}s | best_val_acc={best_acc:.4f}")
 
-    # ── Platt calibration on validation set ──
+    # ── Reload best model state before Platt calibration ──
+    if best_state is not None:
+        raw_model = model.module if isinstance(model, nn.DataParallel) else model
+        raw_model.load_state_dict(best_state)
+        log.info(f"Reloaded best model state (val_acc={best_acc:.4f}) for Platt calibration")
     log.info(f"Running Platt calibration on validation set...")
     calibrate_platt(model, val_loader, device, tf)
 
@@ -628,34 +632,39 @@ def search_alpha(tf, xgb_probs_path):
     if n_common < 50:
         raise ValueError(f"Too few aligned samples: {len(y_aligned)}")
 
-    # ── Grid search ──
-    results = []
-    for alpha in ALPHA_GRID:
-        blended = blend_predictions(xgb_aligned, lstm_aligned, alpha=alpha)
-        # Accuracy: predicted class vs true
-        pred_class = np.argmax(blended, axis=1)
+    # ── Vectorized grid search (all alphas at once) ──
+    alphas = np.array(ALPHA_GRID, dtype=np.float32)
+    # Blend all alphas simultaneously: shape (n_alphas, n_samples, n_classes)
+    # blend = (1-alpha)*xgb + alpha*lstm
+    xgb_exp = xgb_aligned[np.newaxis, :, :]   # (1, N, 3)
+    lstm_exp = lstm_aligned[np.newaxis, :, :]  # (1, N, 3)
+    alphas_exp = alphas[:, np.newaxis, np.newaxis]  # (A, 1, 1)
+    all_blended = (1 - alphas_exp) * xgb_exp + alphas_exp * lstm_exp  # (A, N, 3)
 
-        # Convert y_true to 3-class if needed
-        if y_aligned.max() <= 1:
-            # Binary labels: 0=short, 1=long -> compare against argmax of [short, flat, long]
+    # Predicted classes for all alphas: (A, N)
+    all_pred_classes = np.argmax(all_blended, axis=2)
+
+    is_binary = y_aligned.max() <= 1
+    eps = 1e-15
+    all_blended_clipped = np.clip(all_blended, eps, 1 - eps)
+
+    results = []
+    for ai, alpha in enumerate(ALPHA_GRID):
+        pred_class = all_pred_classes[ai]
+        if is_binary:
             correct = ((pred_class == 2) == (y_aligned == 1)).sum()
         else:
             correct = (pred_class == y_aligned).sum()
-
         acc = correct / len(y_aligned)
 
-        # Log loss
-        eps = 1e-15
-        blended_clipped = np.clip(blended, eps, 1 - eps)
-        if y_aligned.max() <= 1:
-            # Binary: use long prob
+        blended_clipped = all_blended_clipped[ai]
+        if is_binary:
             long_prob = blended_clipped[:, 2]
             logloss = -np.mean(
                 y_aligned * np.log(long_prob) + (1 - y_aligned) * np.log(1 - long_prob)
             )
         else:
-            # Multi-class log loss
-            n_classes = blended.shape[1]
+            n_classes = all_blended.shape[2]
             logloss = 0.0
             for c in range(n_classes):
                 mask = y_aligned == c
