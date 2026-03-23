@@ -640,24 +640,34 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     doy_names, doy_arrays = create_doy_windows(df)
     log(f"    {len(doy_names)} DOY windows")
 
-    # ── Accumulate COO triplets + column names across all cross types ──
-    all_rows = []       # list of numpy arrays (row indices)
-    all_cols = []       # list of numpy arrays (col indices)
-    all_data = []       # list of numpy arrays (values)
+    # ── Accumulate sparse CSR chunks + column names across all cross types ──
+    # PERF: Convert each cross type to CSR immediately instead of accumulating
+    # one massive COO. hstack of small CSR matrices is much faster than
+    # converting a single giant COO→CSR (scipy COO→CSR is single-threaded).
+    _csr_chunks = []    # list of CSR matrices, one per cross type
     all_cross_names = []    # flat list of feature names
-    col_offset = 0      # running column offset for global COO assembly
+    col_offset = 0      # running column offset (for gpu_batch_cross)
 
     _total_collected = 0
 
     def _collect_cross(label, names, rows_list, cols_list, data_list, n_new_cols):
-        """Helper to collect COO triplet results and log."""
+        """Convert one cross type's COO triplets to CSR immediately, then free COO."""
         nonlocal col_offset, _total_collected
         count = len(names)
-        if count > 0:
+        if count > 0 and rows_list:
             all_cross_names.extend(names)
-            all_rows.extend(rows_list)
-            all_cols.extend(cols_list)
-            all_data.extend(data_list)
+            _r = np.concatenate(rows_list)
+            _c = np.concatenate(cols_list)
+            _d = np.concatenate(data_list)
+            # gpu_batch_cross returns columns offset by col_offset (global indices).
+            # Shift to 0-based local indices for this chunk's standalone CSR.
+            _c_local = _c - col_offset
+            chunk = sparse.coo_matrix((_d, (_r, _c_local)), shape=(N, n_new_cols)).tocsr()
+            _csr_chunks.append(chunk)
+            del _r, _c, _c_local, _d, chunk
+            col_offset += n_new_cols
+            _total_collected += count
+        elif count > 0:
             col_offset += n_new_cols
             _total_collected += count
         log(f"    {label} crosses: {count:,} (total: {_total_collected:,})")
@@ -849,19 +859,13 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     t_assign = time.time()
 
-    if total_crosses > 0 and all_rows:
+    if total_crosses > 0 and _csr_chunks:
         cross_names = all_cross_names
 
-        # Build final sparse matrix from COO triplets (single allocation, no hstack)
-        log(f"  Building COO -> CSR ({N:,} x {col_offset:,}), concatenating triplets...")
-        rows = np.concatenate(all_rows)
-        cols = np.concatenate(all_cols)
-        data = np.concatenate(all_data)
-        del all_rows, all_cols, all_data
-        gc.collect()
-
-        sparse_mat = sparse.coo_matrix((data, (rows, cols)), shape=(N, col_offset)).tocsr()
-        del rows, cols, data
+        # hstack pre-built CSR chunks (much faster than one giant COO→CSR)
+        log(f"  hstack {len(_csr_chunks)} CSR chunks into ({N:,} x {col_offset:,})...")
+        sparse_mat = sparse.hstack(_csr_chunks, format='csr')
+        del _csr_chunks
         gc.collect()
 
         log(f"  Sparse matrix: {sparse_mat.shape}, {sparse_mat.nnz:,} non-zeros, "
