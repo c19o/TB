@@ -308,7 +308,8 @@ class MultiTFPredictor:
                 print(f"  {tf} model not found")
 
     def predict(self, tf, feature_dict):
-        """Generate prediction for a TF given a dict of feature values."""
+        """Generate prediction for a TF given a dict of feature values.
+        Returns (direction, confidence) where direction is 2=long, 1=flat, 0=short."""
         if tf not in self.models:
             return None, 0.0
 
@@ -316,9 +317,18 @@ class MultiTFPredictor:
         values = [float(feature_dict.get(f, float('nan'))) for f in feat_names]
         X = np.array([values], dtype=np.float32)
         preds = self.models[tf].predict(X)
-        prob = float(preds[0])
 
-        return prob, prob
+        if preds.ndim == 2:
+            # 3-class multiclass: [P(short), P(flat), P(long)]
+            prob_long = float(preds[0, 2])
+            prob_short = float(preds[0, 0])
+            direction = 2 if prob_long > prob_short else (0 if prob_short > prob_long else 1)
+            confidence = float(max(prob_long, prob_short))
+        else:
+            confidence = float(preds[0])
+            direction = 2 if confidence > 0.5 else 0
+
+        return direction, confidence
 
 # ============================================================
 # BACKTEST MODE
@@ -398,19 +408,37 @@ def backtest_portfolio():
             price = closes[i] if closes[i] > 0 else 1
             atr = atrs[i] if not np.isnan(atrs[i]) and atrs[i] > 0 else price * 0.01
 
-            # Check for signal
-            if probs[i] > conf_thresh:
-                sig = Signal(tf, 1, probs[i], i, price, atr,
-                            leverage=lev, risk_pct=risk, stop_atr=stop, rr=rr, max_hold=int(hold))
-                pos, reason = agg.process_signal(sig)
-                if pos:
-                    trade_count += 1
-            elif probs[i] < (1 - conf_thresh):
-                sig = Signal(tf, -1, 1 - probs[i], i, price, atr,
-                            leverage=lev, risk_pct=risk, stop_atr=stop, rr=rr, max_hold=int(hold))
-                pos, reason = agg.process_signal(sig)
-                if pos:
-                    trade_count += 1
+            # Check for signal (handle 3-class multiclass output)
+            if probs.ndim == 2:
+                # 3-class: columns are [P(short), P(flat), P(long)]
+                prob_long = probs[i, 2]
+                prob_short = probs[i, 0]
+                if prob_long > conf_thresh:
+                    sig = Signal(tf, 1, float(prob_long), i, price, atr,
+                                leverage=lev, risk_pct=risk, stop_atr=stop, rr=rr, max_hold=int(hold))
+                    pos, reason = agg.process_signal(sig)
+                    if pos:
+                        trade_count += 1
+                elif prob_short > conf_thresh:
+                    sig = Signal(tf, -1, float(prob_short), i, price, atr,
+                                leverage=lev, risk_pct=risk, stop_atr=stop, rr=rr, max_hold=int(hold))
+                    pos, reason = agg.process_signal(sig)
+                    if pos:
+                        trade_count += 1
+            else:
+                # Binary fallback
+                if probs[i] > conf_thresh:
+                    sig = Signal(tf, 1, probs[i], i, price, atr,
+                                leverage=lev, risk_pct=risk, stop_atr=stop, rr=rr, max_hold=int(hold))
+                    pos, reason = agg.process_signal(sig)
+                    if pos:
+                        trade_count += 1
+                elif probs[i] < (1 - conf_thresh):
+                    sig = Signal(tf, -1, 1 - probs[i], i, price, atr,
+                                leverage=lev, risk_pct=risk, stop_atr=stop, rr=rr, max_hold=int(hold))
+                    pos, reason = agg.process_signal(sig)
+                    if pos:
+                        trade_count += 1
 
             # Update all positions
             agg.update_positions({'default': price, tf: price})

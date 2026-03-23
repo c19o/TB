@@ -93,7 +93,7 @@ V2_LGBM_PARAMS = {
     'force_col_wise': True,
 
     'num_leaves': 63,
-    'min_data_in_leaf': 50,
+    'min_data_in_leaf': 3,
 
     'min_gain_to_split': 2.0,
     'lambda_l1': 0.5,
@@ -120,7 +120,7 @@ TF_MIN_DATA_IN_LEAF = {
 def _apply_tf_params(params, tf_name):
     """Apply per-TF overrides to LightGBM params. Protects rare esoteric signals."""
     params = params.copy()
-    mdl = TF_MIN_DATA_IN_LEAF.get(tf_name, 15)
+    mdl = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
     params['min_data_in_leaf'] = mdl
     return params
 

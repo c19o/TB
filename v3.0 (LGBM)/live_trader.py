@@ -520,8 +520,12 @@ def run_trading_loop(mode='paper'):
     trade_results = []  # list of recent trade P&Ls for Kelly re-estimation
 
     # Load GA configs
-    with open(f'{DB_DIR}/ml_multi_tf_configs.json') as f:
-        ml_configs = json.load(f)
+    configs_path = os.path.join(DB_DIR, 'ml_multi_tf_configs.json')
+    if os.path.exists(configs_path):
+        with open(configs_path) as f:
+            ml_configs = json.load(f)
+    else:
+        ml_configs = {}  # Will be populated by optuna_configs below
 
     # Load optimizer configs (optuna_configs.json + per-TF files)
     optuna_configs = {}
