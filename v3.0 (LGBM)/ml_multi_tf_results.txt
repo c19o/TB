@@ -1,0 +1,105 @@
+GPU: ENABLED
+Dask multi-GPU: not installed (pip install dask-cuda)
+
+[2s] Loading daily closes for HMM...
+  Daily data: 2362 days for HMM
+
+======================================================================
+TRAINING 1D MODEL
+======================================================================
+  Loaded from parquet: C:\Users\C\Documents\Savage22 Server\v2\features_BTC_1d.parquet
+  [3s] Loaded: 5727 rows x 3065 columns
+  Using pre-computed triple_barrier_label column
+  Triple-barrier labels (tp=3.0xATR, sl=3.0xATR, hold=10): 1346 LONG, 909 SHORT, 3458 FLAT, 14 NaN
+  Regime weights: 46 bear LONGs @ 0.15, 131 bull SHORTs @ 0.15
+  [3s] Loading sparse cross matrix: C:\Users\C\Documents\Savage22 Server\v2\v2_crosses_BTC_1d.npz
+  Sparse crosses loaded: 5727 rows x 60181 cols (842197 non-zeros, 0.2% dense)
+  Combined sparse matrix: 5727 rows x 63206 cols (3025 base + 60181 crosses) density=1.2517% nnz=4,530,970
+  Features: 63206 (SPARSE)
+  Esoteric weights: 824 esoteric columns, 5727/5727 bars have active signals, weight range [3.0, 3.0]
+  Sparse matrix: 4530970 non-zeros of 361980762 total (1.25% non-zero)
+  Sample uniqueness: min=0.083 max=0.191 mean=0.083
+  [4s] CPCV: 4 paths (N=4 groups, K=1 test, purge=10 bars, embargo=1%)
+    Path 1: train=4239 samples, test=1431 samples
+    Path 2: train=4229 samples, test=1431 samples
+    Path 3: train=4229 samples, test=1431 samples
+    Path 4: train=4283 samples, test=1434 samples
+
+  --- CPCV Path 1/4 ---
+    Train: 4238 (L=924 F=2641 S=673), Test: 1418
+  Interaction constraints: 1 group with DOY(734) + TREND(98) + TA(52924) = 53756 constrained, rest free
+    Acc=0.592 PrecL=0.657 PrecS=0.000 mlogloss=0.8629 Trees=212
+
+  --- CPCV Path 2/4 ---
+    Train: 4215 (L=982 F=2607 S=626), Test: 1431
+    Acc=0.625 PrecL=0.567 PrecS=0.000 mlogloss=0.9218 Trees=210
+
+  --- CPCV Path 3/4 ---
+    Train: 4215 (L=1039 F=2501 S=675), Test: 1431
+    Acc=0.651 PrecL=0.548 PrecS=0.000 mlogloss=0.8210 Trees=337
+
+  --- CPCV Path 4/4 ---
+    Train: 4270 (L=1083 F=2491 S=696), Test: 1433
+    Acc=0.666 PrecL=0.346 PrecS=0.000 mlogloss=0.8345 Trees=180
+
+  1D CPCV AVG (4 paths): Acc=0.634 PrecL=0.529 PrecS=0.000 mlogloss=0.8600
+  Saved OOS predictions: C:\Users\C\Documents\Savage22 Server\v2\cpcv_oos_predictions_1d.pkl (4 paths)
+  [278s] Feature stability: 567 features analyzed, 140 unstable (CV>0.5), saved to C:\Users\C\Documents\Savage22 Server\v2\feature_importance_stability_1d.json
+  Feature importance stability: 0.0s
+
+  [278s] Training final model on ALL 63206 features (no pruning)...
+  FINAL: Acc=0.641 PrecL=0.294 PrecS=0.245 mlogloss=0.8347 Trees=177 Features=63206
+
+  TOP 30 FEATURES BY GAIN (of 63206 total):
+      1. rsi_14_ob                                     gain=70.9
+      2. rsi_21_HIGH                                   gain=57.0
+      3. frac_diff_close_0.4_EXTREME_HIGH              gain=49.3
+      4. rsi_14_HIGH                                   gain=48.1
+      5. bb_pctb_20_lag1_HIGH                          gain=44.9
+      6. consensio_green_wave                          gain=41.3
+      7. bb_pctb_20_lag1                               gain=34.8
+      8. close_vs_ema_20                               gain=28.3
+      9. rsi_7                                         gain=27.9
+     10. range_position                                gain=27.5
+     11. rsi_14_lag1                                   gain=26.8
+     12. rsi_21                                        gain=26.7
+     13. rsi_14                                        gain=26.3
+     14. rsi_14_lag3                                   gain=24.0
+     15. value_area_position                           gain=23.6
+     16. bb_pctb_20_LOW                                gain=22.6
+     17. ichimoku_below_cloud                          gain=22.2
+     18. vwap_5_EXTREME_HIGH                           gain=22.1
+     19. cci_20                                        gain=21.3
+     20. rsi_x_bbpctb_HIGH                             gain=21.2
+     21. rsi_x_bbpctb                                  gain=21.1
+     22. volatility_20bar_HIGH                         gain=20.4
+     23. stoch_k_14                                    gain=19.3
+     24. bb_pctb_20_HIGH                               gain=18.9
+     25. lvn_distance                                  gain=18.9
+     26. close_vs_sma_20                               gain=18.8
+     27. bb_pctb_20                                    gain=18.0
+     28. stoch_d_14                                    gain=17.1
+     29. macro_spx_roc5d                               gain=16.7
+     30. bb_pctb_20_lag3                               gain=16.1
+  Esoteric features in top 50 by gain: 2
+
+  [334s] Platt calibration (per-class)...
+  Platt calibrator saved (platt_1d.pkl) -- multinomial 3-class
+
+  [334s] OUTER FOLD VALIDATION...
+  Raw short_prob: [0.038, 0.522] flat_prob: [0.239, 0.931] long_prob: [0.029, 0.547]
+    conf>0.45: 148 trades (L=105 S=43), Acc=0.277
+    conf>0.50: 66 trades (L=52 S=14), Acc=0.318
+    conf>0.55: 24 trades (L=20 S=4), Acc=0.250
+    conf>0.60: 5 trades (L=5 S=0), Acc=0.800
+
+
+======================================================================
+MULTI-TIMEFRAME ML TRAINING COMPLETE
+======================================================================
+
+  1D:
+    Samples: 5727, Features: 63206
+    WF Accuracy: 0.634, Final: 0.641
+
+  Total time: [334s]
