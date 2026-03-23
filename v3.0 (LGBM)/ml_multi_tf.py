@@ -790,6 +790,12 @@ if __name__ == '__main__':
                   _base_lgb_params['interaction_constraints'] = [_constrained_indices]
               log(f"  Interaction constraints: 1 group with DOY({len(_doy_names)}) + TREND({len(_trend_names)}) + TA({len(_ta_names)}) = {len(_constrained)} constrained, rest free")
 
+          # Default: final feature cols = feature_cols (parallel path keeps HMM in X_all)
+          # Sequential sparse path overrides this after stripping HMM into overlay
+          _final_feature_cols = feature_cols
+          _hmm_overlay = None  # Will be set by sequential sparse path if needed
+          _hmm_overlay_names = []
+
           if _use_parallel_splits and _X_all_is_sparse:
               # ── Parallel CPCV path (CPU workers) ──
               # NOTE: per-fold HMM re-fitting is skipped in parallel mode (HMM fitted once before loop).
@@ -875,6 +881,65 @@ if __name__ == '__main__':
 
           else:
               # ── Sequential CPCV path (dense matrix or --no-parallel-splits) ──
+
+              # ── FIX: Separate HMM columns from the big sparse matrix ──
+              # Instead of tolil()/tocsr() on a 1M x 2M matrix EVERY fold (150-450s),
+              # we keep HMM columns as a small dense overlay that gets hstacked
+              # only on the train/test SUBSET at extraction time (milliseconds).
+              _HMM_COL_NAMES = ['hmm_bull_prob', 'hmm_bear_prob', 'hmm_neutral_prob', 'hmm_state']
+              _hmm_overlay = None  # (N, 4) dense float32 — updated each fold
+              _hmm_overlay_names = []  # feature names for the overlay columns
+              _hmm_stripped = False  # whether we removed HMM cols from X_all
+
+              if _X_all_is_sparse:
+                  # Find HMM columns already in feature_cols and strip them from X_all
+                  _hmm_existing_indices = []
+                  _hmm_existing_names = []
+                  for hc in _HMM_COL_NAMES:
+                      if hc in feature_cols:
+                          _hmm_existing_indices.append(feature_cols.index(hc))
+                          _hmm_existing_names.append(hc)
+
+                  if _hmm_existing_indices:
+                      # Extract current HMM values as dense overlay
+                      _hmm_overlay = X_all[:, _hmm_existing_indices].toarray().astype(np.float32)
+                      _hmm_overlay_names = _hmm_existing_names
+
+                      # Remove HMM columns from X_all (keep only non-HMM columns)
+                      _keep_mask = np.ones(X_all.shape[1], dtype=bool)
+                      for ci in _hmm_existing_indices:
+                          _keep_mask[ci] = False
+                      _keep_indices = np.where(_keep_mask)[0]
+                      X_all = X_all[:, _keep_indices].tocsr()
+                      feature_cols = [feature_cols[i] for i in _keep_indices]
+                      _hmm_stripped = True
+                      log(f"  HMM overlay: stripped {len(_hmm_existing_indices)} HMM cols from sparse matrix "
+                          f"(avoids tolil/tocsr per fold)")
+
+                      # Recompute interaction constraints after column strip (indices shifted)
+                      if 'interaction_constraints' in _base_lgb_params:
+                          _doy_names_s = [f for f in feature_cols if f.startswith('doy_')]
+                          if _doy_names_s:
+                              _trend_kw = ('regime', 'ema50', 'bull', 'bear', 'hmm_', 'trend')
+                              _ta_kw = ('rsi_', 'macd', 'bb_', 'atr_', 'sma_', 'ema_', 'adx_', 'stoch_', 'obv', 'vwap', 'cci_', 'mfi_', 'williams', 'ichimoku', 'keltner', 'donchian', 'supertrend', 'sar_')
+                              _trend_s = [f for f in feature_cols if any(kw in f for kw in _trend_kw)]
+                              _ta_s = [f for f in feature_cols if any(kw in f for kw in _ta_kw)]
+                              _constrained_s = _doy_names_s + _trend_s + _ta_s
+                              _ci_s = [feature_cols.index(f) for f in _constrained_s if f in feature_cols]
+                              # Add HMM overlay indices (appended at end of _fold_feature_cols)
+                              _n_base = len(feature_cols)
+                              for oi, on in enumerate(_hmm_overlay_names):
+                                  if any(kw in on for kw in _trend_kw):
+                                      _ci_s.append(_n_base + oi)
+                              _base_lgb_params['interaction_constraints'] = [_ci_s]
+                          else:
+                              del _base_lgb_params['interaction_constraints']
+                  else:
+                      # HMM cols don't exist yet — will be appended to overlay
+                      _hmm_overlay = np.full((X_all.shape[0], len(_HMM_COL_NAMES)), np.nan, dtype=np.float32)
+                      _hmm_overlay_names = list(_HMM_COL_NAMES)
+                      log(f"  HMM overlay: initialized {len(_HMM_COL_NAMES)} new cols as dense overlay")
+
               for wi, (train_idx, test_idx) in enumerate(splits):
                   if wi in _completed_folds:
                       log(f"\n  --- CPCV Path {wi+1}/{len(splits)} --- SKIP (checkpoint)")
@@ -893,39 +958,27 @@ if __name__ == '__main__':
                           hmm_df_notz = hmm_df.copy()
                           if hmm_df_notz.index.tz is not None:
                               hmm_df_notz.index = hmm_df_notz.index.tz_localize(None)
-                          # Batch HMM column update: ONE format conversion instead of 4
-                          _hmm_update_indices = []
-                          _hmm_update_values = []
-                          _hmm_append_cols = []
-                          for hmm_col in ['hmm_bull_prob', 'hmm_bear_prob', 'hmm_neutral_prob', 'hmm_state']:
-                              hmm_mapped = pd.Series(date_norm).map(
-                                  hmm_df_notz[hmm_col].to_dict()
-                              ).ffill().values.astype(np.float32)
-                              col_idx = feature_cols.index(hmm_col) if hmm_col in feature_cols else -1
-                              if col_idx >= 0:
-                                  _hmm_update_indices.append(col_idx)
-                                  _hmm_update_values.append(hmm_mapped)
-                              else:
-                                  _hmm_append_cols.append((hmm_col, hmm_mapped))
-                          # Apply batched column updates (single tolil/tocsr round-trip)
-                          if _hmm_update_indices:
-                              if _X_all_is_sparse:
-                                  X_lil = X_all.tolil()
-                                  for ci, cv in zip(_hmm_update_indices, _hmm_update_values):
-                                      X_lil[:, ci] = cv.reshape(-1, 1)
-                                  X_all = X_lil.tocsr()
-                                  del X_lil
-                              else:
-                                  for ci, cv in zip(_hmm_update_indices, _hmm_update_values):
-                                      X_all[:, ci] = cv
-                          # Append any new HMM columns
-                          for hmm_col, hmm_mapped in _hmm_append_cols:
-                              if _X_all_is_sparse:
-                                  hmm_sparse = sp_sparse.csr_matrix(hmm_mapped.reshape(-1, 1))
-                                  X_all = sp_sparse.hstack([X_all, hmm_sparse], format='csr')
-                              else:
-                                  X_all = np.column_stack([X_all, hmm_mapped])
-                              feature_cols.append(hmm_col)
+
+                          if _X_all_is_sparse and _hmm_overlay is not None:
+                              # Fast path: update the small dense overlay (no sparse conversion)
+                              for hi, hmm_col in enumerate(_hmm_overlay_names):
+                                  if hmm_col in hmm_df_notz.columns:
+                                      hmm_mapped = pd.Series(date_norm).map(
+                                          hmm_df_notz[hmm_col].to_dict()
+                                      ).ffill().values.astype(np.float32)
+                                      _hmm_overlay[:, hi] = hmm_mapped
+                          else:
+                              # Dense matrix path: update columns in-place (cheap for dense)
+                              for hmm_col in _HMM_COL_NAMES:
+                                  hmm_mapped = pd.Series(date_norm).map(
+                                      hmm_df_notz[hmm_col].to_dict()
+                                  ).ffill().values.astype(np.float32)
+                                  col_idx = feature_cols.index(hmm_col) if hmm_col in feature_cols else -1
+                                  if col_idx >= 0:
+                                      X_all[:, col_idx] = hmm_mapped
+                                  else:
+                                      X_all = np.column_stack([X_all, hmm_mapped])
+                                      feature_cols.append(hmm_col)
 
                   # Extract train/test using CPCV index arrays
                   y_train_raw = y_3class[train_idx]
@@ -935,15 +988,30 @@ if __name__ == '__main__':
                   train_valid = ~np.isnan(y_train_raw)
                   test_valid = ~np.isnan(y_test_raw)
 
-                  # Extract train/test — sparse indexing uses same [idx] syntax
-                  X_train = X_all[train_idx][train_valid]
+                  # Extract train/test — sparse path hstacks HMM overlay at extraction time
+                  if _X_all_is_sparse and _hmm_overlay is not None:
+                      # hstack only on the SUBSET rows (much smaller than full matrix)
+                      _Xtr_base = X_all[train_idx][train_valid]
+                      _Xtr_hmm = sp_sparse.csr_matrix(_hmm_overlay[train_idx][train_valid])
+                      X_train = sp_sparse.hstack([_Xtr_base, _Xtr_hmm], format='csr')
+                      del _Xtr_base, _Xtr_hmm
+
+                      _Xte_base = X_all[test_idx][test_valid]
+                      _Xte_hmm = sp_sparse.csr_matrix(_hmm_overlay[test_idx][test_valid])
+                      X_test = sp_sparse.hstack([_Xte_base, _Xte_hmm], format='csr')
+                      del _Xte_base, _Xte_hmm
+
+                      _fold_feature_cols = feature_cols + _hmm_overlay_names
+                  else:
+                      X_train = X_all[train_idx][train_valid]
+                      X_test = X_all[test_idx][test_valid]
+                      _fold_feature_cols = feature_cols
+
                   y_train = y_train_raw[train_valid].astype(int)
-                  X_test = X_all[test_idx][test_valid]
                   y_test = y_test_raw[test_valid].astype(int)
                   test_idx_valid = test_idx[test_valid]  # for OOS prediction storage
 
                   # NO pre-filtering: LightGBM decides via tree splits, not us.
-                  _fold_feature_cols = feature_cols
 
                   # Lower threshold for sparse TFs
                   min_train = 50 if tf_name in ('1w', '1d') else 300
@@ -1145,15 +1213,33 @@ if __name__ == '__main__':
           # ============================================================
           # FINAL MODEL — ALL FEATURES, NO PRUNING
           # ============================================================
-          log(f"\n  {elapsed()} Training final model on ALL {len(feature_cols)} features (no pruning)...")
+          _n_final_feats = len(feature_cols) + (len(_hmm_overlay_names) if _hmm_overlay is not None else 0)
+          log(f"\n  {elapsed()} Training final model on ALL {_n_final_feats} features (no pruning)...")
 
           # Use last CPCV split for final model
           last_train_idx, last_test_idx = splits[-1]
           train_mask = ~np.isnan(y_3class[last_train_idx])
-          X_tr = X_all[last_train_idx][train_mask]
-          y_tr = y_3class[last_train_idx][train_mask].astype(int)
           test_mask = ~np.isnan(y_3class[last_test_idx])
-          X_te = X_all[last_test_idx][test_mask]
+
+          # If HMM overlay was separated (sequential sparse path), hstack it back
+          _final_feature_cols = feature_cols
+          if _hmm_overlay is not None and _X_all_is_sparse:
+              _Xtr_base = X_all[last_train_idx][train_mask]
+              _Xtr_hmm = sp_sparse.csr_matrix(_hmm_overlay[last_train_idx][train_mask])
+              X_tr = sp_sparse.hstack([_Xtr_base, _Xtr_hmm], format='csr')
+              del _Xtr_base, _Xtr_hmm
+
+              _Xte_base = X_all[last_test_idx][test_mask]
+              _Xte_hmm = sp_sparse.csr_matrix(_hmm_overlay[last_test_idx][test_mask])
+              X_te = sp_sparse.hstack([_Xte_base, _Xte_hmm], format='csr')
+              del _Xte_base, _Xte_hmm
+
+              _final_feature_cols = feature_cols + _hmm_overlay_names
+          else:
+              X_tr = X_all[last_train_idx][train_mask]
+              X_te = X_all[last_test_idx][test_mask]
+
+          y_tr = y_3class[last_train_idx][train_mask].astype(int)
           y_te = y_3class[last_test_idx][test_mask].astype(int)
 
           w_tr = sample_weights[last_train_idx][train_mask]
@@ -1172,9 +1258,9 @@ if __name__ == '__main__':
           y_tr_f = y_tr[:-val_sz]
           w_tr_f = w_tr[:-val_sz]
           dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f,
-                               feature_name=feature_cols, free_raw_data=False)
+                               feature_name=_final_feature_cols, free_raw_data=False)
           dval = lgb.Dataset(X_val_f, label=y_val_f,
-                             feature_name=feature_cols, free_raw_data=False)
+                             feature_name=_final_feature_cols, free_raw_data=False)
           final_model = lgb.train(
               final_params, dtrain, num_boost_round=_args.boost_rounds,
               valid_sets=[dtrain, dval], valid_names=['train', 'val'],
@@ -1188,13 +1274,13 @@ if __name__ == '__main__':
           final_prec_s = precision_score(y_te, final_labels, labels=[0], average='macro', zero_division=0)
           final_mlogloss = log_loss(y_te, final_preds_3c, labels=[0, 1, 2])
           log(f"  FINAL: Acc={final_acc:.3f} PrecL={final_prec_l:.3f} PrecS={final_prec_s:.3f} "
-              f"mlogloss={final_mlogloss:.4f} Trees={final_model.best_iteration} Features={len(feature_cols)}")
+              f"mlogloss={final_mlogloss:.4f} Trees={final_model.best_iteration} Features={len(_final_feature_cols)}")
 
           # Log feature importance (top 30 by gain — for visibility, not pruning)
           importance = dict(zip(final_model.feature_name(), final_model.feature_importance(importance_type='gain')))
           if importance:
               sorted_imp = sorted(importance.items(), key=lambda x: x[1], reverse=True)
-              log(f"\n  TOP 30 FEATURES BY GAIN (of {len(feature_cols)} total):")
+              log(f"\n  TOP 30 FEATURES BY GAIN (of {len(_final_feature_cols)} total):")
               for i, (fname, gain) in enumerate(sorted_imp[:30]):
                   log(f"    {i+1:3d}. {fname:<45s} gain={gain:.1f}")
               # Count how many esoteric features made it into top 50
@@ -1206,10 +1292,10 @@ if __name__ == '__main__':
 
           # KNN features kept unconditionally — LightGBM decides via tree splits, not us
 
-          # Save model + feature list
+          # Save model + feature list (must include HMM overlay names for inference)
           final_model.save_model(f'{DB_DIR}/model_{tf_name}.json')
           with open(f'{DB_DIR}/features_{tf_name}_all.json', 'w') as f:
-              json.dump(feature_cols, f, indent=2)
+              json.dump(_final_feature_cols, f, indent=2)
 
           log(f"\n  {elapsed()} Platt calibration (per-class)...")
           from sklearn.linear_model import LogisticRegression
@@ -1254,7 +1340,7 @@ if __name__ == '__main__':
 
           all_results[tf_name] = {
               'avg_accuracy': avg_acc, 'final_accuracy': final_acc,
-              'n_features': len(feature_cols), 'n_samples': len(df),
+              'n_features': len(_final_feature_cols), 'n_samples': len(df),
               'context_only': False, 'window_results': window_results,
               'knn_ab_test': None,  # removed — no pre-filtering
               'label_type': 'triple_barrier',
