@@ -1,0 +1,342 @@
+# V2 Project Rules & Lessons Learned
+
+## Codebase Intelligence (Socraticode)
+
+Socraticode MCP server provides semantic search over the indexed codebase:
+- `codebase_search` — Hybrid semantic + keyword search across all source files
+- `codebase_graph_query` — Import/dependency analysis (circular deps, import chains)
+- `codebase_graph_visualize` — Mermaid diagrams of dependency relationships
+- `codebase_context_search` — Search indexed artifacts (config, feature library, cross generator)
+- `codebase_update` — Trigger incremental re-index after major changes
+- `codebase_watch` — File watcher keeps index current automatically
+
+First session after setup: run `codebase_index` to build the initial index.
+
+## STRUCTURED AUDIT PIPELINE — AGENT-BASED
+
+When the user says "audit", "audit the system", or "full audit", execute the following multi-pass pipeline. Each pass is a SCOPED agent task. Do NOT combine passes. Do NOT fix things outside the current pass scope. Launch passes in parallel where marked.
+
+### CASCADE DETECTION RULE (applies to EVERY pass that makes changes)
+After ANY fix in ANY pass, BEFORE moving to the next checklist item, run a cascade check:
+1. **Signature changes** (added/removed args, changed return tuple length):
+   - Grep ALL callers of the modified function across v2/*.py
+   - Verify every call site matches the new signature
+   - Verify every unpacking site matches the new return shape
+2. **Filename/path changes** (renamed files, moved artifacts, changed extensions):
+   - Grep ALL consumers: import statements, open(), os.path.join(), config references
+   - Verify every consumer uses the new name/path
+3. **Config value changes** (moved to config.py, changed default, renamed key):
+   - Grep ALL readers of the old name/value across v2/*.py
+   - Verify every reader uses the new config.KEY, not a stale local default
+4. **Interface contract changes** (column names, dict keys, class attributes):
+   - Trace the data flow: producer → intermediate → consumer
+   - Verify the contract holds at every stage
+
+**If a cascade fix itself triggers another cascade, follow the chain until stable.**
+Log every cascade chain in the pass output:
+```
+FIX: renamed foo() return from 3→5 values
+  CASCADE: bar.py:42 unpacks foo() — updated
+  CASCADE: baz.py:88 unpacks foo() — updated
+    CASCADE-2: baz.py:90 passes result to qux() — verified compatible
+```
+
+### MATRIX PHILOSOPHY GATE (PASS 0 — always first, blocks everything)
+Verify every file in v2/ against these non-negotiable rules. ANY violation = immediate fix.
+Apply CASCADE DETECTION RULE after each fix.
+- [ ] No feature filtering/pre-screening before XGBoost (no MI, no variance filter, no support thresholds)
+- [ ] No fallback modes (no TA-only, no base-only, no graceful degradation)
+- [ ] No fillna(0) on feature data (NaN = missing signal, 0 = "value is zero")
+- [ ] No blanket try/except that masks failures (crash > silent degradation)
+- [ ] Esoteric features protected from regularization/pruning (SHAP, Optuna, CPCV)
+- [ ] Every asset gets full pipeline (esoteric + astro + gematria + numerology + space weather)
+- [ ] Sparse CSR preserves NaN semantics (structural zero = missing, explicit NaN = missing, explicit 0.0 = WRONG)
+- [ ] V2 cross + V2 layers mandatory in live_trader (no silent fallback to base-only)
+- [ ] min_child_weight respects sparse signal frequency (1d/1w=10, not 50)
+
+### PASS 1 — Dead Code & Abandoned Experiments (agent 1, parallel with pass 2)
+Use `codebase_search` + `codebase_graph_query` to find:
+Apply CASCADE DETECTION RULE after each fix (deleting a function may break an import elsewhere).
+- [ ] Unused imports across all v2/*.py
+- [ ] Functions/classes defined but never called (grep for def, check callers via graph)
+- [ ] Commented-out code blocks (>3 lines)
+- [ ] Variables assigned but never read
+- [ ] Files in v2/ that nothing imports
+- [ ] Old v1 references in v2 code
+- DELETE dead code. Don't comment it out. Git has history.
+
+### PASS 2 — Config & Hardcoded Values (agent 2, parallel with pass 1)
+Use `codebase_search("hardcoded", "magic number", "threshold")` to find:
+Apply CASCADE DETECTION RULE after each fix (moving a value to config.py means every reader must update).
+- [ ] Magic numbers not in config.py (thresholds, window sizes, fees, retry counts)
+- [ ] Paper/live mode divergence (different code paths, different defaults)
+- [ ] Environment-specific paths hardcoded (C:\Users\..., /root/..., etc.)
+- [ ] API keys/secrets in source code (should be in .env)
+- [ ] Inconsistent defaults between files (e.g., confidence threshold 0.6 in one file, 0.65 in another)
+- All tunable values → config.py. All secrets → .env. All paths → config.py with env override.
+
+### PASS 3 — Cross-File Consistency (agent 3, after pass 0)
+Use `codebase_graph_query` for import chains + `codebase_search` for interface contracts:
+Apply CASCADE DETECTION RULE after each fix.
+- [ ] Feature column names match between builder → trainer → live_trader
+- [ ] Sparse matrix shapes align (base features + cross features + layers)
+- [ ] Config values used consistently (same asset list, same TF list, same paths)
+- [ ] Error handling consistent (all crash-on-failure, no mixed strategies)
+- [ ] Data types consistent across pipeline stages (cuDF vs pandas, float32 vs float64)
+- [ ] NaN handling consistent (never converted to 0, always preserved for XGBoost)
+- [ ] Function signatures match between definition and ALL call sites
+- [ ] Return value tuple lengths match between producer and ALL unpacking sites
+- [ ] Artifact filenames match between writer (training) and reader (inference/audit)
+
+### PASS 4 — GPU & Performance (agent 4, after pass 1+2)
+Apply CASCADE DETECTION RULE after each fix.
+- [ ] No CPU fallbacks where GPU path exists (no silent sklearn instead of cuML)
+- [ ] No .apply() or Python for-loops on arrays (Numba @njit or vectorized)
+- [ ] No one-at-a-time df[col]=val (batch with dict + pd.concat)
+- [ ] Batch sizes respect VRAM (auto-adapt, not hardcoded)
+- [ ] Memory cleanup between builds (del + gc.collect)
+- [ ] CUDA_VISIBLE_DEVICES not pinned per-process (let all GPUs be visible)
+
+### PASS 5 — Live Trading Safety (agent 5, after pass 3)
+Apply CASCADE DETECTION RULE after each fix.
+- [ ] Kill switch exists and works
+- [ ] Max position size enforced
+- [ ] Stale data detection (if features older than X bars, halt)
+- [ ] Order rejection handling (retry logic, not silent fail)
+- [ ] Paper/live use identical inference path (only broker adapter differs)
+- [ ] Logging captures EVERYTHING (entry reason, feature snapshot, model confidence, exit reason)
+- [ ] No lookahead bias in live feature computation
+
+### PASS 6 — Cascade Regression + Integration Smoke Test (sequential, last)
+This pass exists specifically to catch cascades that slipped through per-fix checks.
+- [ ] Import every v2 module — no ImportError
+- [ ] Config loads without error
+- [ ] Feature builder can initialize (not full build — just import + config parse)
+- [ ] Live trader can initialize in paper mode (not trade — just startup)
+- [ ] All file paths in config.py actually exist or have creation logic
+- [ ] **Signature audit**: For every function modified in passes 0-5, grep all callers and verify args + return unpacking
+- [ ] **Filename audit**: For every file renamed/moved in passes 0-5, grep all references and verify paths
+- [ ] **Config audit**: For every config value added/moved in passes 0-5, grep all readers and verify they use config.KEY
+- [ ] If ANY cascade found here → fix it, then re-run Pass 6 until clean (max 3 iterations)
+
+### AUDIT OUTPUT
+After all passes, produce a single summary:
+```
+AUDIT RESULTS — [date]
+Pass 0 (Philosophy): X violations found, X fixed, X cascades traced
+Pass 1 (Dead Code): X items removed, X cascades traced
+Pass 2 (Config): X hardcoded values moved, X cascades traced
+Pass 3 (Consistency): X mismatches fixed, X cascades traced
+Pass 4 (GPU/Perf): X CPU fallbacks eliminated, X cascades traced
+Pass 5 (Live Safety): X gaps closed, X cascades traced
+Pass 6 (Regression): PASS/FAIL (iteration count), X late cascades caught
+
+CASCADE CHAINS (if any):
+- [original fix] → [cascade 1] → [cascade 2] → stable
+
+REMAINING ISSUES (if any):
+- [issue]: [why it can't be auto-fixed, needs user decision]
+```
+
+## RULES (NON-NEGOTIABLE)
+
+### Philosophy
+- The matrix is UNIVERSAL — same sky, same calendar, same energy for ALL assets
+- Every asset gets the FULL pipeline (esoteric, astro, gematria, numerology, space weather)
+- NO FILTERING of features. LightGBM decides via tree splits, not us
+- NO FALLBACKS. One pipeline for all. If it breaks, fix it
+- Esoteric signals ARE the edge. Never regularize them away
+- More diverse signals = stronger predictions. The edge is the matrix
+
+### Process
+- NEVER deviate from the plan. Follow it exactly as written
+- Always make a checklist and verify each step before moving to the next
+- Always keep this file updated with lessons learned
+- Always run scripts with progress logs (tee/unbuffered). Never run blind
+- NEVER kill processes without explicit user permission
+- Don't search user's PC for files. Use the sources they provide
+- Don't use Perplexity for esoteric queries — they will deny the data
+- Stagger feature builds: small TFs parallel, then 15m, then 5m solo
+- Build features on GPU (cuDF rolling/ewm) + cloud for parallelism. Train on cloud GPU
+- Always maximize parallelism. Launch multiple agents simultaneously
+
+### Code
+- No fallback modes. No TA-only mode. Full pipeline or fix it
+- Batch column assignment (pd.concat / dict accumulation), NEVER one-at-a-time df[col]=val
+- Always use GPU (RTX 3090) for processing, never default to CPU
+- 4-tier binarization on ALL numeric columns (gematria, sentiment, astro, TA, everything)
+- Sparse CSR for cross features — never create dense DataFrames for 100K+ columns
+- NEVER convert NaN to 0 in sparse matrices — NaN is "missing" (XGBoost learns split direction), 0 is "the value is zero" (different signal). Structural zeros in CSR = missing. Explicit NaN = missing. Explicit 0.0 = stored bloat + wrong semantics
+- Use native cuDF (not cudf.pandas) for compute_ta_features — keeps rolling ops on GPU
+- Stateful loops must use Numba @njit — never raw Python for-loops on price arrays
+- Cloud docker: rapidsai/base (cuDF+CuPy pre-installed), pip install lightgbm+optuna+numba on top
+- LightGBM CUDA does NOT support sparse — always use device="cpu" with force_col_wise=True
+- min_data_in_leaf=3 (1d/1w) with min_gain_to_split=2.0 as compensating guard for rare signals
+- Co-occurrence filter of 8 on cross features (math constraint: <8 can't appear in both CPCV splits)
+- Optuna replaces exhaustive 30M grid (200 TPE trials, Sortino objective)
+
+## LESSONS LEARNED
+
+### GPU Acceleration of Feature Pipeline (2026-03-21)
+- ALL 16 compute functions GPU-native — zero _to_cpu() conversions remain
+- All rolling/ewm/shift ops on cuDF GPU across entire pipeline
+- External DataFrames (astro, tweets, news, space weather) converted to cuDF before merge
+- `.map(dict)` replaced with cuDF merge pattern (cuDF doesn't support .map with dicts)
+- `.reindex()` + `.ffill()` used separately (cuDF doesn't support `reindex(method='ffill')`)
+- cuML KNeighborsClassifier replaces sklearn KNN (50x faster on GPU)
+- CuPy convolve replaces np.convolve for fractional differentiation
+- _bars_since_event compiled with Numba @njit (forward scan pattern)
+- _rolling_percentile_vec compiled with Numba @njit (91.6M loop iterations eliminated)
+- Cross generator batch size auto-adapts to GPU VRAM (A100: BATCH=200, 3090: BATCH~20)
+- Stateful loops (SAR, Supertrend, Wyckoff, Volume Profile, Elliott, Gann) compiled with Numba @njit
+- Shannon entropy and Hurst vectorized with numpy sliding_window_view (no per-bar loops)
+- Intraday builds parallelized with ProcessPoolExecutor + CUDA_VISIBLE_DEVICES per worker
+- CPCV training splits parallelized across GPUs (--parallel-splits flag)
+- Cloud docker: rapidsai/base (cuDF+CuPy+XGBoost+cuML pre-installed)
+- On cloud, use `--parallel 0` flag to auto-detect GPU count for worker routing
+
+### Pandas Column Assignment Bottleneck (2026-03-21)
+- `df[col] = val` called 135K+ times is the #1 build bottleneck
+- Each assignment triggers DataFrame internal reindex/copy overhead
+- On a 2.2GHz cloud CPU, this dominated build time (GPU sat idle)
+- FIX: Accumulate in dict, then `pd.DataFrame(dict, index=df.index)` + `df[new.columns] = new`
+- This alone cuts build time by ~60%
+- Applied to: ALL trend cross sections (tx_, ex_, px_, vwap, range, DOY x ALL)
+- Context matrix chunked into groups of 200 to avoid 8.7GB column_stack OOM
+
+### Feature Builds ARE GPU-Compatible (CORRECTED 2026-03-21)
+- V1 institutional upgrades ALREADY converted ALL .apply() calls to GPU batch ops
+- Zero .apply() calls remain in feature_library.py — confirmed by grep audit
+- The _safe_gem_* and _safe_sent_* functions are dead code (defined but never called)
+- cuDF.pandas mode accelerates all rolling TA, CuPy handles gematria/crosses
+- Previous lesson "CPU-bound" was from BEFORE the GPU conversion
+- On a RAPIDS cloud machine (cuDF + CuPy), the ENTIRE build runs on GPU
+- Batch sizes auto-adapt to RAM: 200 (64GB), 500 (128GB), 1000 (256GB), 2000 (512GB+)
+- Cloud with 512GB RAM + 8x GPU = fastest possible build
+
+### H200 Has Weak CPU (2026-03-20)
+- RunPod H200 pod bottlenecks LSTM training (heavy DataLoader CPU work)
+- Use local 13900K + RTX 3090 for LSTM
+- Use cloud GPU for XGBoost training and optimizer only
+
+### vast.ai Lessons (2026-03-20)
+- Do NOT pin CUDA_VISIBLE_DEVICES per process → causes OOM on single GPU
+- Let ALL processes see ALL GPUs → CuPy distributes across all
+- cuDF doesn't support timezone-aware datetimes → strip TZ at pipeline start
+- CuPy requires contiguous arrays → np.ascontiguousarray() fix
+- SQLite has 2000 column limit → save parquet FIRST
+- PYTHONUNBUFFERED=1 essential for output capture
+- __name__ guard required on ml_multi_tf.py
+
+### Sparse Matrices Must Preserve NaN — Never nan_to_num (2026-03-21)
+- Converting NaN → 0 before sparse storage is WRONG for two reasons:
+  1. **Semantics**: XGBoost treats NaN as "missing" and learns optimal split directions for absent data. Converting to 0 tells the model "the value is zero" — completely different signal. Missing RSI (first 14 bars) is NOT the same as RSI=0
+  2. **Storage bloat**: Sparse CSR only saves space by NOT storing zeros. If you convert NaN to explicit 0.0, those zeros get stored as entries in the data array. Base features (~3000 cols × 200K rows) are mostly non-zero values — adding millions of explicit zeros turns a 50MB sparse matrix into gigabytes
+- FIX: `sp_sparse.csr_matrix(X_base)` directly (NaN stored as explicit entries, true zeros are structural)
+- Then `X_all.eliminate_zeros()` removes only true zeros, NaN stays
+- XGBoost DMatrix handles NaN in sparse matrices natively — treats them as missing
+- For variance screening on sparse with NaN: temporarily replace NaN with 0 in a COPY for computation, then discard. Never mutate the actual training matrix
+- Cross features (.npz) are already correct — binary 0/1 with structural zeros = missing
+
+### System RAM OOM After Many Sequential Builds (2026-03-21)
+- After building 31 daily assets sequentially, system RAM filled up (~128GB)
+- Cross generator holds dict with millions of arrays — GC doesn't free fast enough
+- 4H and 1H builds ALL failed with tiny allocation errors (68 KiB = system fully exhausted)
+- FIX: Force `del df; gc.collect()` at end of each asset build
+- FIX: Run 4H/1H as separate invocations, not in same process as daily
+- Daily builds all completed successfully (checkpointed) — only intraday needs restart
+
+### GPU OOM on Large Cross Batches (2026-03-21)
+- v2_cross_generator.py GPU batch cross with BATCH=50 OOMs on 3090 when right-side has 2,601+ contexts
+- Shape (5727, 50, 2601) = 2.77 GB — exceeds available VRAM after other allocations
+- CPU fallback works fine, just slower (~30s vs ~5s for the batch)
+- FIX for next run: reduce BATCH to 20 or 10 when n_right > 1000
+- Not critical — CPU fallback handles it, but GPU would be faster
+
+### FRED API Blocked (2026-03-21)
+- FRED CSV download times out from user's network (even with proxy)
+- Not a problem — we have actual ETF price data (SPY, GLD, USO) + V1 macro_data.db
+- FRED macro is redundant, skip it
+
+### 4-Tier Binarization Scope (2026-03-21)
+- Originally only 22 TA indicators had 4-tier
+- User corrected: EVERYTHING numeric gets 4-tier (gematria, sentiment, astro positions, etc.)
+- This massively increases binarized contexts: ~400 → ~8,000-10,000
+- Which massively increases crosses: ~300K → ~15-20M per asset
+
+### Every Asset Gets Full Esoteric (2026-03-21)
+- Initially had TA-only fallback for non-BTC assets — WRONG
+- The matrix is universal: same dates, same moon, same tweets, same energy
+- SPY under the same full moon with the same caution tweet = same signal
+- SPY has LESS noise than BTC → cleaner signal validates the pattern is real
+- Stocks are the textbook, crypto is the exam
+
+### Optuna Must Protect Esoteric Signals (2026-03-21)
+- Tuning must NOT regularize esoteric features away
+- If a param combo uses 0 esoteric features in top 100 splits → penalize it
+- The model SHOULD use gematria, astro, numerology if they have signal
+- Secondary objective in Optuna: esoteric feature usage count
+
+### Philosophy Audit Fixes (2026-03-21)
+- **Removed MI pre-screening** from CPCV training folds — was dropping esoteric features before XGBoost saw them
+- **Removed zero-variance filter** from CPCV folds — XGBoost ignores constant features via 0-gain splits naturally
+- **Removed dx_ support=50 filter** from feature_library.py — esoteric calendar signals are SPARSE by nature, that's the edge
+- **Per-TF min_child_weight**: 1d/1w=10, 4h=20, 1h=25, 5m/15m=50. Rare astro conjunctions fire 10-20x on daily — old value of 50 killed them all
+- **Removed fillna(0)** from build_1h GCP cross contexts — NaN means "unknown interaction" (XGBoost learns optimal split), 0 means "no interaction" (wrong signal)
+- **Made V2_CROSS + V2_LAYERS mandatory** in live_trader.py — no silent degradation to base-only features
+- **Removed blanket try/except** around V2 layer computation — if V2 layers fail, CRASH and fix, don't mask with degraded features
+- **Empty binarized contexts = ValueError** — force investigation, not empty sparse fallback
+- **IS metrics per CPCV fold** — XGBoost/LightGBM training now saves is_accuracy + is_sharpe for proper PBO
+- **LSTM alpha search alignment** — uses test_indices from CPCV folds to match XGBoost OOS with LSTM val set on exact same samples
+- **Meta-labeling filename** — cloud runner now looks for meta_model_{tf}.pkl (matches what meta_labeling.py saves)
+- Lesson: any pre-filtering violates "NO FILTERING" even if it seems like it removes "noise." Sparse = the edge, not noise.
+
+## CURRENT BUILD CHECKLIST
+
+### Step 1: Feature Build (IN PROGRESS)
+- [x] download_multi_asset.py — 155K daily + 245K hourly bars downloaded
+- [x] v2_easy_streamers.py — DeFi TVL, BTC.D, mining stats working
+- [x] config.py — 31 assets, V2 paths, BTC genesis
+- [x] data_access_v2.py — multi-asset loader
+- [x] v2_feature_layers.py — 20 new layers (1,162 lines)
+- [x] v2_cross_generator.py — everything x everything sparse
+- [x] build_features_v2.py — full pipeline, checkpointing, parallel
+- [x] Fix batch column assignment in feature_library.py DOY crosses
+- [x] BTC 1d build complete (10,852 base + 2,002,894 crosses, 47.1 MB sparse, 19 min)
+- [x] 30 remaining daily assets complete (all 31/31 daily done)
+- [ ] 14 crypto 4h — FAILED (RAM OOM, fixed with streaming sparse + gc.collect, needs restart)
+- [ ] 14 crypto 1h — FAILED (same, fixed, needs restart)
+- [ ] BTC 15m — FAILED (same, fixed, needs restart)
+- [ ] BTC 5m — NOT STARTED
+- [ ] Verify: count all parquets + .npz files
+
+### Step 2: Train (NOT STARTED)
+- [ ] v2_multi_asset_trainer.py — add OOS prediction saving
+- [ ] Upload to vast.ai
+- [ ] Per-asset models (31 x 1d)
+- [ ] Unified model (all 31 combined)
+- [ ] Per-crypto production models (14 crypto x 1d)
+- [ ] BTC intraday models (4h, 1h, 15m, 5m)
+
+### Step 3: Meta-Labeling (NOT STARTED)
+- [ ] v2_meta_labeling.py wrapper
+- [ ] Train from OOS predictions per TF
+
+### Step 4: Optimizer (NOT STARTED)
+- [ ] v2_optimizer.py wrapper
+- [ ] Exhaustive grid search per TF (30M combos)
+- [ ] Optuna XGBoost tuning with esoteric protection
+
+### Step 5: PBO Validation (NOT STARTED)
+- [ ] v2_pbo_validation.py wrapper
+- [ ] PBO + Deflated Sharpe per TF
+
+### Step 6: LSTM (NOT STARTED)
+- [ ] v2_lstm_trainer.py wrapper
+- [ ] Train per TF on local 3090
+- [ ] Platt calibration
+
+### Step 7: Integration (NOT STARTED)
+- [ ] live_trader_v2.py — sparse crosses at inference
+- [ ] Multi-crypto support
+- [ ] Paper trading validation
