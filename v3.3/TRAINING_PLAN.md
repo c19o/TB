@@ -204,6 +204,35 @@ Based on the texts retrieved from the vector database, write Python logic/functi
 
 The goal: write scalable code that mathematically generates thousands of new, logically sound permutations (Esoteric × TA × Regime) to feed into training.
 
+### Phase 3b: Validate Cross Features with SHAP (not gain importance)
+v3.2 showed zero cross features in top 500 by LightGBM gain importance. This is MISLEADING:
+- Gain importance = split improvement × N_samples_in_node
+- Sparse binary crosses fire on 0.01% of samples → tiny N_node → tiny gain, EVEN IF PERFECTLY PREDICTIVE
+- EFB (Exclusive Feature Bundling) merges sparse crosses into bundles → gain accrues to bundle, not named feature
+- **The crosses may be doing heavy lifting but gain importance is structurally blind to them**
+
+**Fix:** Run SHAP TreeExplainer on 10K high-confidence (>80%) samples ONLY:
+```python
+import shap
+explainer = shap.TreeExplainer(model)
+shap_values = explainer.shap_values(X_high_conf[:10000])
+# Group by feature family: sum |SHAP| across DOY×astro, DOY×TA, esoteric×TA, etc.
+```
+This reveals which cross feature FAMILIES drive the high-confidence predictions.
+Also: set `enable_bundle=False` during importance analysis to prevent EFB from hiding individual crosses.
+
+### Phase 3c: Scale-In / Scale-Out Execution (Fractional Kelly)
+v3.2 used binary entry (all-in above threshold). Wastes calibrated confidence.
+
+**v3.3 approach (per Perplexity — Fractional Kelly):**
+- 60-70% confidence → 25% of max position (thesis test)
+- 70-85% confidence → 50-65% of max position (building conviction)
+- 85%+ confidence → full position (maximum conviction)
+- Scale OUT as confidence drops bar-by-bar
+- Hard exit if confidence < 50%
+
+Captures 75% of full Kelly growth with 25% of variance. The 98% accuracy at high confidence means Kelly says bet big — and correctly so.
+
 ---
 
 ## V3.3 TEMPORAL CASCADE — SUB-CANDLE ENTRIES & EXITS
@@ -255,6 +284,36 @@ Use higher-TF models for DIRECTION, lower-TF models for TIMING:
 - Retrain models monthly on rolling 2-year window
 - Use `save_binary()` to cache LightGBM datasets (skip 3hr loading)
 - Optuna configs from v3.2 as warm-start for v3.3 search
+
+### Phase 7: Production Infrastructure (matrix-safe — zero impact on features or signals)
+These are execution/monitoring layers AROUND the model. They don't touch features, training, or predictions.
+
+**Risk Management:**
+- Hard kill switch — independent process, auto-flattens all positions. Testable on schedule.
+- Tiered circuit breakers: tier 1 reduces size, tier 2 pauses entries, tier 3 closes all
+- Max daily loss + max drawdown-from-peak hard stops
+- Drawdown-based auto-demotion: if rolling Sharpe < threshold for X days → auto-switch to paper. Define NOW not during a losing streak.
+- Funding rate awareness: BTC perps funding can erode 10-50 bps/day at high leverage. Factor into entry decisions.
+
+**Model Health Monitoring (alpha decay detection):**
+- Rolling Information Coefficient on 30/60/90 day windows — detect signal decay before P&L shows it
+- Feature drift monitoring: KS-test live feature distributions vs training. Alert on drift before predictions break.
+- P&L attribution: decompose into model alpha vs slippage vs beta vs funding. If model alpha goes negative = pause.
+- Champion/Challenger: shadow-retrained model runs paper alongside live. Auto-promote if it outperforms.
+
+**Execution Layer:**
+- Order management system: partial fills, rejections, timeout retries, idempotency guarantees
+- Reconciliation loop: compare internal position state to exchange every N minutes. Alert on divergence.
+- Fee tier optimization: maker vs taker routing. At high frequency, taker fees can kill a thin edge.
+- Cold-start procedure: documented process for system restart with open positions.
+
+**Data Pipeline:**
+- Feature store with versioned, timestamped snapshots — prevents train/serve skew on 4.25M features
+- Stale data detection: if any feed goes stale > X minutes, circuit-trip on that feature group
+- Redundant data sources: primary + fallback exchange feeds
+- Audit logs proving every live inference used only past data
+
+**NONE of these touch the matrix.** They're guardrails around it. The esoteric features, cross generation, and training pipeline are completely untouched.
 
 ---
 
