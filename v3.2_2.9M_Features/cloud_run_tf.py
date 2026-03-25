@@ -217,13 +217,29 @@ if not need_rebuild and os.path.exists(parquet_path):
     pq = pd.read_parquet(parquet_path)
     n_cols = pq.shape[1]
     n_rows = pq.shape[0]
+    pq_cols = set(pq.columns)
     log(f"Parquet check: {n_rows} rows x {n_cols} cols")
     del pq
     if n_cols < MIN_BASE_FEATURES:
         log(f"  Only {n_cols} cols (need {MIN_BASE_FEATURES}+) — need rebuild")
         need_rebuild = True
     else:
-        log(f"  Parquet OK: {n_cols} base features")
+        # V3.3 FEATURE FINGERPRINT: detect stale parquets missing new features.
+        # If feature_library.py was updated with new features but parquet was built
+        # with old code, the parquet is stale and must be rebuilt.
+        _V33_FINGERPRINT_COLS = [
+            'vortex_family',           # compute_vortex_sacred_geometry_features
+            'planet_mars_speed',       # compute_planetary_expansion_features
+            'lunar_distance_pct',      # compute_lunar_electromagnetic_features
+            'lo_shu_position',         # compute_numerology_expansion_features
+        ]
+        _missing_v33 = [c for c in _V33_FINGERPRINT_COLS if c not in pq_cols]
+        if _missing_v33:
+            log(f"  STALE PARQUET: missing v3.3 features: {_missing_v33}")
+            log(f"  Parquet was built with old feature_library.py — forcing rebuild")
+            need_rebuild = True
+        else:
+            log(f"  Parquet OK: {n_cols} base features (v3.3 fingerprint verified)")
 
 if need_rebuild:
     # Prefer build_features_v2.py (includes V2 layers: 4-tier binarization, entropy,

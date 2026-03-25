@@ -178,6 +178,7 @@ REMAINING ISSUES (if any):
 - **Monitor must verify MULTI-THREADED execution.** After launch, check load average > cores × 0.3. If load ≈ 1.0 on a 128+ core machine, training is single-threaded — this is a critical bug. Check RSS matches expected dense matrix size.
 - **After fixing a bug, grep ALL files for the SAME pattern.** The .nnz bug was fixed in one place but existed in another. The parquet symlink bug hit 1w, then 1h, then 1d, then 4h — same bug, never properly fixed at the root.
 - **Pre-flight code audit before EVERY deploy.** Run the pre-flight checklist in CLOUD_TRAINING_PROTOCOL.md. Never deploy code that hasn't been verified against the checklist. The single-threaded bug (v3.3) could have been caught by checking load average within 60 seconds of launch.
+- **STALE PARQUET CHECK is MANDATORY.** If feature_library.py changed since parquets were built, DELETE old parquets AND NPZs. The pipeline skips rebuild when parquet exists with >2000 cols — it does NOT detect new features. cloud_run_tf.py now has a v3.3 fingerprint check, but ALWAYS verify parquet col count matches expected after any feature_library.py change.
 
 ### Code
 - No fallback modes. No TA-only mode. Full pipeline or fix it

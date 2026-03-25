@@ -256,6 +256,9 @@ vastai destroy instance <ID>
 [ ] cross_cols initialized as [] not None (both ml_multi_tf.py AND backtesting_audit.py)
 [ ] Model backup (shutil.copy2) exists after Step 4
 [ ] psutil has /proc/meminfo fallback (no bare ImportError crash)
+[ ] V3.3 feature fingerprint check in cloud_run_tf.py (detects stale parquets from old feature_library.py)
+[ ] If feature_library.py changed since last build: DELETE old parquets + NPZs, force full rebuild
+[ ] After feature rebuild: verify column count increased (v3.3 should have ~3600+ base features for 1w)
 ```
 
 ## POST-LAUNCH VALIDATION (within 60 seconds of launch)
