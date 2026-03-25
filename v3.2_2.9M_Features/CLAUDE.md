@@ -181,6 +181,7 @@ REMAINING ISSUES (if any):
 - **STALE PARQUET CHECK is MANDATORY.** If feature_library.py changed since parquets were built, DELETE old parquets AND NPZs. The pipeline skips rebuild when parquet exists with >2000 cols — it does NOT detect new features. cloud_run_tf.py now has a v3.3 fingerprint check, but ALWAYS verify parquet col count matches expected after any feature_library.py change.
 - **VERIFY DATA DIRECTORY BEFORE EVERY RUN.** config.py's V30_DATA_DIR defaults to `v3.0 (LGBM)/` which has OLD data. Cloud sets V30_DATA_DIR=/workspace. Locally, MUST set `export V30_DATA_DIR=/path/to/v3.2_2.9M_Features` or training silently uses v3.0 features. ALWAYS check the "Loaded from parquet:" log line — if it shows v3.0 path, STOP.
 - **CHECK ALL CONFIG PATHS IN FIRST 10 LOG LINES.** DB_DIR, V30_DATA_DIR, SAVAGE22_DB_DIR, PROJECT_DIR — verify all point to correct directories. Wrong paths = training on wrong/stale data = wasted time and money.
+- **NEVER pip/conda install packages that touch CUDA deps in RAPIDS containers.** Both pip and conda can upgrade cuda-python/cuda-bindings to versions incompatible with cudf, PERMANENTLY breaking the environment. SAFE onstart-cmd: `pip install --no-cache-dir --no-deps lightgbm optuna ephem && pip install --no-cache-dir alembic cmaes colorlog sqlalchemy tqdm PyYAML joblib threadpoolctl`. The --no-deps flag prevents pip from resolving CUDA dependencies. scipy + scikit-learn + numpy are ALREADY in the RAPIDS container.
 
 ### Code
 - No fallback modes. No TA-only mode. Full pipeline or fix it

@@ -146,7 +146,11 @@ _my_pid = os.getpid()
 os.system(f'pgrep -f "python.*(ml_multi_tf|cross_generator|optuna|exhaustive|meta_label|lstm_seq|backtest|backtesting|build_.*features)" | grep -v {_my_pid} | xargs -r kill -9 2>/dev/null; true')
 time.sleep(1)
 
-run('pip install -q lightgbm optuna scipy numba scikit-learn pandas pyarrow psutil hmmlearn torch 2>&1 | tail -5',
+# CRITICAL: Must use --no-deps to prevent pip from upgrading cuda-python/cuda-bindings.
+# torch pulls cuda-bindings 13.x which breaks cudf in RAPIDS containers (CUDA 12.8).
+# All deps (numpy, scipy, pandas, pyarrow, torch) are ALREADY in the RAPIDS container.
+# Only need lightgbm, optuna, ephem, hmmlearn as new packages.
+run('pip install -q --no-deps lightgbm optuna ephem hmmlearn 2>&1 | tail -5 && pip install -q --no-cache-dir alembic cmaes colorlog sqlalchemy tqdm PyYAML joblib threadpoolctl 2>&1 | tail -3',
     'Install deps')
 
 # ============================================================
