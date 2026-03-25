@@ -905,9 +905,9 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             names_path = os.path.join(out_dir, f'v2_cross_names_{tf}.json')
 
         from atomic_io import atomic_save_npz, atomic_save_json
-        atomic_save_npz(sparse_mat, npz_path)
         # Ensure cross names are native Python strings (not np.str_) for JSON
         # Dedup names from truncation collisions — keep first occurrence, drop duplicates
+        # CRITICAL: dedup BEFORE saving NPZ so matrix cols match name count
         seen = set()
         dedup_indices = []
         for i, n in enumerate(cross_names):
@@ -924,6 +924,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             sparse_mat = sparse_mat[:, dedup_indices]
         else:
             cross_names = [str(n) for n in cross_names]
+        atomic_save_npz(sparse_mat, npz_path)
         atomic_save_json(cross_names, names_path)
 
         size_mb = os.path.getsize(npz_path) / 1e6
