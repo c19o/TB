@@ -150,7 +150,7 @@ time.sleep(1)
 # torch pulls cuda-bindings 13.x which breaks cudf in RAPIDS containers (CUDA 12.8).
 # All deps (numpy, scipy, pandas, pyarrow, torch) are ALREADY in the RAPIDS container.
 # Only need lightgbm, optuna, ephem, hmmlearn as new packages.
-run('pip install -q --no-deps lightgbm optuna ephem hmmlearn 2>&1 | tail -5 && pip install -q --no-cache-dir alembic cmaes colorlog sqlalchemy tqdm PyYAML joblib threadpoolctl 2>&1 | tail -3',
+run('pip install -q --no-deps lightgbm optuna ephem hmmlearn xgboost 2>&1 | tail -5 && pip install -q --no-cache-dir alembic cmaes colorlog sqlalchemy tqdm PyYAML joblib threadpoolctl 2>&1 | tail -3',
     'Install deps')
 
 # ============================================================

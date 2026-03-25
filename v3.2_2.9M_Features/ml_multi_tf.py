@@ -292,6 +292,104 @@ def _cpcv_split_worker(args_tuple):
             importance, is_acc, is_mlogloss, is_sharpe)
 
 
+def _cpcv_split_worker_xgbm(args_tuple):
+    """XGBoost CPCV split worker — for NNZ > 2B (15m).
+    Same interface as _cpcv_split_worker but uses XGBoost with int64 sparse support.
+    """
+    (wi, train_idx, test_idx, X_data, X_indices, X_indptr, X_shape,
+     y_3class, sample_weights, feature_cols, xgb_params,
+     num_boost_round, tf_name, gpu_id) = args_tuple
+
+    import numpy as np
+    from scipy import sparse
+    import xgboost as xgb
+    from sklearn.metrics import accuracy_score, precision_score, log_loss
+
+    # Reconstruct sparse matrix with int64 indices
+    X_all = sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
+
+    y_train_raw = y_3class[train_idx]
+    y_test_raw = y_3class[test_idx]
+    train_valid = ~np.isnan(y_train_raw)
+    test_valid = ~np.isnan(y_test_raw)
+
+    X_train = X_all[train_idx][train_valid]
+    y_train = y_train_raw[train_valid].astype(int)
+    X_test = X_all[test_idx][test_valid]
+    y_test = y_test_raw[test_valid].astype(int)
+    test_idx_valid = test_idx[test_valid]
+
+    min_train = 50 if tf_name in ('1w', '1d') else 300
+    min_test = 20 if tf_name in ('1w', '1d') else 50
+    n_train = X_train.shape[0]
+    n_test = X_test.shape[0]
+    if n_train < min_train or n_test < min_test:
+        return (wi, None, None, None, None, None, None, None, None, None, None, None, None, None)
+
+    w_train = sample_weights[train_idx][train_valid]
+
+    params = xgb_params.copy()
+
+    # 85/15 train/val split for early stopping
+    val_size = max(int(n_train * 0.15), 100)
+    if val_size >= n_train:
+        val_size = max(n_train // 5, 20)
+    X_val_es = X_train[-val_size:]
+    y_val_es = y_train[-val_size:]
+    X_train_es = X_train[:-val_size]
+    y_train_es = y_train[:-val_size]
+    w_train_es = w_train[:-val_size]
+
+    dtrain = xgb.DMatrix(X_train_es, label=y_train_es, weight=w_train_es,
+                         feature_names=feature_cols)
+    dval = xgb.DMatrix(X_val_es, label=y_val_es, feature_names=feature_cols)
+    model = xgb.train(
+        params, dtrain,
+        num_boost_round=num_boost_round,
+        evals=[(dtrain, 'train'), (dval, 'val')],
+        early_stopping_rounds=50,
+        verbose_eval=0,
+    )
+
+    # OOS predictions
+    dtest = xgb.DMatrix(X_test, feature_names=feature_cols)
+    preds_3c = model.predict(dtest)
+    pred_labels = np.argmax(preds_3c, axis=1)
+    acc = float(accuracy_score(y_test, pred_labels))
+    prec_long = float(precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0))
+    prec_short = float(precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0))
+    mlogloss = float(log_loss(y_test, preds_3c, labels=[0, 1, 2]))
+
+    # IS metrics for PBO
+    dtrain_full = xgb.DMatrix(X_train, feature_names=feature_cols)
+    is_preds_3c = model.predict(dtrain_full)
+    is_pred_labels = np.argmax(is_preds_3c, axis=1)
+    is_acc = float(accuracy_score(y_train, is_pred_labels))
+    is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
+    _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
+    _is_std = np.std(_is_sim_ret, ddof=1)
+    is_sharpe = float(np.mean(_is_sim_ret) / max(_is_std, 1e-10) * np.sqrt(252))
+
+    # Feature importance — XGBoost returns dict directly
+    importance = model.get_score(importance_type='gain')
+    # Fill missing features with 0 (XGBoost only returns features with splits)
+    importance = {f: importance.get(f, 0.0) for f in feature_cols}
+
+    # Serialize model
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix='.json', delete=False)
+    tmp.close()
+    model.save_model(tmp.name)
+    with open(tmp.name, 'rb') as f:
+        model_bytes = f.read()
+    import os as _os
+    _os.unlink(tmp.name)
+
+    return (wi, acc, prec_long, prec_short, mlogloss, model.best_iteration,
+            model_bytes, preds_3c.copy(), y_test.copy(), test_idx_valid.copy(),
+            importance, is_acc, is_mlogloss, is_sharpe)
+
+
 if __name__ == '__main__':
   # ============================================================
   # LOAD DAILY DATA FOR HMM (will re-fit per window)
@@ -606,19 +704,17 @@ if __name__ == '__main__':
               #   2. Bloat storage: explicit 0s get stored in sparse matrix, defeating the point
               X_base_sparse = sp_sparse.csr_matrix(X_base)  # NaN stored as explicit entries, true zeros are structural
               X_all = sp_sparse.hstack([X_base_sparse, cross_matrix], format='csr')
-              # NNZ GUARD: LightGBM int32 index overflow at >2^31 non-zeros (GitHub #1689)
-              # Silently produces garbage predictions. Must subsample rows to stay under limit.
-              _NNZ_LIMIT = 2_000_000_000  # ~93% of int32 max, safety margin
-              if hasattr(X_all, 'nnz') and X_all.nnz > _NNZ_LIMIT:
-                  _target_rows = max(1000, int(X_all.shape[0] * (_NNZ_LIMIT / X_all.nnz) * 0.95))
-                  log(f"  NNZ GUARD: {X_all.nnz:,} non-zeros > {_NNZ_LIMIT:,} limit (int32 overflow risk)")
-                  log(f"  Subsampling to {_target_rows:,} most recent rows (from {X_all.shape[0]:,})")
-                  _keep_start = X_all.shape[0] - _target_rows
-                  X_all = X_all[_keep_start:]
-                  y_3class = y_3class[_keep_start:]
-                  sample_weights = sample_weights[_keep_start:]
-                  df = df.iloc[_keep_start:].reset_index(drop=True)
-                  log(f"  After subsample: {X_all.shape[0]:,} rows, {X_all.nnz:,} NNZ (under limit: {X_all.nnz < _NNZ_LIMIT})")
+              # NNZ CHECK: LightGBM has int32 index overflow at >2^31 non-zeros (GitHub #1689).
+              # When NNZ > threshold, switch to XGBoost which supports int64 sparse natively.
+              # This keeps ALL rows and ALL features — zero data loss.
+              from config import XGBM_NNZ_THRESHOLD
+              _use_xgboost = hasattr(X_all, 'nnz') and X_all.nnz > XGBM_NNZ_THRESHOLD
+              if _use_xgboost:
+                  log(f"  NNZ={X_all.nnz:,} > {XGBM_NNZ_THRESHOLD:,} — switching to XGBoost (int64 sparse, ALL rows kept)")
+                  # Force int64 indices for XGBoost compatibility
+                  X_all.indices = X_all.indices.astype(np.int64)
+                  X_all.indptr = X_all.indptr.astype(np.int64)
+                  log(f"  Promoted sparse indices to int64 ({X_all.indices.dtype})")
               # Keep SPARSE for training. Parallel CPCV workers each train on sparse CSR
               # with 1 thread per worker — this is the fastest path (confirmed by Perplexity).
               # Dense conversion is a regression: scans 100% elements including 96% zeros,
@@ -823,25 +919,34 @@ if __name__ == '__main__':
               _threads_per_worker = min(16, max(1, _total_cores // _n_workers))
               log(f"\n  PARALLEL CPCV: {_pending_splits} pending splits, {_n_workers} workers x {_threads_per_worker} threads ({_total_cores} cores available)")
 
-              _base_lgb_params = _base_lgb_params.copy()
-              _base_lgb_params['num_threads'] = _threads_per_worker
-              log(f"  num_threads per worker: {_base_lgb_params['num_threads']}")
+              # Select training backend: XGBoost for NNZ > 2B, LightGBM otherwise
+              if _use_xgboost:
+                  from config import V3_XGBM_PARAMS
+                  _worker_params = V3_XGBM_PARAMS.copy()
+                  _worker_params['nthread'] = _threads_per_worker
+                  _worker_fn = _cpcv_split_worker_xgbm
+                  log(f"  Backend: XGBoost (int64 sparse, {_threads_per_worker} threads/worker)")
+              else:
+                  _worker_params = _base_lgb_params.copy()
+                  _worker_params['num_threads'] = _threads_per_worker
+                  _worker_fn = _cpcv_split_worker
+                  log(f"  Backend: LightGBM ({_threads_per_worker} threads/worker)")
               X_csr = X_all.tocsr() if hasattr(X_all, 'tocsr') else X_all
               worker_args = []
               for wi, (train_idx, test_idx) in enumerate(splits):
                   if wi in _completed_folds:
                       log(f"  Path {wi+1}/{len(splits)}: SKIP (checkpoint)")
                       continue
-                  gpu_id = 0  # unused in LightGBM CPU mode
+                  gpu_id = 0
                   worker_args.append((
                       wi, train_idx, test_idx,
                       X_csr.data, X_csr.indices, X_csr.indptr, X_csr.shape,
-                      y_3class, sample_weights, feature_cols, _base_lgb_params,
+                      y_3class, sample_weights, feature_cols, _worker_params,
                       _args.boost_rounds, tf_name, gpu_id
                   ))
 
               with ProcessPoolExecutor(max_workers=_n_workers) as executor:
-                  for result in executor.map(_cpcv_split_worker, worker_args):
+                  for result in executor.map(_worker_fn, worker_args):
                       (wi, acc, prec_long, prec_short, mlogloss_val, best_iter,
                        model_bytes, preds_3c, y_test, test_idx_valid,
                        importance, is_acc, is_mlogloss, is_sharpe) = result
@@ -873,12 +978,17 @@ if __name__ == '__main__':
 
                       if acc > best_acc:
                           best_acc = acc
-                          # Deserialize best model
+                          # Deserialize best model (XGBoost or LightGBM)
                           import tempfile as _tmpmod
-                          _tmp = _tmpmod.NamedTemporaryFile(suffix='.txt', delete=False)
+                          _sfx = '.json' if _use_xgboost else '.txt'
+                          _tmp = _tmpmod.NamedTemporaryFile(suffix=_sfx, delete=False)
                           _tmp.write(model_bytes)
                           _tmp.close()
-                          best_model_obj = lgb.Booster(model_file=_tmp.name)
+                          if _use_xgboost:
+                              import xgboost as xgb
+                              best_model_obj = xgb.Booster(model_file=_tmp.name)
+                          else:
+                              best_model_obj = lgb.Booster(model_file=_tmp.name)
                           os.unlink(_tmp.name)
 
                       # Checkpoint after each fold (crash-safe resume)
@@ -1283,17 +1393,32 @@ if __name__ == '__main__':
           X_tr_f = X_tr[:-val_sz]
           y_tr_f = y_tr[:-val_sz]
           w_tr_f = w_tr[:-val_sz]
-          dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f,
-                               feature_name=_final_feature_cols, free_raw_data=False)
-          dval = lgb.Dataset(X_val_f, label=y_val_f,
-                             feature_name=_final_feature_cols, free_raw_data=False)
-          final_model = lgb.train(
-              final_params, dtrain, num_boost_round=_args.boost_rounds,
-              valid_sets=[dtrain, dval], valid_names=['train', 'val'],
-              callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
-          )
+          if _use_xgboost:
+              import xgboost as xgb
+              dtrain = xgb.DMatrix(X_tr_f, label=y_tr_f, weight=w_tr_f, feature_names=_final_feature_cols)
+              dval = xgb.DMatrix(X_val_f, label=y_val_f, feature_names=_final_feature_cols)
+              from config import V3_XGBM_PARAMS
+              _xgb_final = V3_XGBM_PARAMS.copy()
+              _xgb_final['nthread'] = -1
+              final_model = xgb.train(
+                  _xgb_final, dtrain, num_boost_round=_args.boost_rounds,
+                  evals=[(dtrain, 'train'), (dval, 'val')],
+                  early_stopping_rounds=50, verbose_eval=100,
+              )
+              dtest = xgb.DMatrix(X_te, feature_names=_final_feature_cols)
+              final_preds_3c = final_model.predict(dtest)
+          else:
+              dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f,
+                                   feature_name=_final_feature_cols, free_raw_data=False)
+              dval = lgb.Dataset(X_val_f, label=y_val_f,
+                                 feature_name=_final_feature_cols, free_raw_data=False)
+              final_model = lgb.train(
+                  final_params, dtrain, num_boost_round=_args.boost_rounds,
+                  valid_sets=[dtrain, dval], valid_names=['train', 'val'],
+                  callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
+              )
+              final_preds_3c = final_model.predict(X_te)  # shape (N, 3)
 
-          final_preds_3c = final_model.predict(X_te)  # shape (N, 3)
           final_labels = np.argmax(final_preds_3c, axis=1)
           final_acc = accuracy_score(y_te, final_labels)
           final_prec_l = precision_score(y_te, final_labels, labels=[2], average='macro', zero_division=0)
@@ -1302,8 +1427,12 @@ if __name__ == '__main__':
           log(f"  FINAL: Acc={final_acc:.3f} PrecL={final_prec_l:.3f} PrecS={final_prec_s:.3f} "
               f"mlogloss={final_mlogloss:.4f} Trees={final_model.best_iteration} Features={len(_final_feature_cols)}")
 
-          # Log feature importance (top 30 by gain — for visibility, not pruning)
-          importance = dict(zip(final_model.feature_name(), final_model.feature_importance(importance_type='gain')))
+          # Log feature importance (top 30 by gain)
+          if _use_xgboost:
+              importance = final_model.get_score(importance_type='gain')
+              importance = {f: importance.get(f, 0.0) for f in _final_feature_cols}
+          else:
+              importance = dict(zip(final_model.feature_name(), final_model.feature_importance(importance_type='gain')))
           if importance:
               sorted_imp = sorted(importance.items(), key=lambda x: x[1], reverse=True)
               log(f"\n  TOP 30 FEATURES BY GAIN (of {len(_final_feature_cols)} total):")

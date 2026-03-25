@@ -250,6 +250,31 @@ V3_LGBM_PARAMS = {
     "max_conflict_rate": 0.0,  # Only bundle truly mutually exclusive features. Protects cross feature co-occurrence signals.
 }
 
+# ── XGBoost Parameters (for 15m when NNZ > int32 limit) ──
+# XGBoost supports int64 sparse indices — no NNZ overflow.
+# Used ONLY when NNZ > XGBM_NNZ_THRESHOLD. LightGBM stays for all other TFs.
+XGBM_NNZ_THRESHOLD = 2_000_000_000  # Switch to XGBoost when NNZ > 2B
+
+V3_XGBM_PARAMS = {
+    "objective": "multi:softprob",
+    "num_class": 3,
+    "eval_metric": "mlogloss",
+    "booster": "gbtree",
+    "tree_method": "hist",
+    "max_bin": 63,
+    "nthread": -1,
+    "max_depth": 6,
+    "colsample_bytree": 0.05,
+    "colsample_bylevel": 0.5,
+    "subsample": 0.8,
+    "alpha": 0.5,
+    "lambda": 3.0,
+    "eta": 0.03,
+    "gamma": 2.0,
+    "min_child_weight": 3,
+    "verbosity": 0,
+}
+
 # SHAP analysis config
 SHAP_N_SAMPLES = 10000        # High-confidence samples for SHAP analysis
 SHAP_TOP_N = 1000             # Top N features by |SHAP| to report
