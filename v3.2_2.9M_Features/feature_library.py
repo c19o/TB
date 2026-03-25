@@ -120,7 +120,11 @@ def _is_gpu(df):
 def _np(x):
     """Extract numpy array from pandas/cuDF Series, CuPy array, or numpy array."""
     if hasattr(x, 'to_numpy'):
-        return x.to_numpy()
+        try:
+            return x.to_numpy()
+        except ValueError:
+            # cuDF 25.02+: "Column must have no nulls" — fill NaN first
+            return x.to_numpy(dtype='float64', na_value=np.nan)
     if cp is not None and hasattr(x, 'get'):
         return x.get()
     return np.asarray(x)

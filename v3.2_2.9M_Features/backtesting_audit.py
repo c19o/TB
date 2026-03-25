@@ -199,8 +199,13 @@ def load_full_history(tf_name):
     # Timestamps
     if 'timestamp' in df.columns:
         df['timestamp'] = pd.to_datetime(df['timestamp'])
+    elif 'open_time' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['open_time'])
     elif 'date' in df.columns:
         df['timestamp'] = pd.to_datetime(df['date'])
+    else:
+        # Fallback: generate sequential timestamps
+        df['timestamp'] = pd.date_range(end=pd.Timestamp.now(), periods=len(df), freq='W')
 
     timestamps = df['timestamp'].values
 
