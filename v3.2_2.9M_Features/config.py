@@ -231,7 +231,7 @@ V3_LGBM_PARAMS = {
     "boosting_type": "gbdt",
     "device": "cpu",
     "force_col_wise": True,
-    "max_bin": 63,
+    "max_bin": 15,       # Binary 0/1 features only use 2 bins — 63 was 4x wasted compute (Perplexity confirmed)
     "num_threads": -1,
     "is_enable_sparse": True,
     "min_data_in_leaf": 3,
@@ -247,7 +247,7 @@ V3_LGBM_PARAMS = {
     "path_smooth": 0.1,
     "extra_trees": False,
     "verbosity": -1,
-    "max_conflict_rate": 0.0,  # Only bundle truly mutually exclusive features. Protects cross feature co-occurrence signals.
+    "max_conflict_rate": 0.3,  # Re-enable EFB bundling — LightGBM's core sparse optimization. 0.0 disabled it = massive slowdown.
 }
 
 # ── XGBoost Parameters (for 15m when NNZ > int32 limit) ──
@@ -261,7 +261,7 @@ V3_XGBM_PARAMS = {
     "eval_metric": "mlogloss",
     "booster": "gbtree",
     "tree_method": "hist",
-    "max_bin": 63,
+    "max_bin": 15,        # Binary features only need 2 bins
     "nthread": -1,
     "max_depth": 6,
     "colsample_bytree": 0.05,
