@@ -560,7 +560,7 @@ if __name__ == '__main__':
 
           # Check for sparse cross .npz file for this TF
           cross_matrix = None
-          cross_cols = None
+          cross_cols = []
           npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
           # v3.1: check v3.0 shared data dir for cross NPZ
           if not os.path.exists(npz_path):
@@ -595,7 +595,7 @@ if __name__ == '__main__':
               except Exception as e:
                   log(f"  WARNING: Failed to load sparse crosses: {e}")
                   cross_matrix = None
-                  cross_cols = None
+                  cross_cols = []
 
           # Combine base + crosses into X_all
           _X_all_is_sparse = False
@@ -606,11 +606,37 @@ if __name__ == '__main__':
               #   2. Bloat storage: explicit 0s get stored in sparse matrix, defeating the point
               X_base_sparse = sp_sparse.csr_matrix(X_base)  # NaN stored as explicit entries, true zeros are structural
               X_all = sp_sparse.hstack([X_base_sparse, cross_matrix], format='csr')
+              # NNZ GUARD: LightGBM int32 index overflow at >2^31 non-zeros (GitHub #1689)
+              # Silently produces garbage predictions. Must subsample rows to stay under limit.
+              _NNZ_LIMIT = 2_000_000_000  # ~93% of int32 max, safety margin
+              if hasattr(X_all, 'nnz') and X_all.nnz > _NNZ_LIMIT:
+                  _target_rows = max(1000, int(X_all.shape[0] * (_NNZ_LIMIT / X_all.nnz) * 0.95))
+                  log(f"  NNZ GUARD: {X_all.nnz:,} non-zeros > {_NNZ_LIMIT:,} limit (int32 overflow risk)")
+                  log(f"  Subsampling to {_target_rows:,} most recent rows (from {X_all.shape[0]:,})")
+                  _keep_start = X_all.shape[0] - _target_rows
+                  X_all = X_all[_keep_start:]
+                  y_3class = y_3class[_keep_start:]
+                  sample_weights = sample_weights[_keep_start:]
+                  df = df.iloc[_keep_start:].reset_index(drop=True)
+                  log(f"  After subsample: {X_all.shape[0]:,} rows, {X_all.nnz:,} NNZ (under limit: {X_all.nnz < _NNZ_LIMIT})")
               # Convert sparse→dense for multi-core LightGBM (sparse serializes OpenMP)
               # But only if the dense matrix fits in available RAM
-              import psutil
               _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32
-              _avail_ram = psutil.virtual_memory().available
+              try:
+                  import psutil
+                  _avail_ram = psutil.virtual_memory().available
+              except ImportError:
+                  # Fallback: read /proc/meminfo on Linux (cloud machines)
+                  try:
+                      with open('/proc/meminfo') as _mf:
+                          for _ml in _mf:
+                              if 'MemAvailable' in _ml:
+                                  _avail_ram = int(_ml.split()[1]) * 1024  # KB → bytes
+                                  break
+                          else:
+                              _avail_ram = 64 * 1024**3  # conservative 64GB
+                  except (FileNotFoundError, Exception):
+                      _avail_ram = 64 * 1024**3
               if _dense_bytes < _avail_ram * 0.7:  # 70% of available RAM
                   log(f"  Converting sparse to dense ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
                   X_all = X_all.toarray()
@@ -625,10 +651,7 @@ if __name__ == '__main__':
                       X_all = X_all[_keep_start:]
                       y_3class = y_3class[_keep_start:]
                       sample_weights = sample_weights[_keep_start:]
-                      if 'timestamps' in dir():
-                          timestamps = timestamps[_keep_start:]
-                      if 'closes' in dir():
-                          closes = closes[_keep_start:]
+                      df = df.iloc[_keep_start:].reset_index(drop=True)
                       log(f"  Converting subsampled sparse to dense ({_max_rows:,} rows)...")
                       X_all = X_all.toarray()
                   else:
@@ -637,7 +660,7 @@ if __name__ == '__main__':
                   log(f"  Keeping SPARSE (dense would need {_dense_bytes/1e9:.1f} GB, only {_avail_ram/1e9:.0f} GB avail)")
                   log(f"  WARNING: Training will be single-threaded on sparse data")
               feature_cols = feature_cols + cross_cols
-              _X_all_is_sparse = True  # Flag for logging (was sparse, now dense)
+              _X_all_is_sparse = hasattr(X_all, 'nnz')  # Track ACTUAL type: True if still sparse, False if converted to dense
               nnz = X_all.nnz if hasattr(X_all, 'nnz') else int((X_all != 0).sum())
               total = X_all.shape[0] * X_all.shape[1]
               density = nnz / total * 100 if total > 0 else 0
@@ -829,7 +852,7 @@ if __name__ == '__main__':
               _base_lgb_params = _base_lgb_params.copy()
               _base_lgb_params['num_threads'] = _threads_per_worker
               log(f"  num_threads per worker: {_base_lgb_params['num_threads']}")
-              X_csr = X_all.tocsr()
+              X_csr = X_all.tocsr() if hasattr(X_all, 'tocsr') else X_all
               worker_args = []
               for wi, (train_idx, test_idx) in enumerate(splits):
                   if wi in _completed_folds:
@@ -935,7 +958,8 @@ if __name__ == '__main__':
                       for ci in _hmm_existing_indices:
                           _keep_mask[ci] = False
                       _keep_indices = np.where(_keep_mask)[0]
-                      X_all = X_all[:, _keep_indices].tocsr()
+                      X_stripped = X_all[:, _keep_indices]
+                      X_all = X_stripped.tocsr() if hasattr(X_stripped, 'tocsr') else X_stripped
                       feature_cols = [feature_cols[i] for i in _keep_indices]
                       _hmm_stripped = True
                       log(f"  HMM overlay: stripped {len(_hmm_existing_indices)} HMM cols from sparse matrix "

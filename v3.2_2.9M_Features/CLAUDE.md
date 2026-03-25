@@ -173,6 +173,11 @@ REMAINING ISSUES (if any):
 - **Verify zero "WARNING: DB missing" in first 30s of pipeline log.** If any appear, STOP.
 - **NEVER compromise training speed.** Pick machines with the highest CPU Score (cores × base GHz). Match CUDA image to driver version. Use GPU (cuDF/CuPy) for feature building. Never fall back to CPU-only when GPU is available.
 - **NEVER use bandaids that hurt performance.** If a fix slows training (e.g., disabling GPU, reducing batch size, limiting cores), it's a bandaid. Find the real fix.
+- **ACTIVE monitoring is MANDATORY.** When machines are training, check monitor output every cycle. If ANY log shows FAIL/CRITICAL/Error, FIX IT IMMEDIATELY — don't wait for the user to ask. A monitor that runs but isn't acted on is useless.
+- **Monitor must detect failures, not just liveness.** Check for "FAIL", "CRITICAL", "Error", "Traceback" in logs — not just whether the process is alive. A dead process with errors needs immediate action.
+- **Monitor must verify MULTI-THREADED execution.** After launch, check load average > cores × 0.3. If load ≈ 1.0 on a 128+ core machine, training is single-threaded — this is a critical bug. Check RSS matches expected dense matrix size.
+- **After fixing a bug, grep ALL files for the SAME pattern.** The .nnz bug was fixed in one place but existed in another. The parquet symlink bug hit 1w, then 1h, then 1d, then 4h — same bug, never properly fixed at the root.
+- **Pre-flight code audit before EVERY deploy.** Run the pre-flight checklist in CLOUD_TRAINING_PROTOCOL.md. Never deploy code that hasn't been verified against the checklist. The single-threaded bug (v3.3) could have been caught by checking load average within 60 seconds of launch.
 
 ### Code
 - No fallback modes. No TA-only mode. Full pipeline or fix it

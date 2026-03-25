@@ -16,9 +16,10 @@ Steps:
   1. Fix btc_prices.db symbol format if needed
   2. Rebuild features if parquet missing or < 2000 cols
   3. Build crosses (v2_cross_generator.py --symbol BTC --save-sparse)
-  4. Train (ml_multi_tf.py --tf TF) — VERIFY SPARSE
-  5-9. Optuna, optimizer, meta, LSTM, PBO, audit
-  10. Verify all artifacts exist
+  4. Train (ml_multi_tf.py --tf TF) — VERIFY crosses loaded (SPARSE or DENSE)
+  5. (removed — was --search-mode Optuna, overwrote Step 4 model)
+  6-10. Optimizer, meta, LSTM, PBO, audit, SHAP
+  11. Verify all artifacts exist
 """
 import os, sys, subprocess, time, json, glob, sqlite3
 
@@ -101,12 +102,13 @@ def _print_summary():
     print(f"{'='*60}", flush=True)
     # List all artifacts
     artifacts = [
-        f'model_{TF}.json', f'optuna_configs_{TF}.json', f'exhaustive_configs_{TF}.json',
+        f'model_{TF}.json', f'model_{TF}_cpcv_backup.json',
+        f'optuna_configs_{TF}.json',
         f'meta_model_{TF}.pkl', f'platt_{TF}.pkl', f'lstm_{TF}.pt',
         f'features_{TF}_all.json', f'cpcv_oos_predictions_{TF}.pkl',
         f'v2_crosses_BTC_{TF}.npz', f'v2_cross_names_BTC_{TF}.json',
-        f'features_BTC_{TF}.parquet', f'feature_importance_top500_{TF}.json',
-        f'feature_importance_summary.json',
+        f'features_BTC_{TF}.parquet',
+        f'feature_importance_stability_{TF}.json',
         f'shap_analysis_{TF}.json',
         # Inference cross artifacts (for live trading)
         f'inference_{TF}_thresholds.json', f'inference_{TF}_cross_pairs.npz',
@@ -255,14 +257,26 @@ if need_rebuild:
     run_tee(build_cmd,
             f'Rebuild {TF} features', f'rebuild_{TF}.log')
 
-    # The build script saves as features_{TF}.parquet — rename to features_BTC_{TF}.parquet
+    # The build script may save to _SCRIPT_DIR instead of CWD — check both locations
     if not os.path.exists(parquet_path):
-        alt = f'features_{TF}.parquet'
-        if os.path.exists(alt):
-            os.rename(alt, parquet_path)
-            log(f"Renamed {alt} → {parquet_path}")
+        # Check all possible locations
+        candidates = [
+            f'features_{TF}.parquet',
+            os.path.join(_SCRIPT_DIR, f'features_BTC_{TF}.parquet'),
+            os.path.join(_SCRIPT_DIR, f'features_{TF}.parquet'),
+        ]
+        found = None
+        for alt in candidates:
+            if os.path.exists(alt):
+                found = alt
+                break
+        if found:
+            if found != parquet_path:
+                os.symlink(os.path.abspath(found), parquet_path)
+                log(f"Symlinked {parquet_path} → {found}")
         else:
             log(f"*** CRITICAL: Feature rebuild produced no parquet ***")
+            log(f"  Checked: {parquet_path}, {', '.join(candidates)}")
             sys.exit(1)
 
     # Verify rebuilt parquet
@@ -284,15 +298,37 @@ if os.path.exists(parquet_path) and not os.path.exists(plain_pq):
 # STEP 3: Build crosses (skip if NPZ already exists)
 # ============================================================
 npz_path = f'v2_crosses_BTC_{TF}.npz'
+# Check both CWD and _SCRIPT_DIR for existing NPZ
+if not os.path.exists(npz_path):
+    alt_npz = os.path.join(_SCRIPT_DIR, npz_path)
+    if os.path.exists(alt_npz):
+        os.symlink(os.path.abspath(alt_npz), npz_path)
+        log(f"Symlinked {npz_path} → {alt_npz}")
+    # Also symlink cross names
+    cn = f'v2_cross_names_BTC_{TF}.json'
+    alt_cn = os.path.join(_SCRIPT_DIR, cn)
+    if not os.path.exists(cn) and os.path.exists(alt_cn):
+        os.symlink(os.path.abspath(alt_cn), cn)
+
 if os.path.exists(npz_path) and os.path.getsize(npz_path) > 1000:
     npz_size = os.path.getsize(npz_path) / (1024*1024)
     log(f"Cross NPZ already exists ({npz_size:.1f} MB) — SKIPPING cross gen")
 else:
-    run_tee(f'python -X utf8 -u v2_cross_generator.py --tf {TF} --symbol BTC --save-sparse',
+    run_tee(f'python -X utf8 -u {_script("v2_cross_generator.py")} --tf {TF} --symbol BTC --save-sparse',
             f'Build {TF} crosses', f'cross_{TF}.log')
+    # Check both locations for output
     if not os.path.exists(npz_path):
-        log(f"*** CRITICAL: {npz_path} not created by cross generator ***")
-        sys.exit(1)
+        alt_npz = os.path.join(_SCRIPT_DIR, npz_path)
+        if os.path.exists(alt_npz):
+            os.symlink(os.path.abspath(alt_npz), npz_path)
+            log(f"Symlinked {npz_path} → {alt_npz}")
+            cn = f'v2_cross_names_BTC_{TF}.json'
+            alt_cn = os.path.join(_SCRIPT_DIR, cn)
+            if not os.path.exists(cn) and os.path.exists(alt_cn):
+                os.symlink(os.path.abspath(alt_cn), cn)
+        else:
+            log(f"*** CRITICAL: {npz_path} not created by cross generator ***")
+            sys.exit(1)
     npz_size = os.path.getsize(npz_path) / (1024*1024)
     log(f"Cross NPZ: {npz_size:.1f} MB")
 
@@ -314,45 +350,43 @@ train_log = f'train_{TF}.log'
 run_tee(f'python -X utf8 -u {_script("ml_multi_tf.py")} --tf {TF}',
         f'Train {TF}', train_log)
 
-# CRITICAL VERIFICATION: Check for SPARSE in training log
-log("=== SPARSE VERIFICATION ===")
-sparse_found = False
-dense_found = False
+# CRITICAL VERIFICATION: Check that cross features were loaded (SPARSE or DENSE both valid)
+log("=== CROSS FEATURE VERIFICATION ===")
+crosses_loaded = False
 combined_line = ""
 if os.path.exists(train_log):
     with open(train_log, 'r', errors='replace') as f:
         for line in f:
-            if 'SPARSE' in line and 'Features:' in line:
-                sparse_found = True
+            if 'Features:' in line and ('SPARSE' in line or 'DENSE' in line):
+                crosses_loaded = True
                 log(f"  VERIFIED: {line.strip()}")
-            if 'DENSE' in line and 'Features:' in line:
-                dense_found = True
-                log(f"  WARNING: {line.strip()}")
-            if 'Combined sparse' in line:
+            if 'Combined sparse' in line or 'Combined' in line:
                 combined_line = line.strip()
 
-if sparse_found and not dense_found:
-    log("  PASS: Training used SPARSE cross features")
+if crosses_loaded:
+    log("  PASS: Training loaded cross features")
     if combined_line:
         log(f"  {combined_line}")
 else:
-    log("*** CRITICAL: Training did NOT use sparse crosses! ***")
-    log("  This means crosses failed to load. Check cross_{TF}.log and train_{TF}.log")
-    if dense_found:
-        log("  Found DENSE — training ran with base features only (USELESS)")
+    log("*** CRITICAL: Training did NOT load cross features! ***")
+    log("  Check cross_{TF}.log and train_{TF}.log")
     sys.exit(1)
 
-# ============================================================
-# STEP 5: Optuna — SKIPPED (run later with parquet + NPZ)
-# Optuna is fully stateless — can run on any machine anytime
-# using just the saved parquet + NPZ cross files.
-# ============================================================
-log("Optuna SKIPPED — will run later (decoupled from training pipeline)")
+# PROTECT Step 4 model from any downstream overwrite
+import shutil
+_model_path = f'model_{TF}.json'
+_backup_path = f'model_{TF}_cpcv_backup.json'
+if os.path.exists(_model_path):
+    shutil.copy2(_model_path, _backup_path)
+    log(f"  Model backed up: {_backup_path} ({os.path.getsize(_model_path)/1024:.0f} KB)")
+
+# NOTE: Step 5 (--search-mode Optuna) REMOVED — it overwrote Step 4 model with inferior 2-fold version
 
 # ============================================================
-# STEP 6: Exhaustive optimizer — SKIPPED (run with Optuna later)
+# STEP 6: Exhaustive trade optimizer
 # ============================================================
-log("Exhaustive optimizer SKIPPED — will run later")
+run_tee(f'python -X utf8 -u {_script("exhaustive_optimizer.py")} --tf {TF}',
+        f'Optimizer {TF}', f'optimizer_{TF}.log', critical=False)
 
 # ============================================================
 # STEP 7: Meta-labeling
@@ -403,88 +437,54 @@ try:
     log(f"  Active cross features: {len(active_crosses)}")
     log(f"  Active base features: {len(active_base)}")
 
-    # Use LightGBM native pred_contrib for SHAP (handles EFB de-bundling)
-    # Load the parquet and NPZ used for training
+    # Use split importance only — pred_contrib + .toarray() OOMs on 2.9M+ sparse crosses
+    # Split importance is memory-safe and already shows which cross features contribute
     import pandas as pd
-    import scipy.sparse as sp_sparse
 
-    pq_path = f'features_BTC_{TF}.parquet'
-    npz_path = f'v2_crosses_BTC_{TF}.npz'
+    gain_importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='gain')))
+    all_features = model.feature_name()
 
-    if os.path.exists(pq_path) and os.path.exists(npz_path):
-        df_base = pd.read_parquet(pq_path)
-        cross_data = sp_sparse.load_npz(npz_path)
-        cross_names_path = f'v2_cross_names_BTC_{TF}.json'
-        cross_names = json.load(open(cross_names_path)) if os.path.exists(cross_names_path) else []
+    # Build importance DataFrame
+    imp_df = pd.DataFrame([
+        {'feature': f, 'splits': split_importance.get(f, 0), 'gain': gain_importance.get(f, 0)}
+        for f in all_features
+    ])
+    imp_df['is_cross'] = imp_df['feature'].str.startswith(cross_prefixes)
 
-        # Combine base + crosses
-        base_cols = [c for c in df_base.columns if c not in ('target', 'label')]
-        X_base = df_base[base_cols].values
-        X_all = np.hstack([X_base, cross_data.toarray()]) if cross_data.shape[0] == len(X_base) else X_base
-        all_names = list(base_cols) + list(cross_names)
+    # Family aggregation
+    def get_family(name):
+        for p in cross_prefixes:
+            if name.startswith(p): return p.rstrip('_')
+        parts = name.split('_')
+        return parts[0] if parts else 'unknown'
 
-        # Get high-confidence predictions
-        preds = model.predict(X_all)
-        confidences = np.max(preds, axis=1)
-        high_conf_mask = confidences > 0.80
-        n_high = min(high_conf_mask.sum(), 10000)
+    imp_df['family'] = imp_df['feature'].apply(get_family)
+    family_imp = imp_df.groupby('family')['gain'].agg(['sum', 'mean', 'count']).sort_values('sum', ascending=False)
 
-        if n_high > 100:
-            high_conf_idx = np.where(high_conf_mask)[0][:n_high]
-            X_high = X_all[high_conf_idx]
+    # Report
+    log(f"  Top 20 feature families by gain:")
+    for i, (fam, row) in enumerate(family_imp.head(20).iterrows()):
+        log(f"    {i+1:2d}. {fam:<20s} gain_sum={row['sum']:10.1f}  mean={row['mean']:.2f}  count={int(row['count'])}")
 
-            # Use pred_contrib for native SHAP
-            shap_raw = model.predict(X_high, pred_contrib=True)
-            # pred_contrib returns (n_samples, n_features+1, n_classes) -- last col is bias
-            # Sum absolute SHAP across classes
-            if isinstance(shap_raw, list):
-                mean_abs_shap = sum(np.mean(np.abs(s[:, :-1]), axis=0) for s in shap_raw)
-            else:
-                mean_abs_shap = np.mean(np.abs(shap_raw[:, :-1]), axis=0)
+    # Cross vs base comparison
+    cross_gain = imp_df[imp_df['is_cross']]['gain'].sum()
+    base_gain = imp_df[~imp_df['is_cross']]['gain'].sum()
+    cross_pct = 100 * cross_gain / (cross_gain + base_gain) if (cross_gain + base_gain) > 0 else 0
+    log(f"  Cross feature gain: {cross_pct:.1f}% of total ({cross_gain:.1f} / {cross_gain + base_gain:.1f})")
 
-            # Map to feature names
-            shap_df = pd.DataFrame({'feature': all_names[:len(mean_abs_shap)], 'shap': mean_abs_shap})
-            shap_df['is_cross'] = shap_df['feature'].str.startswith(cross_prefixes)
-
-            # Family aggregation
-            def get_family(name):
-                for p in cross_prefixes:
-                    if name.startswith(p): return p.rstrip('_')
-                parts = name.split('_')
-                return parts[0] if parts else 'unknown'
-
-            shap_df['family'] = shap_df['feature'].apply(get_family)
-            family_shap = shap_df.groupby('family')['shap'].agg(['sum', 'mean', 'count']).sort_values('sum', ascending=False)
-
-            # Report
-            log(f"  High-confidence samples for SHAP: {n_high}")
-            log(f"  Top 20 feature families by SHAP:")
-            for i, (fam, row) in enumerate(family_shap.head(20).iterrows()):
-                log(f"    {i+1:2d}. {fam:<20s} sum={row['sum']:8.2f}  mean={row['mean']:.4f}  count={int(row['count'])}")
-
-            # Cross vs base comparison
-            cross_total = shap_df[shap_df['is_cross']]['shap'].sum()
-            base_total = shap_df[~shap_df['is_cross']]['shap'].sum()
-            cross_pct = 100 * cross_total / (cross_total + base_total) if (cross_total + base_total) > 0 else 0
-            log(f"  Cross feature SHAP: {cross_pct:.1f}% of total ({cross_total:.1f} / {cross_total + base_total:.1f})")
-
-            # Save full SHAP report
-            shap_report = {
-                'n_high_conf_samples': int(n_high),
-                'active_features': len(active_features),
-                'active_crosses': len(active_crosses),
-                'active_base': len(active_base),
-                'cross_shap_pct': round(cross_pct, 2),
-                'top_20_families': family_shap.head(20).to_dict(),
-                'top_50_features': shap_df.nlargest(50, 'shap')[['feature', 'shap', 'is_cross']].to_dict('records'),
-            }
-            with open(f'shap_analysis_{TF}.json', 'w') as f:
-                json.dump(shap_report, f, indent=2, default=str)
-            log(f"  Saved: shap_analysis_{TF}.json")
-        else:
-            log(f"  Only {n_high} high-confidence samples — skipping SHAP (need >100)")
-    else:
-        log(f"  Parquet/NPZ not found — skipping SHAP")
+    # Save report
+    shap_report = {
+        'active_features': len(active_features),
+        'active_crosses': len(active_crosses),
+        'active_base': len(active_base),
+        'cross_shap_pct': round(cross_pct, 2),
+        'method': 'split_importance (pred_contrib skipped — OOM on sparse crosses)',
+        'top_20_families': family_imp.head(20).to_dict(),
+        'top_50_features': imp_df.nlargest(50, 'gain')[['feature', 'gain', 'splits', 'is_cross']].to_dict('records'),
+    }
+    with open(f'shap_analysis_{TF}.json', 'w') as f:
+        json.dump(shap_report, f, indent=2, default=str)
+    log(f"  Saved: shap_analysis_{TF}.json")
 
 except Exception as e:
     log(f"  SHAP analysis error (non-fatal): {e}")

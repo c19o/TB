@@ -207,20 +207,28 @@ vastai destroy instance <ID>
 
 ## PIPELINE STEPS (what cloud_run_tf.py runs)
 
-| Step | What | Est. Time (1w/1d/4h/1h/15m) |
-|------|------|---------------------------|
-| 1 | Install deps | 30s |
-| 2 | Verify DB | 5s |
-| 3 | Feature rebuild | 3m / 15m / 15m / 30m / 90m |
-| 4 | Cross generation | 2m / 5m / 5m / 15m / 120m |
-| 5 | CPCV Training | 2m / 20m / 20m / 60m / 120m |
-| 6 | Optuna search | 5m / 90m / 90m / 180m / 480m |
-| 7 | Exhaustive optimizer | 8m / 12m / 12m / 20m / 35m |
-| 8 | Meta-labeling | 2m / 5m / 5m / 10m / 15m |
-| 9 | LSTM | 5m / 15m / 15m / 30m / 45m |
-| 10 | PBO + Audit | 1m / 3m / 3m / 5m / 5m |
-| 11 | SHAP analysis | 1m / 5m / 5m / 10m / 15m |
-| **TOTAL** | | **~29m / ~2.9h / ~2.9h / ~6h / ~15.4h** |
+## FULL PIPELINE = ALL 11 STEPS. NO SKIPPING.
+
+"Full pipeline" means EVERY step runs. If any step is SKIPPED in cloud_run_tf.py, it is NOT a full pipeline run.
+
+| Step | What | Script | Critical? | Est. Time (1w/1d/4h/1h/15m) |
+|------|------|--------|-----------|---------------------------|
+| 1 | Install deps | pip install | YES | 30s |
+| 2 | Verify DB + parquet | inline | YES | 5s |
+| 3 | Feature rebuild | build_features_v2.py | YES | 3m / 15m / 15m / 30m / 90m |
+| 4 | Cross generation | v2_cross_generator.py | YES | 2m / 5m / 5m / 15m / 120m |
+| 5 | CPCV Training | ml_multi_tf.py | YES | 5m / 30m / 30m / 90m / 180m |
+| 6 | Optuna search | ml_multi_tf.py --search-mode | non-fatal | 5m / 90m / 90m / 180m / 480m |
+| 7 | Trade optimizer | exhaustive_optimizer.py | non-fatal | 8m / 12m / 12m / 20m / 35m |
+| 8 | Meta-labeling | meta_labeling.py | non-fatal | 2m / 5m / 5m / 10m / 15m |
+| 9 | LSTM | lstm_sequence_model.py | non-fatal | 5m / 15m / 15m / 30m / 45m |
+| 10 | PBO + Audit | backtest_validation.py | non-fatal | 1m / 3m / 3m / 5m / 5m |
+| 11 | SHAP analysis | inline | non-fatal | 1m / 5m / 5m / 10m / 15m |
+| **TOTAL** | | | | **~32m / ~3h / ~3h / ~6.5h / ~16h** |
+
+**Production ready = Steps 1-4 PASS + model file exists + SHAP shows cross features contributing.**
+**Fully optimized = ALL 10 steps complete with zero FAIL.**
+**Note: Step 5 (--search-mode Optuna) was REMOVED in v3.3 — it overwrote the good Step 4 model.**
 
 ## CRITICAL RULES
 
@@ -232,11 +240,69 @@ vastai destroy instance <ID>
 3. **Download before killing** — once destroyed, artifacts are GONE
 4. **Download NPZ after cross gen** — if machine dies mid-training, NPZ is the irreplaceable artifact
 5. **One TF per machine** — no concurrent training on same machine
-6. **Verify SPARSE in training logs** — if log says DENSE, abort (wrong code path)
+6. **Verify crosses loaded in training logs** — log should show "Features: N (SPARSE)" or "Features: N (DENSE)". Both are valid. DENSE = multi-core training (better). SPARSE = single-threaded (15m only).
 7. **`--symbol BTC` not `--asset BTC`**
 8. **Reuse running machines** — scp new files + relaunch, don't kill + rent new
 9. **Poll every 30s max** — use run_in_background, never block the conversation
 10. **Always respond to user first** — never make them Esc to get attention
+
+## PRE-FLIGHT CHECKLIST (Claude MUST verify before EVERY deploy)
+
+```
+[ ] _X_all_is_sparse = hasattr(X_all, 'nnz') in ml_multi_tf.py (not hardcoded True)
+[ ] No --search-mode step in cloud_run_tf.py
+[ ] SHAP section uses split/gain importance only (no .toarray on cross matrix)
+[ ] NNZ guard exists (>2B auto-subsample)
+[ ] cross_cols initialized as [] not None (both ml_multi_tf.py AND backtesting_audit.py)
+[ ] Model backup (shutil.copy2) exists after Step 4
+[ ] psutil has /proc/meminfo fallback (no bare ImportError crash)
+```
+
+## POST-LAUNCH VALIDATION (within 60 seconds of launch)
+
+```bash
+# Run these checks immediately after starting each machine:
+$SSH "tail -5 /workspace/{TF}_pipeline.log && uptime"
+
+# VERIFY:
+[ ] Log is growing (new lines appearing)
+[ ] Load average > cores × 0.3 for dense TFs (proves multi-threading)
+[ ] No "WARNING: Training will be single-threaded" for 1w/1d/4h/1h
+[ ] No "GPU failed" spam (15m should skip GPU automatically)
+[ ] No "ModuleNotFoundError" or "ImportError" in log
+[ ] RSS memory matches expected dense size (ps aux | grep python → RSS column)
+```
+
+## PERIODIC HEALTH CHECKS (Claude MUST do every monitoring cycle)
+
+```bash
+# Check EVERY machine EVERY cycle:
+$SSH "tail -5 /workspace/{TF}_pipeline.log"
+$SSH "grep -c 'FAIL\|CRITICAL\|Error\|Traceback' /workspace/{TF}_pipeline.log"
+$SSH "uptime"  # load average should be >> 1.0 for dense training
+
+# IF load average ≈ 1.0 on a multi-core machine → SINGLE-THREADED BUG
+# IF new FAIL/CRITICAL/Error lines → DIAGNOSE IMMEDIATELY
+# IF log not growing for >5 min → process may be stuck or crashed
+# IF RSS << expected dense size → still training on sparse (wrong code path)
+```
+
+## STEP GATES (verify after each pipeline step)
+
+```bash
+# After Step 4 (Train):
+$SSH "ls -lh /workspace/v3.2_2.9M_Features/model_{TF}.json"  # Must be >1KB
+$SSH "ls -lh /workspace/v3.2_2.9M_Features/model_{TF}_cpcv_backup.json"  # Backup exists
+
+# After Step 6 (Optimizer):
+$SSH "ls -lh /workspace/v3.2_2.9M_Features/optuna_configs_{TF}.json"
+
+# After Step 7 (Meta):
+$SSH "ls -lh /workspace/v3.2_2.9M_Features/meta_model_{TF}.pkl"
+
+# After DONE marker:
+$SSH "cat /workspace/DONE_{TF}"
+```
 
 ## GPU COMPATIBILITY
 

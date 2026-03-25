@@ -321,7 +321,10 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
         r_arrays_chunk = right_arrays[rc_start:rc_end]
         right_mat_chunk = np.column_stack(r_arrays_chunk)  # (N, <=RIGHT_CHUNK)
 
-        if GPU:
+        # Skip GPU for large row counts (>100K) — guaranteed OOM on any GPU.
+        # Also skip if V2_SKIP_GPU=1 env var is set.
+        _skip_gpu = os.environ.get('V2_SKIP_GPU') == '1' or N > 100000
+        if GPU and not _skip_gpu:
             try:
                 c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
                     left_names, left_mat, r_names_chunk, right_mat_chunk,

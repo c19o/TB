@@ -150,8 +150,12 @@ def load_full_history(tf_name):
     features_all_path = os.path.join(DB_DIR, f'features_{tf_name}_all.json')
     features_pruned_path = os.path.join(DB_DIR, f'features_{tf_name}_pruned.json')
 
-    if not os.path.exists(db_path):
-        print(f"  SKIP {tf_name} -- {cfg['db']} not found", flush=True)
+    # Check for data: parquet OR .db (cloud has parquet only, local may have .db)
+    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
+    v1_parquet = db_path.replace('.db', '.parquet')
+    _has_data = os.path.exists(db_path) or os.path.exists(v2_parquet) or os.path.exists(v1_parquet)
+    if not _has_data:
+        print(f"  SKIP {tf_name} -- no data found (checked {cfg['db']}, parquet)", flush=True)
         return None
     if not os.path.exists(model_path):
         print(f"  SKIP {tf_name} -- model_{tf_name}.json not found", flush=True)
@@ -239,7 +243,7 @@ def load_full_history(tf_name):
 
     # --- Load sparse cross features from .npz (matches ml_multi_tf.py lines 602-654) ---
     cross_matrix = None
-    cross_cols = None
+    cross_cols = []
     npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
     if os.path.exists(npz_path):
         try:
@@ -262,7 +266,7 @@ def load_full_history(tf_name):
         except Exception as e:
             print(f"  WARNING: Failed to load sparse crosses: {e}", flush=True)
             cross_matrix = None
-            cross_cols = None
+            cross_cols = []
     else:
         print(f"  WARNING: No sparse cross file found at {npz_path} — predicting with base features only", flush=True)
 
