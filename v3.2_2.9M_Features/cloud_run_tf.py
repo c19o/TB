@@ -26,12 +26,26 @@ os.environ['PYTHONUNBUFFERED'] = '1'
 # V30_DATA_DIR fallback to /workspace so config.py doesn't resolve to /v3.0 (LGBM)
 os.environ.setdefault('V30_DATA_DIR', '/workspace')
 os.environ.setdefault('SAVAGE22_DB_DIR', '/workspace')
+# V1 DBs (tweets, astro, ephemeris, etc.) are in /workspace alongside everything else
+os.environ.setdefault('SAVAGE22_V1_DIR', '/workspace')
 os.chdir('/workspace')
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _script(name):
+    """Resolve script path — check CWD first, then script directory."""
+    if os.path.exists(name):
+        return name
+    alt = os.path.join(_SCRIPT_DIR, name)
+    if os.path.exists(alt):
+        return alt
+    return name  # let it fail with clear error
 
 TF = sys.argv[sys.argv.index('--tf') + 1] if '--tf' in sys.argv else '1d'
 
 # Min base feature threshold — parquets with fewer cols need rebuild
-MIN_BASE_FEATURES = 1000  # 15m has 1,284 base features (correct for intraday)
+# All TFs should have ~2,600-3,400 base features when built with V2 layers.
+# A parquet with <2000 cols means V2 layers were NOT applied (old V1 build path).
+MIN_BASE_FEATURES = 2000
 
 START = time.time()
 FAILURES = []
@@ -93,6 +107,11 @@ def _print_summary():
         f'v2_crosses_BTC_{TF}.npz', f'v2_cross_names_BTC_{TF}.json',
         f'features_BTC_{TF}.parquet', f'feature_importance_top500_{TF}.json',
         f'feature_importance_summary.json',
+        f'shap_analysis_{TF}.json',
+        # Inference cross artifacts (for live trading)
+        f'inference_{TF}_thresholds.json', f'inference_{TF}_cross_pairs.npz',
+        f'inference_{TF}_ctx_names.json', f'inference_{TF}_base_cols.json',
+        f'inference_{TF}_cross_names.json',
     ]
     print("  Artifacts:", flush=True)
     for a in artifacts:
@@ -205,16 +224,35 @@ if not need_rebuild and os.path.exists(parquet_path):
         log(f"  Parquet OK: {n_cols} base features")
 
 if need_rebuild:
-    build_script = f'build_{TF}_features.py'
-    if not os.path.exists(build_script):
-        # Try build_features_complete.py as fallback
-        build_script = 'build_features_complete.py'
-    if not os.path.exists(build_script):
-        log(f"*** CRITICAL: No build script for {TF} ***")
-        sys.exit(1)
+    # Prefer build_features_v2.py (includes V2 layers: 4-tier binarization, entropy,
+    # hurst, fib levels, moon signs, aspects, extra lags, etc.)
+    # The old build_{TF}_features.py scripts only call build_all_features() without
+    # V2 layers, producing ~1,200 base features instead of ~3,000+.
+    # Look for build scripts in both CWD and the script's own directory
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    def _find_script(name):
+        if os.path.exists(name):
+            return name
+        alt = os.path.join(_script_dir, name)
+        if os.path.exists(alt):
+            return alt
+        return None
+
+    _v2 = _find_script('build_features_v2.py')
+    if _v2:
+        build_script = _v2
+        build_cmd = f'python -X utf8 -u {build_script} --symbol BTC --tf {TF}'
+    else:
+        build_script = _find_script(f'build_{TF}_features.py')
+        if not build_script:
+            build_script = _find_script('build_features_complete.py')
+        if not build_script:
+            log(f"*** CRITICAL: No build script for {TF} ***")
+            sys.exit(1)
+        build_cmd = f'python -X utf8 -u {build_script}'
 
     log(f"Rebuilding {TF} features using {build_script}...")
-    run_tee(f'python -X utf8 -u {build_script}',
+    run_tee(build_cmd,
             f'Rebuild {TF} features', f'rebuild_{TF}.log')
 
     # The build script saves as features_{TF}.parquet — rename to features_BTC_{TF}.parquet
@@ -258,11 +296,22 @@ else:
     npz_size = os.path.getsize(npz_path) / (1024*1024)
     log(f"Cross NPZ: {npz_size:.1f} MB")
 
+# Verify inference artifacts were created by cross generator
+_inf_artifacts = [f'inference_{TF}_thresholds.json', f'inference_{TF}_cross_pairs.npz',
+                  f'inference_{TF}_ctx_names.json', f'inference_{TF}_base_cols.json',
+                  f'inference_{TF}_cross_names.json']
+_inf_missing = [a for a in _inf_artifacts if not os.path.exists(a)]
+if _inf_missing:
+    log(f"  WARNING: Missing inference artifacts: {', '.join(_inf_missing)}")
+    log(f"  Live trading will not have cross features for {TF}")
+else:
+    log(f"  Inference artifacts OK: all {len(_inf_artifacts)} files present")
+
 # ============================================================
 # STEP 4: Train — MUST produce SPARSE output
 # ============================================================
 train_log = f'train_{TF}.log'
-run_tee(f'python -X utf8 -u ml_multi_tf.py --tf {TF}',
+run_tee(f'python -X utf8 -u {_script("ml_multi_tf.py")} --tf {TF}',
         f'Train {TF}', train_log)
 
 # CRITICAL VERIFICATION: Check for SPARSE in training log
@@ -308,26 +357,137 @@ log("Exhaustive optimizer SKIPPED — will run later")
 # ============================================================
 # STEP 7: Meta-labeling
 # ============================================================
-run_tee(f'python -X utf8 -u meta_labeling.py --tf {TF}',
+run_tee(f'python -X utf8 -u {_script("meta_labeling.py")} --tf {TF}',
         f'Meta {TF}', f'meta_{TF}.log', critical=False)
 
 # ============================================================
 # STEP 8: LSTM
 # ============================================================
-run_tee(f'python -X utf8 -u lstm_sequence_model.py --tf {TF} --train',
+run_tee(f'python -X utf8 -u {_script("lstm_sequence_model.py")} --tf {TF} --train',
         f'LSTM {TF}', f'lstm_{TF}.log', critical=False)
 
 # ============================================================
 # STEP 9: PBO
 # ============================================================
-run_tee(f'python -X utf8 -u backtest_validation.py --tf {TF}',
+run_tee(f'python -X utf8 -u {_script("backtest_validation.py")} --tf {TF}',
         f'PBO {TF}', f'pbo_{TF}.log', critical=False)
 
 # ============================================================
 # STEP 10: Audit
 # ============================================================
-run_tee(f'python -X utf8 -u backtesting_audit.py --tf {TF}',
+run_tee(f'python -X utf8 -u {_script("backtesting_audit.py")} --tf {TF}',
         f'Audit {TF}', f'audit_{TF}.log', critical=False)
+
+# ============================================================
+# STEP 11: SHAP Cross Feature Validation (non-fatal)
+# ============================================================
+# === SHAP Cross Feature Validation ===
+log(f"=== SHAP cross feature analysis ===")
+try:
+    import json
+    import numpy as np
+    import lightgbm as lgb
+
+    # Load model
+    model = lgb.Booster(model_file=f'model_{TF}.json')
+
+    # Get features with non-zero split count (reduces 3.34M -> likely ~50K-200K active)
+    split_importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='split')))
+    active_features = [f for f, v in split_importance.items() if v > 0]
+    log(f"  Active features (split > 0): {len(active_features)} / {len(split_importance)}")
+
+    # Count cross features that are active
+    cross_prefixes = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_', 'rdx_')
+    active_crosses = [f for f in active_features if f.startswith(cross_prefixes)]
+    active_base = [f for f in active_features if not f.startswith(cross_prefixes)]
+    log(f"  Active cross features: {len(active_crosses)}")
+    log(f"  Active base features: {len(active_base)}")
+
+    # Use LightGBM native pred_contrib for SHAP (handles EFB de-bundling)
+    # Load the parquet and NPZ used for training
+    import pandas as pd
+    import scipy.sparse as sp_sparse
+
+    pq_path = f'features_BTC_{TF}.parquet'
+    npz_path = f'v2_crosses_BTC_{TF}.npz'
+
+    if os.path.exists(pq_path) and os.path.exists(npz_path):
+        df_base = pd.read_parquet(pq_path)
+        cross_data = sp_sparse.load_npz(npz_path)
+        cross_names_path = f'v2_cross_names_BTC_{TF}.json'
+        cross_names = json.load(open(cross_names_path)) if os.path.exists(cross_names_path) else []
+
+        # Combine base + crosses
+        base_cols = [c for c in df_base.columns if c not in ('target', 'label')]
+        X_base = df_base[base_cols].values
+        X_all = np.hstack([X_base, cross_data.toarray()]) if cross_data.shape[0] == len(X_base) else X_base
+        all_names = list(base_cols) + list(cross_names)
+
+        # Get high-confidence predictions
+        preds = model.predict(X_all)
+        confidences = np.max(preds, axis=1)
+        high_conf_mask = confidences > 0.80
+        n_high = min(high_conf_mask.sum(), 10000)
+
+        if n_high > 100:
+            high_conf_idx = np.where(high_conf_mask)[0][:n_high]
+            X_high = X_all[high_conf_idx]
+
+            # Use pred_contrib for native SHAP
+            shap_raw = model.predict(X_high, pred_contrib=True)
+            # pred_contrib returns (n_samples, n_features+1, n_classes) -- last col is bias
+            # Sum absolute SHAP across classes
+            if isinstance(shap_raw, list):
+                mean_abs_shap = sum(np.mean(np.abs(s[:, :-1]), axis=0) for s in shap_raw)
+            else:
+                mean_abs_shap = np.mean(np.abs(shap_raw[:, :-1]), axis=0)
+
+            # Map to feature names
+            shap_df = pd.DataFrame({'feature': all_names[:len(mean_abs_shap)], 'shap': mean_abs_shap})
+            shap_df['is_cross'] = shap_df['feature'].str.startswith(cross_prefixes)
+
+            # Family aggregation
+            def get_family(name):
+                for p in cross_prefixes:
+                    if name.startswith(p): return p.rstrip('_')
+                parts = name.split('_')
+                return parts[0] if parts else 'unknown'
+
+            shap_df['family'] = shap_df['feature'].apply(get_family)
+            family_shap = shap_df.groupby('family')['shap'].agg(['sum', 'mean', 'count']).sort_values('sum', ascending=False)
+
+            # Report
+            log(f"  High-confidence samples for SHAP: {n_high}")
+            log(f"  Top 20 feature families by SHAP:")
+            for i, (fam, row) in enumerate(family_shap.head(20).iterrows()):
+                log(f"    {i+1:2d}. {fam:<20s} sum={row['sum']:8.2f}  mean={row['mean']:.4f}  count={int(row['count'])}")
+
+            # Cross vs base comparison
+            cross_total = shap_df[shap_df['is_cross']]['shap'].sum()
+            base_total = shap_df[~shap_df['is_cross']]['shap'].sum()
+            cross_pct = 100 * cross_total / (cross_total + base_total) if (cross_total + base_total) > 0 else 0
+            log(f"  Cross feature SHAP: {cross_pct:.1f}% of total ({cross_total:.1f} / {cross_total + base_total:.1f})")
+
+            # Save full SHAP report
+            shap_report = {
+                'n_high_conf_samples': int(n_high),
+                'active_features': len(active_features),
+                'active_crosses': len(active_crosses),
+                'active_base': len(active_base),
+                'cross_shap_pct': round(cross_pct, 2),
+                'top_20_families': family_shap.head(20).to_dict(),
+                'top_50_features': shap_df.nlargest(50, 'shap')[['feature', 'shap', 'is_cross']].to_dict('records'),
+            }
+            with open(f'shap_analysis_{TF}.json', 'w') as f:
+                json.dump(shap_report, f, indent=2, default=str)
+            log(f"  Saved: shap_analysis_{TF}.json")
+        else:
+            log(f"  Only {n_high} high-confidence samples — skipping SHAP (need >100)")
+    else:
+        log(f"  Parquet/NPZ not found — skipping SHAP")
+
+except Exception as e:
+    log(f"  SHAP analysis error (non-fatal): {e}")
 
 # ============================================================
 # FINAL SUMMARY

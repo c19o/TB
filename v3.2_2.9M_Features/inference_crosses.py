@@ -23,6 +23,10 @@ import time
 # Directory for inference artifacts
 ARTIFACT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Cross type prefixes — must match v2_cross_generator.py gpu_batch_cross calls
+CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_',
+                  'mx_', 'vx_', 'asp_', 'mn_', 'pn_', 'rdx_')
+
 
 def save_inference_artifacts(ctx_names, ctx_arrays, cross_names, df, tf, output_dir=None):
     """
@@ -34,6 +38,7 @@ def save_inference_artifacts(ctx_names, ctx_arrays, cross_names, df, tf, output_
     - inference_{tf}_cross_pairs.npz: (left_idx, right_idx) for each cross
     - inference_{tf}_ctx_names.json: ordered list of context signal names
     - inference_{tf}_base_cols.json: ordered list of base feature column names
+    - inference_{tf}_cross_names.json: ordered cross names matching index pairs
     """
     out = output_dir or ARTIFACT_DIR
     t0 = time.time()
@@ -83,36 +88,55 @@ def save_inference_artifacts(ctx_names, ctx_arrays, cross_names, df, tf, output_
         json.dump(thresholds, f, indent=2)
 
     # 4. Save cross index pairs
-    # For each cross feature, record which two context indices are ANDed
-    # Build context name → index mapping
+    # For each cross feature, record which two context indices are ANDed.
+    # Cross name format: "{prefix}_{left_name[:40]}_{right_name[:40]}"
+    # Context names contain underscores, so we can't split on '_'.
+    # Strategy: build a lookup from truncated names to indices, then for each
+    # cross body try all possible split positions (at each '_') to find a
+    # valid (left, right) pair. O(n_crosses * avg_underscores) ~ 20 seconds.
     ctx_idx = {name: i for i, name in enumerate(ctx_names)}
 
-    # Parse cross names to extract left/right context
-    # Cross name format: "{prefix}_{left_ctx}__x__{right_ctx}" or similar
-    # We need to map each cross to (left_ctx_idx, right_ctx_idx)
+    # Build set of truncated context names -> original name for O(1) lookup
+    # Multiple originals could truncate to the same 40-char string; use first match.
+    trunc_to_original = {}
+    for name in ctx_names:
+        t = name[:40]
+        if t not in trunc_to_original:
+            trunc_to_original[t] = name
+
     left_indices = []
     right_indices = []
     valid_cross_names = []
+    _unmatched = 0
 
     for cname in cross_names:
-        # Try to find the two context names in the cross name
-        # Cross names are like "dx_doy_100__x__rsi_14_H" or "ax_mercury_retro__x__bb_pctb_XH"
-        parts = cname.split('__x__')
-        if len(parts) == 2:
-            # Remove prefix (dx_, ax_, etc.)
-            left_part = parts[0]
-            right_part = parts[1]
-            # Strip the cross type prefix
-            for prefix in ['dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'mx_', 'vx_',
-                           'asp_', 'mn_', 'pn_', 'hod_', 'rdx_']:
-                if left_part.startswith(prefix):
-                    left_part = left_part[len(prefix):]
-                    break
+        # Strip the cross type prefix
+        body = cname
+        for pfx in CROSS_PREFIXES:
+            if cname.startswith(pfx):
+                body = cname[len(pfx):]
+                break
 
-            if left_part in ctx_idx and right_part in ctx_idx:
-                left_indices.append(ctx_idx[left_part])
-                right_indices.append(ctx_idx[right_part])
+        # Try every '_' position as a potential split between left and right.
+        # Use longest-left-match (reverse iteration) to resolve ambiguity.
+        matched = False
+        # Find all underscore positions in body
+        uscore_positions = [i for i, ch in enumerate(body) if ch == '_']
+        # Try from rightmost underscore backwards (longest left match first)
+        for split_pos in reversed(uscore_positions):
+            left_part = body[:split_pos]
+            right_part = body[split_pos + 1:]
+            if left_part in trunc_to_original and right_part in trunc_to_original:
+                left_orig = trunc_to_original[left_part]
+                right_orig = trunc_to_original[right_part]
+                left_indices.append(ctx_idx[left_orig])
+                right_indices.append(ctx_idx[right_orig])
                 valid_cross_names.append(cname)
+                matched = True
+                break
+
+        if not matched:
+            _unmatched += 1
 
     left_arr = np.array(left_indices, dtype=np.int32)
     right_arr = np.array(right_indices, dtype=np.int32)
@@ -129,7 +153,8 @@ def save_inference_artifacts(ctx_names, ctx_arrays, cross_names, df, tf, output_
 
     elapsed = time.time() - t0
     print(f"  Saved inference artifacts for {tf}: {len(thresholds)} thresholds, "
-          f"{len(valid_cross_names)}/{len(cross_names)} cross pairs ({elapsed:.1f}s)")
+          f"{len(valid_cross_names)}/{len(cross_names)} cross pairs "
+          f"({_unmatched} unmatched, {elapsed:.1f}s)")
 
 
 class InferenceCrossComputer:
@@ -163,7 +188,7 @@ class InferenceCrossComputer:
         with open(os.path.join(art_dir, f'inference_{tf}_cross_names.json')) as f:
             self.cross_names = json.load(f)
 
-        # Pre-build column → threshold mapping for fast binarization
+        # Pre-build column -> threshold mapping for fast binarization
         self._build_binarize_map()
 
         print(f"InferenceCrossComputer({tf}): {len(self.thresholds)} cols, "
@@ -177,18 +202,42 @@ class InferenceCrossComputer:
         for ctx_name in self.ctx_names:
             # Parse context name back to column + tier
             # Format: "{col}_XH", "{col}_H", "{col}_L", "{col}_XL", or "{col}" (binary)
+            # DOY windows: "dw_{number}" — need day_of_year feature
             found = False
-            for suffix, comp, tier_key in [
-                ('_XH', '>', 'q95'), ('_H', '>', 'q75'),
-                ('_L', '<', 'q25'), ('_XL', '<', 'q5'),
-            ]:
-                if ctx_name.endswith(suffix):
-                    col = ctx_name[:-len(suffix)]
-                    if col in self.thresholds and self.thresholds[col]['type'] == '4tier':
-                        thresh = self.thresholds[col][tier_key]
-                        self.ctx_producers.append((col, comp, thresh))
-                        found = True
-                        break
+
+            # Check for DOY window contexts (dw_1 through dw_365)
+            if ctx_name.startswith('dw_'):
+                try:
+                    doy_center = int(ctx_name[3:])
+                    # DOY window is +-2 days around center
+                    self.ctx_producers.append((ctx_name, 'doy', doy_center))
+                    found = True
+                except ValueError:
+                    pass
+
+            # Check for regime-aware DOY: "dw_{num}_B", "dw_{num}_R", "dw_{num}_S"
+            if not found and ctx_name.startswith('dw_') and ctx_name[-2:] in ('_B', '_R', '_S'):
+                try:
+                    doy_center = int(ctx_name[3:-2])
+                    regime_tag = ctx_name[-1]  # B, R, or S
+                    self.ctx_producers.append((ctx_name, 'regime_doy', (doy_center, regime_tag)))
+                    found = True
+                except ValueError:
+                    pass
+
+            if not found:
+                # Check 4-tier suffixes
+                for suffix, comp, tier_key in [
+                    ('_XH', '>', 'q95'), ('_H', '>', 'q75'),
+                    ('_L', '<', 'q25'), ('_XL', '<', 'q5'),
+                ]:
+                    if ctx_name.endswith(suffix):
+                        col = ctx_name[:-len(suffix)]
+                        if col in self.thresholds and self.thresholds[col]['type'] == '4tier':
+                            thresh = self.thresholds[col][tier_key]
+                            self.ctx_producers.append((col, comp, thresh))
+                            found = True
+                            break
 
             if not found:
                 # Binary context (no suffix, or col itself is the context)
@@ -196,18 +245,26 @@ class InferenceCrossComputer:
                 if col in self.thresholds and self.thresholds[col]['type'] == 'binary':
                     self.ctx_producers.append((col, '>', 0.0))
                 else:
-                    # DOY window or special context — handle separately
+                    # Multi-signal combo (e.g. "a2_mercury_retro_moon_fire") or unknown.
+                    # These are 2-way combos created by create_multi_signal_combos() in
+                    # the cross generator. They account for ~15% of crosses. At inference
+                    # they stay 0 (conservative: model sees "combo didn't fire"). This is
+                    # acceptable because the combo context was already rare in training.
+                    # TODO: Track combo formulas during training for full reconstruction.
                     self.ctx_producers.append((ctx_name, 'special', None))
 
-    def compute(self, base_features_dict):
+    def compute(self, base_features_dict, day_of_year=None, regime=None):
         """
         Compute cross features for a single bar.
 
         Args:
             base_features_dict: dict of {feature_name: value} for one bar
+            day_of_year: int (1-365), extracted from bar timestamp for DOY windows
+            regime: str ('bull', 'bear', 'sideways') for regime-aware DOY crosses
 
         Returns:
             cross_values: np.array of shape (n_crosses,), dtype float32
+            elapsed_ms: float
         """
         t0 = time.time()
 
@@ -215,14 +272,34 @@ class InferenceCrossComputer:
         ctx_binary = np.zeros(len(self.ctx_names), dtype=np.uint8)
         for i, (col, comp, thresh) in enumerate(self.ctx_producers):
             if comp == 'special':
-                continue  # DOY windows handled separately
-            val = base_features_dict.get(col, np.nan)
-            if np.isnan(val):
                 continue
-            if comp == '>':
-                ctx_binary[i] = 1 if val > thresh else 0
-            elif comp == '<':
-                ctx_binary[i] = 1 if val < thresh else 0
+            elif comp == 'doy':
+                # DOY window: check if current day_of_year is within +-2 of center
+                if day_of_year is not None:
+                    center = thresh  # doy_center stored as thresh
+                    # Window wraps around year boundary
+                    targets = set((center + offset - 1) % 365 + 1 for offset in range(-2, 3))
+                    ctx_binary[i] = 1 if day_of_year in targets else 0
+            elif comp == 'regime_doy':
+                # Regime-aware DOY: check DOY window AND regime match
+                if day_of_year is not None and regime is not None:
+                    doy_center, regime_tag = thresh
+                    regime_map = {'B': 'bull', 'R': 'bear', 'S': 'sideways'}
+                    targets = set((doy_center + offset - 1) % 365 + 1 for offset in range(-2, 3))
+                    if day_of_year in targets and regime == regime_map.get(regime_tag):
+                        ctx_binary[i] = 1
+            else:
+                val = base_features_dict.get(col, np.nan)
+                if isinstance(val, float) and np.isnan(val):
+                    continue
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    continue
+                if comp == '>':
+                    ctx_binary[i] = 1 if val > thresh else 0
+                elif comp == '<':
+                    ctx_binary[i] = 1 if val < thresh else 0
 
         # Step 2: Compute crosses via index lookup (~16ms for 2.9M)
         crosses = (ctx_binary[self.left_idx] & ctx_binary[self.right_idx]).astype(np.float32)
@@ -230,19 +307,23 @@ class InferenceCrossComputer:
         elapsed_ms = (time.time() - t0) * 1000
         return crosses, elapsed_ms
 
-    def get_full_feature_vector(self, base_features_dict):
+    def get_cross_feature_names(self):
+        """Return ordered list of cross feature names (matches compute() output order)."""
+        return self.cross_names
+
+    def get_full_feature_vector(self, base_features_dict, day_of_year=None, regime=None):
         """
         Get complete feature vector (base + crosses) for LightGBM inference.
 
         Returns:
-            features: np.array, cross_names: list
+            features: np.array, feature_names: list, elapsed_ms: float
         """
         # Base features in correct order
         base_vals = np.array([base_features_dict.get(col, np.nan)
                               for col in self.base_cols], dtype=np.float32)
 
         # Cross features
-        crosses, elapsed_ms = self.compute(base_features_dict)
+        crosses, elapsed_ms = self.compute(base_features_dict, day_of_year, regime)
 
         # Concatenate
         full = np.concatenate([base_vals, crosses])
@@ -263,5 +344,5 @@ if __name__ == '__main__':
     print("  # At inference time:")
     print("  from inference_crosses import InferenceCrossComputer")
     print("  xc = InferenceCrossComputer('1h')")
-    print("  crosses, ms = xc.compute(feature_dict)")
+    print("  crosses, ms = xc.compute(feature_dict, day_of_year=100)")
     print("  print(f'{len(crosses)} crosses in {ms:.1f}ms')")

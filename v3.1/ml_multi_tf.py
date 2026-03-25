@@ -13,7 +13,7 @@ Pipeline:
 7. multiclass objective with 3 classes (long_prob, flat_prob, short_prob)
 """
 
-import sys, os, io, time, math, random, warnings, json, pickle
+import sys, os, io, time, random, warnings, json, pickle, gc
 # DO NOT re-wrap stdout — it kills python -u unbuffered mode on cloud
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -29,6 +29,12 @@ from datetime import datetime
 from numba import njit
 
 DB_DIR = os.environ.get('SAVAGE22_DB_DIR', os.path.dirname(os.path.abspath(__file__)))
+# v3.1: resolve feature data from v3.0 shared dir — import from config (single source of truth)
+try:
+    from config import V30_DATA_DIR
+except ImportError:
+    V30_DATA_DIR = os.environ.get("V30_DATA_DIR",
+        os.path.join(os.path.dirname(DB_DIR), "v3.0 (LGBM)"))
 START_TIME = time.time()
 RESULTS = []
 
@@ -38,16 +44,6 @@ def elapsed():
 def log(msg):
     print(msg)
     RESULTS.append(msg)
-
-def compute_rsi_arr(close_arr, period=14):
-    delta = np.diff(close_arr, prepend=close_arr[0])
-    gain = np.maximum(delta, 0)
-    loss = np.maximum(-delta, 0)
-    alpha = 1.0 / period
-    avg_gain = pd.Series(gain).ewm(alpha=alpha, min_periods=period).mean().values
-    avg_loss = pd.Series(loss).ewm(alpha=alpha, min_periods=period).mean().values
-    rs = avg_gain / np.where(avg_loss == 0, 1e-10, avg_loss)
-    return 100 - (100 / (1 + rs))
 
 # ============================================================
 # INSTALL DEPS IF NEEDED
@@ -374,43 +370,11 @@ if __name__ == '__main__':
   # ============================================================
   # TF CONFIGS (Perplexity-adjusted regularization)
   # ============================================================
-  # ── LightGBM base params (shared by all TFs) ──
-  V2_LGBM_PARAMS = {
-      "objective": "multiclass",
-      "num_class": 3,
-      "metric": "multi_logloss",
-      "boosting_type": "gbdt",
-      "device": "cpu",
-      "force_col_wise": True,
-      "max_bin": 15,
-      "num_threads": -1,
-      "is_enable_sparse": True,
-      "min_data_in_leaf": 3,
-      "min_gain_to_split": 2.0,
-      "lambda_l1": 0.5,
-      "lambda_l2": 3.0,
-      "feature_fraction": 0.10,
-      "feature_fraction_bynode": 0.5,
-      "bagging_fraction": 0.8,
-      "bagging_freq": 1,
-      "num_leaves": 63,
-      "learning_rate": 0.03,
-      "verbosity": -1,
-  }
-
-  # Per-TF min_data_in_leaf overrides
-  _MIN_DATA_IN_LEAF = {
-      '1w': 3, '1d': 3, '4h': 5, '1h': 8, '15m': 15, '5m': 15,
-  }
-
-  # Per-TF class_weight — reweights by inverse class frequency via LightGBM's class_weight param
-  # 1d: 60% FLAT labels cause model to collapse to FLAT at high confidence, missing directional edge
-  # 1w: 82% FLAT labels (339 samples) cause same FLAT collapse (prec_long=0, prec_short=0)
-  # OLD: _TF_IS_UNBALANCE = {'1d': True, '1w': True}
-  _TF_CLASS_WEIGHT = {
-      '1d': 'balanced',
-      '1w': 'balanced',
-  }
+  # ── LightGBM base params — single source of truth from config.py ──
+  from config import V3_LGBM_PARAMS as _CFG_LGBM, TF_MIN_DATA_IN_LEAF as _CFG_MIN_LEAF, TF_CLASS_WEIGHT as _CFG_CLASS_WEIGHT
+  V2_LGBM_PARAMS = _CFG_LGBM.copy()
+  _MIN_DATA_IN_LEAF = _CFG_MIN_LEAF.copy()
+  _TF_CLASS_WEIGHT = _CFG_CLASS_WEIGHT.copy()
 
   TF_CONFIGS = {
       '1w': {
@@ -448,22 +412,7 @@ if __name__ == '__main__':
           'context_only': False,
           'rolling_window_bars': 70000,  # ~6 months of 15m bars
       },
-      '5m': {
-          'db': 'features_5m.db', 'table': 'features_5m',
-          'return_col': 'next_5m_return',
-          'cost_pct': 0.22,
-          'context_only': False,
-          'rolling_window_bars': 210000,  # ~6 months of 5m bars
-      },
   }
-
-  # GA replaced by exhaustive_optimizer.py — these ranges kept for reference only
-  # GA_RANGES = {
-  #     '4h': {'lev': (1, 25), 'risk': (0.5, 3.0), 'stop_atr': (0.5, 2.0), 'rr': (1, 4), 'hold': (1, 32), 'ptp': [0, 25, 50, 75], 'conf': (0.55, 0.85)},
-  #     '1h': {'lev': (5, 50), 'risk': (0.1, 1.0), 'stop_atr': (0.3, 1.0), 'rr': (1, 3), 'hold': (1, 8), 'ptp': [0, 25, 50, 75], 'conf': (0.55, 0.85)},
-  #     '15m': {'lev': (10, 60), 'risk': (0.05, 0.5), 'stop_atr': (0.2, 0.5), 'rr': (1, 2), 'hold': (1, 8), 'ptp': [0, 25, 50, 75], 'conf': (0.55, 0.85)},
-  #     '5m': {'lev': (15, 75), 'risk': (0.05, 0.3), 'stop_atr': (0.1, 0.3), 'rr': (1, 1.5), 'hold': (1, 12), 'ptp': [0, 25, 50, 75], 'conf': (0.55, 0.85)},
-  # }
 
   # ============================================================
   # CLI ARGS
@@ -474,6 +423,8 @@ if __name__ == '__main__':
   _parser.add_argument('--tf', action='append', help='Only train specific TFs (can repeat)')
   _parser.add_argument('--boost-rounds', type=int, default=800, help='LightGBM num_boost_round (default 800)')
   _parser.add_argument('--n-groups', type=int, default=None, help='Override CPCV n_groups (default: per-TF)')
+  _parser.add_argument('--search-mode', action='store_true', default=False,
+                        help='Use OPTUNA_SEARCH_CPCV_GROUPS for faster Optuna search trials')
   _parser.add_argument('--parallel-splits', action='store_true', default=False,
                         help='(legacy, now auto-detected) Kept for backward compat')
   _parser.add_argument('--no-parallel-splits', action='store_true', default=False,
@@ -483,13 +434,12 @@ if __name__ == '__main__':
 
   # LightGBM CPU mode: parallel splits use ProcessPoolExecutor across CPU cores
   _use_parallel_splits = not _args.no_parallel_splits
+  import multiprocessing as _mp
+  _total_cores = _mp.cpu_count() or 24
   if _args.no_parallel_splits:
       log("PARALLEL SPLITS: disabled (--no-parallel-splits)")
   else:
-      import multiprocessing as _mp
-      _n_workers = max(1, min(_mp.cpu_count() // 2, 15))  # Cap at 15: CPCV k=6 → C(6,2)=15 paths max
-      _n_workers = int(os.environ.get('V3_CPCV_WORKERS', _n_workers))
-      log(f"PARALLEL SPLITS: enabled ({_n_workers} workers, use --no-parallel-splits to disable)")
+      log(f"PARALLEL SPLITS: enabled (dynamic workers per TF, {_total_cores} cores detected)")
 
   # ============================================================
   # MAIN TRAINING LOOP
@@ -508,12 +458,21 @@ if __name__ == '__main__':
           parquet_path = db_path.replace('.db', '.parquet')
           # V2 naming: features_BTC_{tf}.parquet (asset-prefixed)
           v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
+          # v3.1: also check v3.0 shared data dir
+          v30_parquet = os.path.join(V30_DATA_DIR, f'features_BTC_{tf_name}.parquet')
           if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
               parquet_path = v2_parquet
+          if not os.path.exists(parquet_path) and os.path.exists(v30_parquet):
+              parquet_path = v30_parquet
 
-          # Try parquet first (no column limit), fall back to SQLite
+          # Try parquet first (no column limit), fall back to SQLite, then v3.0
           if os.path.exists(parquet_path):
               df = pd.read_parquet(parquet_path)
+              # Downcast float64 → float32 (LightGBM uses float32 histograms, saves 2x RAM)
+              _f64 = df.select_dtypes(include=['float64']).columns
+              if len(_f64) > 0:
+                  df[_f64] = df[_f64].astype(np.float32)
+                  log(f"  Downcast {len(_f64)} float64 cols → float32 (saves ~{len(_f64) * len(df) * 4 / 1e6:.0f} MB)")
               log(f"  Loaded from parquet: {parquet_path}")
           elif os.path.exists(db_path):
               conn = sqlite3.connect(db_path)
@@ -532,7 +491,7 @@ if __name__ == '__main__':
                   df = pd.read_sql_query(f"SELECT * FROM {cfg['table']}", conn)
               conn.close()
           else:
-              log(f"  SKIP — {cfg['db']} not found")
+              log(f"  SKIP — no data found for {tf_name} (checked local + v3.0)")
               continue
 
           # Parse timestamp
@@ -603,6 +562,11 @@ if __name__ == '__main__':
           cross_matrix = None
           cross_cols = None
           npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
+          # v3.1: check v3.0 shared data dir for cross NPZ
+          if not os.path.exists(npz_path):
+              npz_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz')
+              if os.path.exists(npz_v30):
+                  npz_path = npz_v30
           if os.path.exists(npz_path):
               try:
                   log(f"  {elapsed()} Loading sparse cross matrix: {npz_path}")
@@ -618,6 +582,9 @@ if __name__ == '__main__':
                       _parts = _npz_basename.replace('v2_crosses_', '').replace('.npz', '').rsplit('_', 1)
                       _sym, _tfn = (_parts[0], _parts[1]) if len(_parts) == 2 else ('BTC', tf_name)
                       cols_path_alt = os.path.join(DB_DIR, f'v2_cross_names_{_sym}_{_tfn}.json')
+                      # v3.1: also check v3.0 for cross names
+                      if not os.path.exists(cols_path_alt):
+                          cols_path_alt = os.path.join(V30_DATA_DIR, f'v2_cross_names_{_sym}_{_tfn}.json')
                       if os.path.exists(cols_path_alt):
                           with open(cols_path_alt) as f:
                               cross_cols = json.load(f)
@@ -732,6 +699,12 @@ if __name__ == '__main__':
               n_groups = _args.n_groups
               n_test_groups = 1
               log(f"  CPCV override: n_groups={n_groups}, n_test=1 (--n-groups flag)")
+          elif _args.search_mode:
+              # Optuna search mode: fewer CPCV groups for faster evaluation
+              from config import OPTUNA_SEARCH_CPCV_GROUPS
+              n_groups = OPTUNA_SEARCH_CPCV_GROUPS
+              n_test_groups = 1
+              log(f"  CPCV search mode: n_groups={n_groups}, n_test=1 (--search-mode flag)")
           elif tf_name in ('1w', '1d'):
               n_groups = 4
               n_test_groups = 1
@@ -813,10 +786,19 @@ if __name__ == '__main__':
               # ── Parallel CPCV path (CPU workers) ──
               # NOTE: per-fold HMM re-fitting is skipped in parallel mode (HMM fitted once before loop).
               # This is the same tradeoff v2_multi_asset_trainer.py makes.
-              log(f"\n  PARALLEL CPCV: distributing {len(splits)} splits across {_n_workers} CPU workers")
+
+              # Dynamic worker/thread allocation: adapt to actual split count
+              # On 13900K (24 cores): 4 splits -> 4 workers x 6 threads
+              #                       10 splits -> 10 workers x 2 threads
+              #                       15 splits -> 15 workers x 1-2 threads
+              _pending_splits = len(splits) - len(_completed_folds)
+              _n_workers = int(os.environ.get('V3_CPCV_WORKERS', min(_pending_splits, _total_cores)))
+              _threads_per_worker = max(1, _total_cores // _n_workers)
+              log(f"\n  PARALLEL CPCV: {_pending_splits} pending splits, {_n_workers} workers x {_threads_per_worker} threads = {_n_workers * _threads_per_worker} total ({_total_cores} cores)")
+
               # Set num_threads per worker to avoid oversubscription (each worker gets fair share of cores)
               _base_lgb_params = _base_lgb_params.copy()
-              _base_lgb_params['num_threads'] = max(1, os.cpu_count() // _n_workers)
+              _base_lgb_params['num_threads'] = _threads_per_worker
               log(f"  num_threads per worker: {_base_lgb_params['num_threads']}")
               X_csr = X_all.tocsr()
               worker_args = []
@@ -1361,6 +1343,12 @@ if __name__ == '__main__':
               'knn_ab_test': None,  # removed — no pre-filtering
               'label_type': 'triple_barrier',
           }
+
+          # Memory cleanup between TF builds (sparse matrices can be 1-10 GB)
+          del df
+          del X_all
+          gc.collect()
+          log(f"  [GC] Memory released after {tf_name}")
 
   except Exception as _e:
       log(f"\n  TRAINING FAILED: {_e}")

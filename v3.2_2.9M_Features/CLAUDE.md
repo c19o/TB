@@ -44,7 +44,7 @@ FIX: renamed foo() return from 3→5 values
 ### MATRIX PHILOSOPHY GATE (PASS 0 — always first, blocks everything)
 Verify every file in v2/ against these non-negotiable rules. ANY violation = immediate fix.
 Apply CASCADE DETECTION RULE after each fix.
-- [ ] No feature filtering/pre-screening before XGBoost (no MI, no variance filter, no support thresholds)
+- [ ] No feature filtering/pre-screening before LightGBM (no MI, no variance filter, no support thresholds)
 - [ ] No fallback modes (no TA-only, no base-only, no graceful degradation)
 - [ ] No fillna(0) on feature data (NaN = missing signal, 0 = "value is zero")
 - [ ] No blanket try/except that masks failures (crash > silent degradation)
@@ -52,7 +52,7 @@ Apply CASCADE DETECTION RULE after each fix.
 - [ ] Every asset gets full pipeline (esoteric + astro + gematria + numerology + space weather)
 - [ ] Sparse CSR preserves NaN semantics (structural zero = missing, explicit NaN = missing, explicit 0.0 = WRONG)
 - [ ] V2 cross + V2 layers mandatory in live_trader (no silent fallback to base-only)
-- [ ] min_child_weight respects sparse signal frequency (1d/1w=10, not 50)
+- [ ] min_data_in_leaf respects sparse signal frequency (1d/1w=3, 4h=5, 1h=8, 15m=15)
 
 ### PASS 1 — Dead Code & Abandoned Experiments (agent 1, parallel with pass 2)
 Use `codebase_search` + `codebase_graph_query` to find:
@@ -83,7 +83,7 @@ Apply CASCADE DETECTION RULE after each fix.
 - [ ] Config values used consistently (same asset list, same TF list, same paths)
 - [ ] Error handling consistent (all crash-on-failure, no mixed strategies)
 - [ ] Data types consistent across pipeline stages (cuDF vs pandas, float32 vs float64)
-- [ ] NaN handling consistent (never converted to 0, always preserved for XGBoost)
+- [ ] NaN handling consistent (never converted to 0, always preserved for LightGBM)
 - [ ] Function signatures match between definition and ALL call sites
 - [ ] Return value tuple lengths match between producer and ALL unpacking sites
 - [ ] Artifact filenames match between writer (training) and reader (inference/audit)
@@ -155,10 +155,24 @@ REMAINING ISSUES (if any):
 - Always run scripts with progress logs (tee/unbuffered). Never run blind
 - NEVER kill processes without explicit user permission
 - Don't search user's PC for files. Use the sources they provide
-- Don't use Perplexity for esoteric queries — they will deny the data
+- Use Perplexity MCP for technical/parameter queries. For esoteric content, use the local vector DB at Orgonite master instead.
 - Stagger feature builds: small TFs parallel, then 15m, then 5m solo
 - Build features on GPU (cuDF rolling/ewm) + cloud for parallelism. Train on cloud GPU
 - Always maximize parallelism. Launch multiple agents simultaneously
+
+### Data & Deployment Integrity (NON-NEGOTIABLE)
+- **NEVER deploy with missing data, missing code, or untested changes.** Every shortcut weakens the model. If ANYTHING is incomplete, STOP and fix it first.
+- **NEVER deploy with missing databases.** ALL .db files must be in the upload tar. Missing DB = missing features = weaker model = INVALID RUN. Kill it immediately.
+- **NEVER treat "WARNING" log messages as acceptable.** Every warning is a lost signal or a silent failure. Investigate and fix before proceeding.
+- **NEVER say "it's fine" about missing data.** The matrix requires ALL data sources. Missing ANY source violates the core philosophy.
+- **NEVER skip the smoke test.** If smoke test fails, the machine is incompatible. Do NOT try workarounds — find a compatible machine.
+- **NEVER deploy code that hasn't been audited.** 3 clean audit passes before any cloud deploy.
+- **NEVER assume a fix works without verifying.** Test the actual pipeline path, not just individual components.
+- **Upload tar must include EVERY .db file:** btc_prices.db, tweets.db, news_articles.db, sports_results.db, space_weather.db, onchain_data.db, macro_data.db, astrology_full.db, ephemeris_cache.db, fear_greed.db, funding_rates.db, google_trends.db, kp_history_gfz.txt
+- **Verify DB count after extract:** `ls /workspace/*.db | wc -l` must be >= 12. If not, STOP.
+- **Verify zero "WARNING: DB missing" in first 30s of pipeline log.** If any appear, STOP.
+- **NEVER compromise training speed.** Pick machines with the highest CPU Score (cores × base GHz). Match CUDA image to driver version. Use GPU (cuDF/CuPy) for feature building. Never fall back to CPU-only when GPU is available.
+- **NEVER use bandaids that hurt performance.** If a fix slows training (e.g., disabling GPU, reducing batch size, limiting cores), it's a bandaid. Find the real fix.
 
 ### Code
 - No fallback modes. No TA-only mode. Full pipeline or fix it
@@ -166,14 +180,14 @@ REMAINING ISSUES (if any):
 - Always use GPU (RTX 3090) for processing, never default to CPU
 - 4-tier binarization on ALL numeric columns (gematria, sentiment, astro, TA, everything)
 - Sparse CSR for cross features — never create dense DataFrames for 100K+ columns
-- NEVER convert NaN to 0 in sparse matrices — NaN is "missing" (XGBoost learns split direction), 0 is "the value is zero" (different signal). Structural zeros in CSR = missing. Explicit NaN = missing. Explicit 0.0 = stored bloat + wrong semantics
+- NEVER convert NaN to 0 in sparse matrices — NaN is "missing" (LightGBM learns split direction), 0 is "the value is zero" (different signal). Structural zeros in CSR = missing. Explicit NaN = missing. Explicit 0.0 = stored bloat + wrong semantics
 - Use native cuDF (not cudf.pandas) for compute_ta_features — keeps rolling ops on GPU
 - Stateful loops must use Numba @njit — never raw Python for-loops on price arrays
-- Cloud docker: rapidsai/base (cuDF+CuPy pre-installed), pip install lightgbm+optuna+numba on top
+- Cloud docker: rapidsai/base (cuDF+CuPy pre-installed), pip install lightgbm+optuna+scipy+scikit-learn+ephem (numba comes with RAPIDS, don't pip install separately)
 - LightGBM CUDA does NOT support sparse — always use device="cpu" with force_col_wise=True
 - min_data_in_leaf=3 (1d/1w) with min_gain_to_split=2.0 as compensating guard for rare signals
 - Co-occurrence filter of 8 on cross features (math constraint: <8 can't appear in both CPCV splits)
-- Optuna replaces exhaustive 30M grid (200 TPE trials, Sortino objective)
+- Optuna replaces exhaustive 30M grid (200 TPE trials for LightGBM params, 500 for trade optimizer (13D search space), Sortino objective)
 
 ## LESSONS LEARNED
 
@@ -217,7 +231,7 @@ REMAINING ISSUES (if any):
 ### H200 Has Weak CPU (2026-03-20)
 - RunPod H200 pod bottlenecks LSTM training (heavy DataLoader CPU work)
 - Use local 13900K + RTX 3090 for LSTM
-- Use cloud GPU for XGBoost training and optimizer only
+- Use cloud GPU for LightGBM training and optimizer only
 
 ### vast.ai Lessons (2026-03-20)
 - Do NOT pin CUDA_VISIBLE_DEVICES per process → causes OOM on single GPU
@@ -230,11 +244,11 @@ REMAINING ISSUES (if any):
 
 ### Sparse Matrices Must Preserve NaN — Never nan_to_num (2026-03-21)
 - Converting NaN → 0 before sparse storage is WRONG for two reasons:
-  1. **Semantics**: XGBoost treats NaN as "missing" and learns optimal split directions for absent data. Converting to 0 tells the model "the value is zero" — completely different signal. Missing RSI (first 14 bars) is NOT the same as RSI=0
+  1. **Semantics**: LightGBM treats NaN as "missing" and learns optimal split directions for absent data. Converting to 0 tells the model "the value is zero" — completely different signal. Missing RSI (first 14 bars) is NOT the same as RSI=0
   2. **Storage bloat**: Sparse CSR only saves space by NOT storing zeros. If you convert NaN to explicit 0.0, those zeros get stored as entries in the data array. Base features (~3000 cols × 200K rows) are mostly non-zero values — adding millions of explicit zeros turns a 50MB sparse matrix into gigabytes
 - FIX: `sp_sparse.csr_matrix(X_base)` directly (NaN stored as explicit entries, true zeros are structural)
 - Then `X_all.eliminate_zeros()` removes only true zeros, NaN stays
-- XGBoost DMatrix handles NaN in sparse matrices natively — treats them as missing
+- LightGBM Dataset handles NaN in sparse matrices natively — treats them as missing
 - For variance screening on sparse with NaN: temporarily replace NaN with 0 in a COPY for computation, then discard. Never mutate the actual training matrix
 - Cross features (.npz) are already correct — binary 0/1 with structural zeros = missing
 
@@ -281,7 +295,7 @@ REMAINING ISSUES (if any):
 - **Removed MI pre-screening** from CPCV training folds — was dropping esoteric features before XGBoost saw them
 - **Removed zero-variance filter** from CPCV folds — XGBoost ignores constant features via 0-gain splits naturally
 - **Removed dx_ support=50 filter** from feature_library.py — esoteric calendar signals are SPARSE by nature, that's the edge
-- **Per-TF min_child_weight**: 1d/1w=10, 4h=20, 1h=25, 5m/15m=50. Rare astro conjunctions fire 10-20x on daily — old value of 50 killed them all
+- **Per-TF min_data_in_leaf**: 1d/1w=3, 4h=5, 1h=8, 15m=15. Rare astro conjunctions fire 10-20x on daily — old value of 50 killed them all
 - **Removed fillna(0)** from build_1h GCP cross contexts — NaN means "unknown interaction" (XGBoost learns optimal split), 0 means "no interaction" (wrong signal)
 - **Made V2_CROSS + V2_LAYERS mandatory** in live_trader.py — no silent degradation to base-only features
 - **Removed blanket try/except** around V2 layer computation — if V2 layers fail, CRASH and fix, don't mask with degraded features
@@ -291,52 +305,53 @@ REMAINING ISSUES (if any):
 - **Meta-labeling filename** — cloud runner now looks for meta_model_{tf}.pkl (matches what meta_labeling.py saves)
 - Lesson: any pre-filtering violates "NO FILTERING" even if it seems like it removes "noise." Sparse = the edge, not noise.
 
-## CURRENT BUILD CHECKLIST
+## CLOUD DEPLOYMENT PROTOCOL — MANDATORY
 
-### Step 1: Feature Build (IN PROGRESS)
-- [x] download_multi_asset.py — 155K daily + 245K hourly bars downloaded
-- [x] v2_easy_streamers.py — DeFi TVL, BTC.D, mining stats working
-- [x] config.py — 31 assets, V2 paths, BTC genesis
-- [x] data_access_v2.py — multi-asset loader
-- [x] v2_feature_layers.py — 20 new layers (1,162 lines)
-- [x] v2_cross_generator.py — everything x everything sparse
-- [x] build_features_v2.py — full pipeline, checkpointing, parallel
-- [x] Fix batch column assignment in feature_library.py DOY crosses
-- [x] BTC 1d build complete (10,852 base + 2,002,894 crosses, 47.1 MB sparse, 19 min)
-- [x] 30 remaining daily assets complete (all 31/31 daily done)
-- [ ] 14 crypto 4h — FAILED (RAM OOM, fixed with streaming sparse + gc.collect, needs restart)
-- [ ] 14 crypto 1h — FAILED (same, fixed, needs restart)
-- [ ] BTC 15m — FAILED (same, fixed, needs restart)
-- [ ] BTC 5m — NOT STARTED
-- [ ] Verify: count all parquets + .npz files
+Follow `v3.3/CLOUD_TRAINING_PROTOCOL.md` EXACTLY for every cloud deployment. No shortcuts.
 
-### Step 2: Train (NOT STARTED)
-- [ ] v2_multi_asset_trainer.py — add OOS prediction saving
-- [ ] Upload to vast.ai
-- [ ] Per-asset models (31 x 1d)
-- [ ] Unified model (all 31 combined)
-- [ ] Per-crypto production models (14 crypto x 1d)
-- [ ] BTC intraday models (4h, 1h, 15m, 5m)
+**If deployment fails:**
+1. Consult Perplexity MCP for the fix — keep in mind training efficiency and the matrix thesis
+2. Fix the root cause (not a bandaid)
+3. Deploy successfully
+4. Update `v3.3/CLOUD_TRAINING_PROTOCOL.md` with the lesson learned
+5. Add the fix to the `--onstart-cmd` or smoke test so it NEVER happens again
 
-### Step 3: Meta-Labeling (NOT STARTED)
-- [ ] v2_meta_labeling.py wrapper
-- [ ] Train from OOS predictions per TF
+**Key rules from protocol:**
+- Install `cuda_init_fix.py` as sitecustomize on EVERY machine (NEVER use NUMBA_DISABLE_CUDA=1 — it breaks numba_cuda)
+- Mandatory smoke test (Step 5) before training — NEVER skip
+- `rapidsai/base:25.02-cuda12.8-py3.12` is the standard image
+- `driver_version >= 570` filter on vast.ai search
+- Download ALL artifacts before killing machine
+- Always respond to user before running long tools
 
-### Step 4: Optimizer (NOT STARTED)
-- [ ] v2_optimizer.py wrapper
-- [ ] Exhaustive grid search per TF (30M combos)
-- [ ] Optuna XGBoost tuning with esoteric protection
+## V3.3 BUILD STATUS
 
-### Step 5: PBO Validation (NOT STARTED)
-- [ ] v2_pbo_validation.py wrapper
-- [ ] PBO + Deflated Sharpe per TF
+### Code Changes (COMPLETE)
+- [x] 173 new esoteric features (vortex math, sacred geometry, planetary expansion, numerology, lunar/EM)
+- [x] 2 new gematria ciphers (Chaldean, AlBam) on all 10 text sources
+- [x] 6 new holiday windows extended to 2035
+- [x] 15 market signal features (DeFi TVL, BTC.D, mining stats)
+- [x] 12 bug fixes (eclipse formula, BaZi branch, Tzolkin tone/kin, VOC moon, etc.)
+- [x] is_unbalance → class_weight='balanced' (multiclass fix)
+- [x] max_bin: 15 → 63 (4x resolution on continuous features)
+- [x] max_conflict_rate: 0.0 (protect cross feature co-occurrence from EFB)
+- [x] path_smooth: 0.1, extra_trees: False (new regularizers)
+- [x] SHAP cross validation as pipeline Step 11
+- [x] Inference crosses wired into live_trader.py
+- [x] Sports lookahead removal (intraday uses game_timestamp)
+- [x] Tweet color detection + gematria in all scrapers
+- [x] Space weather: sunspot + solar flux endpoints added
+- [x] DB path standardization (config.DB_DIR)
 
-### Step 6: LSTM (NOT STARTED)
-- [ ] v2_lstm_trainer.py wrapper
-- [ ] Train per TF on local 3090
-- [ ] Platt calibration
+### Training (IN PROGRESS)
+- [ ] 1w validation run (Norway 384c, confirms pipeline)
+- [ ] Pick machines for 1d, 4h, 1h, 15m
+- [ ] Train all 5 TFs
+- [ ] Download + verify all artifacts
+- [ ] SHAP analysis on cross features
 
-### Step 7: Integration (NOT STARTED)
-- [ ] live_trader_v2.py — sparse crosses at inference
-- [ ] Multi-crypto support
+### Post-Training
+- [ ] Scale-in/Kelly/dynamic exits in exhaustive_optimizer
+- [ ] LSTM projection + attention upgrade
+- [ ] Temporal cascade ensemble (4h→1h→15m)
 - [ ] Paper trading validation

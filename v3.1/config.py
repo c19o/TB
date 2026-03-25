@@ -231,7 +231,7 @@ V3_LGBM_PARAMS = {
     "boosting_type": "gbdt",
     "device": "cpu",
     "force_col_wise": True,
-    "max_bin": 63,
+    "max_bin": 15,
     "num_threads": -1,
     "is_enable_sparse": True,
     "min_data_in_leaf": 3,
@@ -244,16 +244,8 @@ V3_LGBM_PARAMS = {
     "bagging_freq": 1,
     "num_leaves": 63,
     "learning_rate": 0.03,
-    "path_smooth": 0.1,
-    "extra_trees": False,
     "verbosity": -1,
-    "max_conflict_rate": 0.0,  # Only bundle truly mutually exclusive features. Protects cross feature co-occurrence signals.
 }
-
-# SHAP analysis config
-SHAP_N_SAMPLES = 10000        # High-confidence samples for SHAP analysis
-SHAP_TOP_N = 1000             # Top N features by |SHAP| to report
-SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_', 'rdx_')
 
 # Per-TF min_data_in_leaf overrides (rare astro conjunctions fire 10-20x on daily)
 TF_MIN_DATA_IN_LEAF = {
@@ -273,21 +265,20 @@ TF_CLASS_WEIGHT = {
     '1w': 'balanced',
 }
 
-# ── Optuna Optimizer Config (v3.2 — Perplexity-optimized for 2.9M features) ──
-# Per Perplexity: save_binary() + reduced rounds + 2-fold search = 8-9x speedup
-# All features stay in model. Only tuning HOW model uses them.
-OPTUNA_STAGE1_TRIALS = 20          # TPE gain flattens after ~20 trials (was 60)
+# ── Optuna Optimizer Config (v3.1 speedups) ──
+# Two-stage search: rough on subsample → refine on full data
+OPTUNA_STAGE1_TRIALS = 60          # coarse search with 5-fold CPCV + row subsample
 OPTUNA_STAGE2_TRIALS = 20          # refinement around best region, full CPCV
-OPTUNA_N_STARTUP_TRIALS = 8        # random trials before TPE kicks in (was 15)
+OPTUNA_N_STARTUP_TRIALS = 15       # no pruning for first 15 trials (build baseline)
 OPTUNA_SEED = 42
 OPTUNA_PRUNER = 'hyperband'        # 'hyperband' or 'median'
-OPTUNA_PRUNER_MIN_RESOURCE = 1     # min CPCV folds before pruning can kill a trial
+OPTUNA_PRUNER_MIN_RESOURCE = 2     # min CPCV folds before pruning can kill a trial
 OPTUNA_PRUNER_REDUCTION_FACTOR = 3
 OPTUNA_SEARCH_LR = 0.08            # higher LR during search (faster convergence)
-OPTUNA_SEARCH_ROUNDS = 150         # reduced from 300 — early stop finds optimum (was 300)
+OPTUNA_SEARCH_ROUNDS = 300         # fewer rounds during search (early stop handles rest)
 OPTUNA_FINAL_LR = 0.03             # original LR for final model
-OPTUNA_FINAL_ROUNDS = 800          # full rounds for final model only
-OPTUNA_SEARCH_CPCV_GROUPS = 2      # 2-fold for search speed, 4+ for final (was 4)
+OPTUNA_FINAL_ROUNDS = 800          # full rounds for final model
+OPTUNA_SEARCH_CPCV_GROUPS = 4      # fewer CPCV groups during search (faster)
 OPTUNA_SEARCH_ROW_SUBSAMPLE = 0.3  # 30% row subsample during stage 1
 
 # ── Fee & Cost Model (single source of truth) ──
@@ -314,7 +305,7 @@ REGIME_CRASH_DD_THRESHOLD = 0.15 # dd_from_30h > 15%
 
 # ── Backtest / Optimizer Defaults ──
 STARTING_BALANCE = 10000.0       # backtest/optimizer starting capital
-LIVE_STARTING_BALANCE = 100.0    # paper trader initial balance ($100)
+LIVE_STARTING_BALANCE = 1000.0   # paper trader initial balance ($1000)
 
 # ── Live Trading Tunable Constants ──
 RISK_SCALE = 2.0                 # multiplier for GA config risk_pct

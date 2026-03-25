@@ -36,10 +36,10 @@ All 10 previous cloud runs trained with base-only (3,314 features) because cross
 7. LSTM looks for features_{tf}.parquet (no BTC prefix) → symlink fix
 8. killall python kills the launcher script itself → targeted pgrep fix
 9. tee masks exit codes → bash pipefail fix
-10. 15m parquet has 1,284 base features (correct for intraday) → lower threshold
+10. 15m parquet has 1,284 base features → WAS A BUG (built without V2 layers). Fixed: cloud_run_tf.py now uses build_features_v2.py
 
-### 4. 15m Has Fewer Base Features (1,284 vs ~3,000)
-Not a bug. The feature library generates fewer TA indicators for 15m resolution (176 vs 400+ for daily). Crosses still expand to 500K+. Combined with 227K rows, this is the most data-rich TF.
+### 4. 15m Had Fewer Base Features (1,284 vs ~3,000) — FIXED
+**This WAS a bug.** The 15m was built using the old V1 `build_15m_features.py` (calls only `build_all_features()`) while all other TFs were built using `build_features_v2.py` (calls `build_all_features()` + `add_all_v2_layers()`). The V2 layers add ~1,400-1,600 features: 4-tier binarization (_HIGH/_LOW/_EXTREME_HIGH/_EXTREME_LOW), approx_entropy, shannon_entropy, hurst_exponent, fib day levels, gann day levels, moon-in-sign, planetary aspects, doy_w2 windows, extra lag patterns, etc. The TA core from feature_library.py is identical for all TFs. **Fix:** cloud_run_tf.py now prefers build_features_v2.py for rebuilds, and MIN_BASE_FEATURES raised to 2000 to catch parquets missing V2 layers.
 
 ### 5. Upload Strategy — Use Root btc_prices.db
 - Root btc_prices.db (539MB) has BTC/USDT → queries work natively
@@ -59,15 +59,46 @@ Not a bug. The feature library generates fewer TA indicators for 15m resolution 
 | 1h | 128 | 512 GB | 256c, 755GB+ |
 | 15m | 192 | 768 GB | 384c, 1TB+ |
 
-## Feature Counts (Verified 2026-03-24)
+## Feature Counts
 
+### V3.2 (previous, verified 2026-03-24)
 | TF | Base | Crosses | Total | Rows |
 |---|---|---|---|---|
 | 1w | 2,656 | 654,202 | 656,825 | 818 |
 | 1d | 3,077 | 2,881,220 | 2,884,297 | 5,727 |
 | 4h | 3,289 | 3,198,974 | 3,202,263 | 4,380 |
 | 1h | 3,350 | 4,264,060 | 4,267,410 | 17,520 |
-| 15m | 1,284 | ~500K-1M | ~500K-1M | 227,577 |
+| 15m | 1,284* | ~500K-1M | ~500K-1M | 227,577 |
+
+### V3.3 (estimated after 235 new features + V2 layers fix)
+| TF | Base | Crosses (est.) | Total (est.) | Rows |
+|---|---|---|---|---|
+| 1w | ~2,890 | ~760K | ~763K | 818 |
+| 1d | ~3,312 | ~3,340K | ~3,344K | 5,727 |
+| 4h | ~3,524 | ~3,710K | ~3,713K | 4,380 |
+| 1h | ~3,585 | ~4,940K | ~4,944K | 17,520 |
+| 15m | ~3,435 | ~580K-1.2M | ~580K-1.2M | 227,577 |
+
+*15m was 1,284 in v3.2 (built without V2 layers). Fixed: cloud_run_tf.py now uses build_features_v2.py.
+
+### V3.3 New Features (+235 base)
+- 43 quick wins (Venus/Mars retrograde, VOC moon, karana, zodiac sign, planetary hour, angel numbers, event BaZi/Tzolkin)
+- 37 vortex math + sacred geometry (Rodin family groups, doubling circuit, vesica piscis ratios, Platonic solid cycles, Tesla 3-6-9, Kabbalah pillars)
+- 49 planetary expansion (speeds, combustion/cazimi, essential dignities, synodic cycles, decans, fixed star conjunctions)
+- 18 numerology expansion (Lo Shu magic square, Pythagorean challenges, 777/888 harmonics, base-10/12 tension, Haramein 64-grid)
+- 26 lunar/electromagnetic (moon distance/apogee/perigee, solunar periods, biorhythm 23/28/33d, tidal force, Venus/Mars/Saturn/Metonic cycles)
+- 40 new gematria (Chaldean + AlBam ciphers on all 10 text sources)
+- 6 new holiday windows (Eid al-Fitr, Eid al-Adha, Navratri, Holi, Golden Week, Chuseok)
+- 15 market signals (DeFi TVL, BTC dominance, mining stats)
+- 1 BTC Pizza Day
+
+### V3.3 Parameter Changes
+- `is_unbalance=True` → `class_weight='balanced'` (multiclass fix)
+- `max_bin`: 15 → 63 (4x more resolution on continuous features)
+- `max_conflict_rate`: 0.0 (protect cross feature co-occurrence from EFB bundling)
+- `path_smooth`: 0.1 (stabilize rare features)
+- `extra_trees`: False (Optuna can explore)
+- SHAP cross validation added as pipeline Step 11 (non-fatal)
 
 ## Deploy Script: cloud_run_tf.py
 
@@ -387,6 +418,8 @@ Future: implement `save_binary()` per-fold caching for Stage 2 + final retrain =
 2. **Audit ALL scripts for the same bug pattern** before deploying. When you fix a bug in ml_multi_tf.py, grep every other .py file for the same pattern
 3. **Verify Docker image tags exist** before launching instances
 4. **Never use nohup bash wrappers** — use cloud_run_tf.py directly
+27. **cloud_run_tf.py os.chdir('/workspace') breaks build script detection** — `os.path.exists('build_features_v2.py')` fails because CWD is /workspace but scripts are in /workspace/v3.2_2.9M_Features. Fixed with `_find_script()` helper that checks both CWD and `__file__` directory. (v3.3 bug, found 2026-03-24)
+28. **Use launcher .sh scripts for nohup on vast.ai** — complex multi-command SSH strings fail silently. Upload a .sh script, then `bash /workspace/launch.sh`. Single-command SSH works fine.
 5. **Pipeline must be fully modular** — every asset/TF independently resumable across machines
 6. **NPZ skip logic** — if v2_crosses_BTC_{tf}.npz already exists, skip cross gen. Never waste 2hrs rebuilding
 
@@ -409,9 +442,14 @@ Future: implement `save_binary()` per-fold caching for Stage 2 + final retrain =
 16. **Sparse NNZ > 2^31**: Python wrapper handles int64 (safe), but C++ PushDataToMultiValBin has separate speed issue (#5205)
 17. **`save_binary()` after first Dataset construction** — CRITICAL for Optuna (80 trials = 80 loads skipped)
 18. **`max_bin=63`** not 255 — 4x faster histogram construction with minimal accuracy loss
-19. **`is_unbalance=True`** for TFs with FLAT class imbalance (1d = 60% FLAT)
+19. **`is_unbalance=True` is WRONG for multiclass** — binary-only param. Use `class_weight='balanced'` for 3-class LONG/SHORT/FLAT. Fixed in v3.3: `TF_CLASS_WEIGHT = {'1d': 'balanced', '1w': 'balanced'}` in config.py. Applied in both CPCV and final training.
 20. **`.toarray()` cascade** — after converting sparse→dense, guard ALL downstream `.toarray()` calls with `hasattr(X, 'toarray')`
 21. **`nnz` cascade** — after dense conversion, guard `.nnz` with `hasattr(X, 'nnz')`
+29. **`max_bin=15` was too low** — only 15 quantile bins loses resolution on continuous features (sacred geometry ratios, planetary speeds, biorhythm sin/cos). Raised to `max_bin=63` in v3.3. Perplexity validated 63 as sweet spot for sparse + speed.
+30. **`max_conflict_rate=0.0` CRITICAL for cross features** — EFB (Exclusive Feature Bundling) was merging genuinely different cross features into bundles, losing co-occurrence information. EFB was designed for one-hot categoricals (mutually exclusive), but our crosses are independent binary indicators that CAN co-fire (e.g., "RSI oversold AND Mercury retrograde" both = 1). Setting `max_conflict_rate=0.0` means EFB only bundles features with zero co-occurrences — safe for our distinct cross signals. Added in v3.3.
+31. **SHAP validates cross features, gain importance CANNOT** — v3.2 showed zero cross features in top 500 by gain importance. This is STRUCTURAL: gain = split_improvement × N_samples_in_node, sparse crosses have tiny N_node. Also EFB merges crosses into bundles, gain accrues to bundle not named feature. Fix: run `model.predict(X, pred_contrib=True)` on 10K high-confidence samples, aggregate |SHAP| by feature family prefix. Added as Step 11 in cloud_run_tf.py (non-fatal).
+32. **`path_smooth=0.1` stabilizes rare features** — smooths leaf values along tree paths. Prevents overfitting on rare esoteric signal activations. Perplexity recommended 0.0-1.0 range for p>>n regimes. Added in v3.3.
+33. **`extra_trees=False` (Optuna can explore)** — structural regularizer that uses random split points instead of optimal. Can help in extreme p>>n (3.34M features, 5K rows). Default off, Optuna searches [True, False].
 
 ### Cost Management
 22. **Ask user before renting machines** — never pick without approval

@@ -371,9 +371,10 @@ if __name__ == '__main__':
   # TF CONFIGS (Perplexity-adjusted regularization)
   # ============================================================
   # ── LightGBM base params — single source of truth from config.py ──
-  from config import V3_LGBM_PARAMS as _CFG_LGBM, TF_MIN_DATA_IN_LEAF as _CFG_MIN_LEAF
+  from config import V3_LGBM_PARAMS as _CFG_LGBM, TF_MIN_DATA_IN_LEAF as _CFG_MIN_LEAF, TF_CLASS_WEIGHT as _CFG_CLASS_WEIGHT
   V2_LGBM_PARAMS = _CFG_LGBM.copy()
   _MIN_DATA_IN_LEAF = _CFG_MIN_LEAF.copy()
+  _TF_CLASS_WEIGHT = _CFG_CLASS_WEIGHT.copy()
 
   TF_CONFIGS = {
       '1w': {
@@ -689,8 +690,10 @@ if __name__ == '__main__':
 
           # Count NaN density to verify esoteric features are sparse (not all zeros)
           if _X_all_is_sparse:
-              log(f"  Sparse matrix: {X_all.nnz} non-zeros of {X_all.shape[0] * X_all.shape[1]} total "
-                  f"({X_all.nnz / max(1, X_all.shape[0] * X_all.shape[1]) * 100:.2f}% non-zero)")
+              _nnz = X_all.nnz if hasattr(X_all, 'nnz') else int((X_all != 0).sum())
+              _total = X_all.shape[0] * X_all.shape[1]
+              log(f"  Sparse matrix: {_nnz} non-zeros of {_total} total "
+                  f"({_nnz / max(1, _total) * 100:.2f}% non-zero)")
           else:
               nan_counts = np.isnan(X_all).sum(axis=0)
               nan_pct = nan_counts / X_all.shape[0] * 100
@@ -784,6 +787,10 @@ if __name__ == '__main__':
           # Build LightGBM params once (shared by all paths)
           _base_lgb_params = V2_LGBM_PARAMS.copy()
           _base_lgb_params['min_data_in_leaf'] = _MIN_DATA_IN_LEAF.get(tf_name, 3)
+          _cw = _TF_CLASS_WEIGHT.get(tf_name)
+          if _cw:
+              _base_lgb_params['class_weight'] = _cw
+              log(f"  class_weight='{_cw}' (class imbalance correction for {tf_name})")
 
           # Interaction constraints (compute once, used by all paths)
           _doy_names = [f for f in feature_cols if f.startswith('doy_')]
@@ -1264,6 +1271,9 @@ if __name__ == '__main__':
 
           final_params = V2_LGBM_PARAMS.copy()
           final_params['min_data_in_leaf'] = _MIN_DATA_IN_LEAF.get(tf_name, 3)
+          _cw = _TF_CLASS_WEIGHT.get(tf_name)
+          if _cw:
+              final_params['class_weight'] = _cw
 
           # Split train into 85% train + 15% val for early stopping
           n_tr_final = X_tr.shape[0]

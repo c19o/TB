@@ -54,6 +54,13 @@ try:
 except ImportError:
     _HAS_LSTM = False
 
+# Inference crosses (20ms per bar for 2.9M cross features)
+try:
+    from inference_crosses import InferenceCrossComputer
+    _HAS_INFERENCE_CROSSES = True
+except ImportError:
+    _HAS_INFERENCE_CROSSES = False
+
 # HMM regime detection (matches ml_multi_tf.py training pipeline)
 try:
     from hmmlearn.hmm import GaussianHMM
@@ -733,6 +740,24 @@ def run_trading_loop(mode='paper'):
                 with open(platt_path, 'rb') as f:
                     platt_models[tf] = pickle.load(f)
 
+    # Load inference cross computers (for live cross feature computation)
+    cross_computers = {}
+    if _HAS_INFERENCE_CROSSES:
+        for tf in ALL_TFS:
+            try:
+                xc = InferenceCrossComputer(tf, artifact_dir=DB_DIR)
+                cross_computers[tf] = xc
+            except FileNotFoundError:
+                pass  # Inference artifacts not yet generated for this TF
+            except Exception as e:
+                print(f"  WARNING: InferenceCrossComputer({tf}) failed: {e}")
+        if cross_computers:
+            print(f"  Loaded inference crosses for: {', '.join(cross_computers.keys())}")
+        else:
+            print("  No inference cross artifacts found — cross features will be NaN")
+    else:
+        print("  inference_crosses module not available — cross features will be NaN")
+
     # Rolling performance tracking (live monitoring)
     trade_results = []  # list of recent trade P&Ls for Kelly re-estimation
 
@@ -899,6 +924,36 @@ def run_trading_loop(mode='paper'):
                 hmm_feats = get_hmm_features(feat_dict)
                 feat_dict.update(hmm_feats)
 
+                # ── Compute inference crosses (~20ms per bar for 2.9M features) ──
+                # Cross values stored separately (too large for dict injection).
+                # Used when building the feature vector X below.
+                _cross_vals_map = None  # dict-like: cross_name -> float value
+                if tf in cross_computers:
+                    try:
+                        xc = cross_computers[tf]
+                        # Extract day_of_year from current bar timestamp
+                        _bar_doy = now.timetuple().tm_yday
+                        # Get regime for regime-aware DOY crosses
+                        _bar_regime = None
+                        _close = feat_dict.get('close', 0)
+                        _sma100 = feat_dict.get('sma_100', None)
+                        _sma100_slope = feat_dict.get('sma_100_slope', None)
+                        if _close > 0 and _sma100 is not None:
+                            _bar_regime, _ = detect_regime(_close, _sma100, _sma100_slope, feat_dict)
+                        # Compute cross feature values (~20ms for 2.9M)
+                        cross_vals, cross_ms = xc.compute(feat_dict, day_of_year=_bar_doy, regime=_bar_regime)
+                        # Build name->index map for O(1) lookup (built once per TF, cached)
+                        if not hasattr(xc, '_name_to_idx'):
+                            xc._name_to_idx = {n: i for i, n in enumerate(xc.cross_names)}
+                        _cross_vals_map = (xc._name_to_idx, cross_vals)
+                        _n_active = int(cross_vals.sum())
+                        print(f"  Crosses: {len(xc.cross_names):,} computed in {cross_ms:.1f}ms "
+                              f"({_n_active:,} active)")
+                    except Exception as _xc_err:
+                        print(f"  WARNING: Inference cross computation failed: {_xc_err}")
+                        import traceback
+                        traceback.print_exc()
+
                 price = feat_dict.get('close', 0)
                 if price <= 0:
                     ohlcv_tmp = live_dal.get_ohlcv_window(tf, 2)
@@ -927,8 +982,44 @@ def run_trading_loop(mode='paper'):
                     continue
 
                 # Build feature vector
-                X = np.array([[feat_dict.get(fn, np.nan) for fn in feat_names]], dtype=np.float32)
-                X = np.where(np.isinf(X), np.nan, X)
+                # Use pre-computed index maps for O(1) cross feature insertion.
+                if _cross_vals_map is not None:
+                    _cn_idx, _cn_vals = _cross_vals_map
+                    # Pre-compute cross mapping once per TF (cached on xc object)
+                    if not hasattr(xc, '_feat_cross_map'):
+                        # For each position in feat_names, store the index into
+                        # cross_vals (-1 = not a cross feature, use feat_dict)
+                        _map = np.full(len(feat_names), -1, dtype=np.int32)
+                        _base_positions = []
+                        for _fi, fn in enumerate(feat_names):
+                            _ci = _cn_idx.get(fn)
+                            if _ci is not None:
+                                _map[_fi] = _ci
+                            else:
+                                _base_positions.append(_fi)
+                        xc._feat_cross_map = _map
+                        xc._feat_base_positions = np.array(_base_positions, dtype=np.int32)
+                        xc._feat_base_names = [feat_names[i] for i in _base_positions]
+                        print(f"  Built cross index map: {len(feat_names)} total, "
+                              f"{len(_base_positions)} base, "
+                              f"{(len(feat_names) - len(_base_positions)):,} cross-mapped")
+
+                    # Vectorized fill: cross features via numpy fancy indexing
+                    _fmap = xc._feat_cross_map
+                    _feat_row = np.full(len(feat_names), np.nan, dtype=np.float32)
+                    # Fill cross positions (where _fmap >= 0)
+                    _cross_mask = _fmap >= 0
+                    _feat_row[_cross_mask] = _cn_vals[_fmap[_cross_mask]]
+                    # Fill base positions (Python loop only over base features, ~3K not 2.9M)
+                    for _bi, _bname in zip(xc._feat_base_positions, xc._feat_base_names):
+                        v = feat_dict.get(_bname, np.nan)
+                        if isinstance(v, float) and np.isinf(v):
+                            v = np.nan
+                        _feat_row[_bi] = v
+                    X = _feat_row.reshape(1, -1)
+                else:
+                    X = np.array([[feat_dict.get(fn, np.nan) for fn in feat_names]], dtype=np.float32)
+                    X = np.where(np.isinf(X), np.nan, X)
 
                 # ── Data Quality Check: all-NaN feature vector ──
                 # If ALL features are NaN, model prediction is meaningless — skip
@@ -952,11 +1043,16 @@ def run_trading_loop(mode='paper'):
                 # PHILOSOPHY GATE: Detect if cross features are missing at inference.
                 # Model was trained with sparse cross features (dx_*, ax_*, etc.).
                 # Running inference without them = degraded predictions.
-                _n_cross_missing = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')) and np.isnan(X[0, feat_names.index(fn)]))
-                _n_cross_total = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')))
-                if _n_cross_total > 0 and _n_cross_missing == _n_cross_total:
-                    print(f"  WARNING: ALL {_n_cross_total} cross features are NaN — live cross computation not yet implemented")
-                    print(f"  TODO: Implement v2_cross_generator at inference time (PHILOSOPHY VIOLATION: Rule 8)")
+                _cross_prefixes = ('dx_', 'ax_', 'ex2_', 'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'sw_', 'asp_', 'mn_', 'pn_')
+                _n_cross_total = sum(1 for fn in feat_names if fn.startswith(_cross_prefixes))
+                if _n_cross_total > 0:
+                    _n_cross_nan = sum(1 for i, fn in enumerate(feat_names) if fn.startswith(_cross_prefixes) and np.isnan(X[0, i]))
+                    if _n_cross_nan == _n_cross_total and tf not in cross_computers:
+                        print(f"  CRITICAL: ALL {_n_cross_total} cross features are NaN — no inference artifacts for {tf}")
+                        print(f"  Run training pipeline with save_inference_artifacts to generate artifacts")
+                    elif _n_cross_nan > 0 and _n_cross_nan < _n_cross_total:
+                        _pct = _n_cross_nan / _n_cross_total * 100
+                        print(f"  Cross features: {_n_cross_total - _n_cross_nan:,}/{_n_cross_total:,} computed ({_pct:.0f}% NaN)")
 
                 # Predict (3-class softprob: SHORT=0, FLAT=1, LONG=2)
                 # LightGBM predicts directly on numpy arrays (no DMatrix needed)

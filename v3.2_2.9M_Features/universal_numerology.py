@@ -53,6 +53,72 @@ KEY_SEQUENCES = [113, 322, 93, 213, 666, 777, 911, 369, 147, 258, 33, 11, 22]
 
 
 # ============================================================
+# LO SHU MAGIC SQUARE
+# ============================================================
+
+# Lo Shu grid positions (digit -> (row, col)):
+LO_SHU = {
+    4:(0,0), 9:(0,1), 2:(0,2),
+    3:(1,0), 5:(1,1), 7:(1,2),
+    8:(2,0), 1:(2,1), 6:(2,2),
+}
+# Lo Shu lines (each sums to 15):
+LO_SHU_LINES = [
+    frozenset({4,9,2}), frozenset({3,5,7}), frozenset({8,1,6}),  # rows
+    frozenset({4,3,8}), frozenset({9,5,1}), frozenset({2,7,6}),  # cols
+    frozenset({4,5,6}), frozenset({2,5,8}),                       # diagonals
+]
+
+LO_SHU_ROW = {4:0, 9:0, 2:0, 3:1, 5:1, 7:1, 8:2, 1:2, 6:2}
+LO_SHU_COL = {4:0, 9:1, 2:2, 3:0, 5:1, 7:2, 8:0, 1:1, 6:2}
+
+
+def loshu_position(dr):
+    """Map digital root (1-9) to Lo Shu grid position (row, col)."""
+    return LO_SHU.get(dr, (None, None))
+
+
+def loshu_grid_type(dr):
+    """Center(5), corner(2,4,6,8), or edge(1,3,7,9)."""
+    if dr == 5: return 'center'
+    if dr in (2,4,6,8): return 'corner'
+    if dr in (1,3,7,9): return 'edge'
+    return None
+
+
+def loshu_line_completion(dr_seq):
+    """Check if 3 consecutive DRs form a Lo Shu line (row/col/diagonal)."""
+    s = frozenset(dr_seq[-3:]) if len(dr_seq) >= 3 else frozenset()
+    return any(s == line for line in LO_SHU_LINES)
+
+
+# ============================================================
+# PYTHAGOREAN CHALLENGE NUMBERS
+# ============================================================
+
+def pythagorean_challenges(dt):
+    """Compute Pythagorean challenge numbers from date components.
+
+    Challenge numbers reveal obstacles/lessons encoded in a date.
+    Each challenge is the absolute difference between reduced date components.
+    A result of 0 maps to 9 (completion energy).
+    """
+    m_dr = digital_root(dt.month)
+    d_dr = digital_root(dt.day)
+    y_dr = digital_root(sum(int(c) for c in str(dt.year)))
+
+    challenge_1 = abs(m_dr - d_dr)
+    challenge_2 = abs(d_dr - y_dr)
+    challenge_3 = abs(challenge_1 - challenge_2)
+
+    return {
+        'challenge_1': challenge_1 or 9,  # 0 maps to 9
+        'challenge_2': challenge_2 or 9,
+        'challenge_3': challenge_3 or 9,
+    }
+
+
+# ============================================================
 # CORE FUNCTIONS
 # ============================================================
 
@@ -217,7 +283,7 @@ def date_numerology(dt):
     # BTC energy dates (month, day) pairs
     btc_energy_dates = {
         (1, 3), (2, 13), (3, 12), (3, 21), (2, 1),
-        (12, 3), (1, 23), (2, 31), (3, 1),
+        (12, 3), (1, 23), (3, 1),
     }
     is_btc_213 = (dt.month, dt.day) in btc_energy_dates
 

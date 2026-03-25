@@ -22,6 +22,11 @@ import math
 import sqlite3
 from datetime import datetime, timezone, timedelta
 
+# Ensure parent directory (root) is on sys.path so astrology_engine.py is importable
+_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent not in sys.path:
+    sys.path.insert(0, _parent)
+
 DB_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -34,7 +39,7 @@ try:
     from astrology_engine import (
         is_mercury_retrograde, is_planet_retrograde,
         count_hard_aspects, count_soft_aspects,
-        is_void_of_course_moon, is_eclipse_window,
+        is_voc_moon_classical as is_void_of_course_moon, is_eclipse_window,
         get_planetary_hour as _astro_planetary_hour,
         get_astrology_signals,
     )
@@ -192,7 +197,7 @@ def get_vedic(dt):
                     result['karana'] = val
 
             # Key nakshatras (backtested as significant)
-            key_nakshatras = {20, 22, 24, 13}  # Purva Ashadha, Shravana, Shatabhisha, Hasta
+            key_nakshatras = {19, 21, 23, 12}  # Purva Ashadha, Shravana, Shatabhisha, Hasta
             try:
                 nk = int(result['nakshatra'])
                 result['key_nakshatra'] = 1 if nk in key_nakshatras else 0
@@ -255,7 +260,7 @@ def get_tzolkin(dt):
 
     tone = ((days + 3) % 13) + 1  # 1-13 (ref was tone 4)
     sign_idx = (days + 19) % 20   # 0-19 (ref was Ahau=19)
-    kin = ((tone - 1) * 20 + sign_idx) % 260 + 1  # 1-260
+    kin = ((days + 159) % 260) + 1  # 1-260 (ref: Dec 21, 2012 = kin 160)
 
     return {
         'tone': tone,

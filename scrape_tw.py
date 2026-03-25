@@ -1,0 +1,186 @@
+"""
+Twitter scraper using twscrape library.
+Scrapes all target accounts in parallel.
+"""
+import asyncio
+import sys
+import io
+import os
+import json
+import sqlite3
+from datetime import datetime
+
+if sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+from twscrape import API, gather
+from twscrape.logger import set_log_level
+
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Import gematria functions
+from universal_gematria import ordinal, english
+
+# Import color detection
+from scrape_twitter import detect_tweet_colors
+
+ACCOUNTS = ['elonmusk', 'JoelKatz', 'jack', 'IAmSteveHarvey', 'tyler', 'cameron', 'IOHK_Charles']
+
+# Your cookies
+COOKIES = {
+    "auth_token": "e2bc3e408900712dd67f24b9ca891a73b90d4528",
+    "ct0": "ea1139f64a08220ab4f4a35105e21cc0b2f2350b635681d8b6aa7d8c8aece75cce374a644d0c12d6ad3cbfc76661383a3dbb45ed6230bb0a321f18228c5e8805819f2ad86d46892726b6944fd547bbb4",
+}
+
+
+def init_db():
+    db_path = os.path.join(PROJECT_DIR, "tweets.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tweets (
+            tweet_id TEXT PRIMARY KEY,
+            user_handle TEXT,
+            user_name TEXT,
+            created_at TEXT,
+            ts_unix INTEGER,
+            full_text TEXT,
+            retweet_count INTEGER,
+            favorite_count INTEGER,
+            reply_count INTEGER,
+            media_urls TEXT,
+            is_retweet INTEGER DEFAULT 0,
+            is_reply INTEGER DEFAULT 0,
+            day_of_year INTEGER,
+            date_gematria TEXT,
+            gematria_simple INTEGER DEFAULT 0,
+            gematria_english INTEGER DEFAULT 0,
+            has_gold INTEGER DEFAULT 0,
+            has_red INTEGER DEFAULT 0,
+            has_green INTEGER DEFAULT 0,
+            dominant_colors TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS tweets_fts USING fts5(
+            full_text, content='tweets', content_rowid='rowid',
+            tokenize='porter unicode61'
+        )
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS tweets_ai AFTER INSERT ON tweets BEGIN
+            INSERT INTO tweets_fts(rowid, full_text) VALUES (new.rowid, new.full_text);
+        END
+    """)
+    conn.commit()
+    return conn
+
+
+def calc_numerology(dt):
+    doy = dt.timetuple().tm_yday
+    rem = 366 - doy if dt.year % 4 == 0 else 365 - doy
+    s = dt.month + dt.day + sum(int(d) for d in str(dt.year))
+    while s > 9 and s not in (11, 22, 33): s = sum(int(d) for d in str(s))
+    return json.dumps({"day_of_year": doy, "days_remaining": rem, "reduction": s})
+
+
+async def main():
+    set_log_level("WARNING")
+    api = API()
+
+    # Add account with cookies as string format
+    cookie_str = "; ".join(f"{k}={v}" for k, v in COOKIES.items())
+    await api.pool.add_account(
+        username="scraper_session",
+        password="unused",
+        email="unused@unused.com",
+        email_password="unused",
+        cookies=cookie_str,
+    )
+    await api.pool.set_active("scraper_session", True)
+
+    conn = init_db()
+
+    # Ensure columns exist for existing DBs (ALTER TABLE if missing)
+    existing = set(r[1] for r in conn.execute("PRAGMA table_info(tweets)").fetchall())
+    for col, typedef in [
+        ('gematria_simple', 'INTEGER DEFAULT 0'),
+        ('gematria_english', 'INTEGER DEFAULT 0'),
+        ('has_gold', 'INTEGER DEFAULT 0'),
+        ('has_red', 'INTEGER DEFAULT 0'),
+        ('has_green', 'INTEGER DEFAULT 0'),
+        ('dominant_colors', 'TEXT'),
+    ]:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE tweets ADD COLUMN {col} {typedef}")
+    conn.commit()
+
+    print("=== Twitter Scraper (twscrape) ===\n")
+
+    for handle in ACCOUNTS:
+        print(f"  Scraping @{handle}...", flush=True)
+        try:
+            user = await api.user_by_login(handle)
+            if not user:
+                print(f"    User not found")
+                continue
+
+            count = 0
+            async for tweet in api.user_tweets(user.id, limit=3200):
+                dt = tweet.date
+                text = tweet.rawContent or ""
+                media = [m.url for m in (tweet.media or {}).get("photos", [])] if tweet.media else []
+                media_json = json.dumps(media) if media else None
+
+                # Compute gematria
+                ascii_text = ''.join(c for c in text if ord(c) < 128)
+                gem_simple = ordinal(ascii_text) if ascii_text else 0
+                gem_eng = english(ascii_text) if ascii_text else 0
+
+                # Detect colors
+                clr = detect_tweet_colors(text, media_json)
+
+                conn.execute("""
+                    INSERT OR IGNORE INTO tweets
+                    (tweet_id, user_handle, user_name, created_at, ts_unix, full_text,
+                     retweet_count, favorite_count, reply_count, media_urls,
+                     is_retweet, is_reply, day_of_year, date_gematria,
+                     gematria_simple, gematria_english,
+                     has_gold, has_red, has_green, dominant_colors)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    str(tweet.id), handle, user.displayname,
+                    dt.isoformat() if dt else "",
+                    int(dt.timestamp()) if dt else 0,
+                    text,
+                    tweet.retweetCount or 0, tweet.likeCount or 0, tweet.replyCount or 0,
+                    media_json,
+                    1 if text.startswith("RT @") else 0,
+                    1 if tweet.inReplyToTweetId else 0,
+                    dt.timetuple().tm_yday if dt else 0,
+                    calc_numerology(dt) if dt else None,
+                    gem_simple, gem_eng,
+                    clr['has_gold'], clr['has_red'], clr['has_green'],
+                    clr['dominant_colors'],
+                ))
+                count += 1
+                if count % 100 == 0:
+                    conn.commit()
+                    print(f"    {count} tweets...", flush=True)
+
+            conn.commit()
+            print(f"    Done: {count} tweets from @{handle}")
+
+        except Exception as e:
+            print(f"    Error @{handle}: {e}")
+
+    # Stats
+    print(f"\n=== Complete ===")
+    total = conn.execute("SELECT COUNT(*) FROM tweets").fetchone()[0]
+    print(f"Total: {total} tweets")
+    for row in conn.execute("SELECT user_handle, COUNT(*) FROM tweets GROUP BY user_handle ORDER BY COUNT(*) DESC"):
+        print(f"  @{row[0]:<20} {row[1]:>5}")
+    conn.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

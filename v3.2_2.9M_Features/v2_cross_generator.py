@@ -845,6 +845,25 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         del reg_names, reg_arrays
         gc.collect()
 
+    # ── Save inference artifacts (for live cross computation) ──
+    if len(all_cross_names) > 0:
+        try:
+            from inference_crosses import save_inference_artifacts
+            # Combine all context names: binarized + DOY windows + regime DOY
+            # The cross generator uses ctx_names (binarized) + doy_names as left/right
+            # for different cross types. Merge them all for inference.
+            all_ctx_names = list(ctx_names) + list(doy_names)
+            all_ctx_arrays = list(ctx_arrays) + list(doy_arrays)
+            log("  Saving inference artifacts...")
+            save_inference_artifacts(
+                all_ctx_names, all_ctx_arrays, all_cross_names, df, tf,
+                output_dir=out_dir,
+            )
+        except Exception as e:
+            log(f"  WARNING: Failed to save inference artifacts: {e}")
+            import traceback
+            traceback.print_exc()
+
     # ── Free context arrays — no longer needed ──
     del ctx_names, ctx_arrays, doy_names, doy_arrays, groups
     gc.collect()

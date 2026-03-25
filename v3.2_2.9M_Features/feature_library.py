@@ -731,7 +731,7 @@ from universal_numerology import (
 )
 from universal_astro import (
     astro_flat, get_bazi, get_tzolkin, get_planetary_hour,
-    get_moon_phase, get_western, get_vedic,
+    get_moon_phase, get_western, get_vedic, get_zodiac,
 )
 from universal_sentiment import sentiment as sent_calc, sentiment_flat, sentiment_gpu_batch
 from knn_feature_engine import knn_features_from_ohlcv
@@ -1432,8 +1432,6 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
     out['is_311'] = (doy == 311).astype(int)  # mirror of 113 (bottom buy) = confirmation
     out['is_312'] = (doy == 312).astype(int)  # mirror of 213 (BTC energy) = cycle
     out['is_132'] = (doy == 132).astype(int)  # mirror of 231 (BTC mirror) = cycle
-    out['is_721'] = (doy == 721 % 366).astype(int) if 721 <= 366 else pd.Series(0, index=idx)
-
     # DOY 1-365 flags (for systematic cross expansion)
     for d in range(1, 366):
         out[f'doy_{d}'] = (doy == d).astype(np.int8)
@@ -1479,8 +1477,15 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Kabbalah / Shemitah
     out['sephirah'] = out['digital_root_price']
-    shemitah_years = {2015, 2022, 2029}
-    out['shemitah_year'] = idx.year.isin(shemitah_years).astype(int)
+    # Shemitah spans from ~Sep of start year to ~Sep of end year
+    # 2014-09 to 2015-09, 2021-09 to 2022-09, 2028-09 to 2029-09
+    _yr = idx.year
+    _mo = idx.month
+    out['shemitah_year'] = (
+        ((_yr == 2014) & (_mo >= 9)) | ((_yr == 2015) & (_mo < 10)) |
+        ((_yr == 2021) & (_mo >= 9)) | ((_yr == 2022) & (_mo < 10)) |
+        ((_yr == 2028) & (_mo >= 9)) | ((_yr == 2029) & (_mo < 10))
+    ).astype(float)
     jubilee_ref = 2017
     _jub_raw = ((idx.year - jubilee_ref) % 50).astype(float).values
     out['jubilee_proximity'] = np.minimum(_jub_raw, 50 - _jub_raw) / 25
@@ -1554,7 +1559,7 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Resonance flag: 1=match (planet's number == date DR), -1=oppose, 0=neutral
     # Oppose lookup: planet_num values 1-9 → opposed number (0 unused, -1 default)
-    _oppose_lut = np.array([-1, 9, 8, 7, 6, 9, 4, 3, 2, 5], dtype=np.int32)  # idx 0-9
+    _oppose_lut = np.array([-1, 9, 8, 7, 6, 5, 4, 3, 2, 1], dtype=np.int32)  # idx 0-9
     oppose_num = pd.Series(_oppose_lut[planet_num.values], index=idx)
     resonance = pd.Series(np.zeros(len(idx)), index=idx)
     resonance[planet_num.values == date_dr_series.values] = 1
@@ -1602,7 +1607,312 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
     out['price_contains_37'] = _c_str.str.contains('37', regex=False).astype(np.int32)
     out['price_contains_73'] = _c_str.str.contains('73', regex=False).astype(np.int32)
 
+    # --- Angel numbers (repeating digit patterns in price) ---
+    # Uses _c_str (integer price as string), respects NaN via _c_not_nan mask
+    _angel_patterns = ['111', '222', '333', '444', '555', '666', '777', '888', '999']
+    _angel_cols = {}
+    for pat in _angel_patterns:
+        _angel_cols[f'price_has_{pat}'] = np.where(
+            _c_not_nan, _c_str.str.contains(pat, regex=False).astype(np.int32), np.nan)
+    # Angel count = sum of all pattern hits per bar
+    _angel_sum = np.zeros(len(idx), dtype=np.float64)
+    for col_name, col_vals in _angel_cols.items():
+        out[col_name] = col_vals
+        _angel_sum = np.where(np.isnan(col_vals), np.nan,
+                              np.where(np.isnan(_angel_sum), np.nan, _angel_sum + col_vals))
+    out['price_angel_count'] = _angel_sum
+
+    # --- Price palindrome detection ---
+    _price_reversed = _c_str.str[::-1]
+    out['price_palindrome'] = np.where(
+        _c_not_nan, (_c_str == _price_reversed).astype(np.int32), np.nan)
+
     return out.to_pandas() if hasattr(out, 'to_pandas') else out
+
+
+# ============================================================
+# NUMEROLOGY EXPANSION — Lo Shu, Angel Numbers, Haramein, Pythagorean Challenges
+# ============================================================
+
+def compute_numerology_expansion_features(df: pd.DataFrame, tf_name: str = '1d') -> pd.DataFrame:
+    """
+    Numerology expansion features:
+      1. Lo Shu Magic Square — grid position, type, 3-bar line completion
+      2. Angel number proximity — 777/888 harmonics
+      3. Base-10 vs Base-12 tension
+      4. Haramein 64-grid harmonic (Vector Equilibrium)
+      5. Pythagorean challenge numbers (vectorized)
+    """
+    from universal_numerology import LO_SHU_LINES, LO_SHU_ROW, LO_SHU_COL
+
+    _gpu = _is_gpu(df)
+    if _gpu:
+        idx = pd.DatetimeIndex(_np(df.index))
+    else:
+        idx = df.index
+    out = pd.DataFrame(index=idx)
+    c_vals = _np(df['close']).astype(np.float64)
+    c_not_nan = ~np.isnan(c_vals)
+
+    # Price digital root (recompute vectorized)
+    _c_int = np.where(c_not_nan, (np.abs(c_vals) * 100).astype(np.int64), 0)
+    _c_int = np.clip(_c_int, 1, None)
+    price_dr = np.where(c_not_nan, (((_c_int - 1) % 9) + 1).astype(np.int32), 0)
+
+    # 1. Lo Shu grid position
+    _dr_series = pd.Series(price_dr, index=idx)
+    out['loshu_row'] = np.where(c_not_nan, _dr_series.map(LO_SHU_ROW).values.astype(np.float64), np.nan)
+    out['loshu_col'] = np.where(c_not_nan, _dr_series.map(LO_SHU_COL).values.astype(np.float64), np.nan)
+    out['loshu_is_center'] = np.where(c_not_nan, (price_dr == 5).astype(np.float64), np.nan)
+    out['loshu_is_corner'] = np.where(c_not_nan, np.isin(price_dr, [2, 4, 6, 8]).astype(np.float64), np.nan)
+    out['loshu_is_edge'] = np.where(c_not_nan, np.isin(price_dr, [1, 3, 7, 9]).astype(np.float64), np.nan)
+
+    # 2. Lo Shu line completion (rolling 3-bar DR)
+    dr_float = pd.Series(np.where(c_not_nan, price_dr.astype(np.float64), np.nan), index=idx)
+
+    def _check_loshu_line(w):
+        if np.isnan(w).any():
+            return np.nan
+        s = frozenset(w.astype(int))
+        return 1.0 if s in LO_SHU_LINES else 0.0
+
+    out['loshu_line_complete'] = dr_float.rolling(3, min_periods=3).apply(
+        _check_loshu_line, raw=True
+    )
+
+    # 3. Angel number proximity (777, 888 harmonics)
+    close_int = np.where(c_not_nan, np.abs(c_vals).astype(np.int64), 0)
+    mod_777 = np.where(c_not_nan, (close_int % 777).astype(np.float64), np.nan)
+    mod_888 = np.where(c_not_nan, (close_int % 888).astype(np.float64), np.nan)
+    out['price_mod_777'] = mod_777
+    out['price_near_777'] = np.where(c_not_nan,
+        ((close_int % 777 < 5) | (777 - close_int % 777 < 5)).astype(np.float64), np.nan)
+    out['price_mod_888'] = mod_888
+    out['price_near_888'] = np.where(c_not_nan,
+        ((close_int % 888 < 5) | (888 - close_int % 888 < 5)).astype(np.float64), np.nan)
+
+    # 4. Base-10 vs Base-12 tension
+    doy = idx.dayofyear.values
+    b12_price = np.where(c_not_nan, (close_int % 12 == 0).astype(np.float64), np.nan)
+    b12_doy = (doy % 12 == 0).astype(np.float64)
+    b10_price = np.where(c_not_nan, (close_int % 10 == 0).astype(np.float64), np.nan)
+    b10_doy = (doy % 10 == 0).astype(np.float64)
+    out['base12_resonance'] = np.where(c_not_nan, np.maximum(b12_price, b12_doy), b12_doy)
+    out['base10_resonance'] = np.where(c_not_nan, np.maximum(b10_price, b10_doy), b10_doy)
+    _b12_bool = np.where(c_not_nan, b12_price, 0).astype(bool) | b12_doy.astype(bool)
+    _b10_bool = np.where(c_not_nan, b10_price, 0).astype(bool) | b10_doy.astype(bool)
+    out['base_tension'] = (_b12_bool ^ _b10_bool).astype(np.float64)
+
+    # 5. Haramein 64-grid harmonic (Vector Equilibrium)
+    out['haramein_64_phase'] = (doy % 64).astype(np.float64)
+    out['haramein_64_node'] = ((doy % 64 == 0) | (doy % 32 == 0)).astype(np.float64)
+
+    # 6. Pythagorean challenge numbers (vectorized)
+    m = idx.month.values.astype(np.int64)
+    d = idx.day.values.astype(np.int64)
+    _y_raw = idx.year.values.astype(np.int64)
+    _y_temp = _y_raw.copy()
+    _y_digit_sums = np.zeros(len(idx), dtype=np.int64)
+    while np.any(_y_temp > 0):
+        _y_digit_sums += _y_temp % 10
+        _y_temp //= 10
+    m_dr = ((m - 1) % 9 + 1).astype(np.float64)
+    d_dr = ((d - 1) % 9 + 1).astype(np.float64)
+    y_dr = ((_y_digit_sums - 1) % 9 + 1).astype(np.float64)
+    ch1 = np.abs(m_dr - d_dr)
+    ch2 = np.abs(d_dr - y_dr)
+    ch3 = np.abs(ch1 - ch2)
+    out['pyth_challenge_1'] = np.where(ch1 == 0, 9.0, ch1)
+    out['pyth_challenge_2'] = np.where(ch2 == 0, 9.0, ch2)
+    out['pyth_challenge_3'] = np.where(ch3 == 0, 9.0, ch3)
+
+    return out
+
+
+# ============================================================
+# VORTEX MATH (RODIN/TESLA) & SACRED GEOMETRY FEATURES
+# ============================================================
+
+def compute_vortex_sacred_geometry_features(df: pd.DataFrame, tf_name: str = '1d') -> pd.DataFrame:
+    """
+    Vortex math (Rodin/Tesla) and sacred geometry features.
+
+    A. Rodin Vortex Math — family number groups, doubling circuit, 3-6-9 candle body/range
+    B. Sacred Geometry Ratios — proximity to sqrt(2), sqrt(3), phi, sqrt(5)
+    C. Platonic Solid Cycles — 4,6,8,12,20 face phase + Torus/Metatron/Pentagonal
+    D. Tesla 3-6-9 Temporal — bar-index and DOY modular cycles
+    E. Kabbalah Pillars — Tree of Life pillar mapping (distinct from Rodin groups)
+
+    All features are float-typed, vectorized, NaN-propagating.
+    """
+    _gpu = _is_gpu(df)
+    if _gpu:
+        idx = pd.DatetimeIndex(_np(df.index))
+    else:
+        idx = df.index
+
+    cols = {}  # accumulate all columns, batch-assign at the end
+
+    close_vals = _np(df['close']).astype(np.float64)
+    open_vals = _np(df['open']).astype(np.float64)
+    high_vals = _np(df['high']).astype(np.float64)
+    low_vals = _np(df['low']).astype(np.float64)
+    vol_vals = _np(df['volume']).astype(np.float64)
+
+    # ── Digital roots (reuse universal_numerology.digital_root_vec) ──────
+    _ci = np.where(np.isnan(close_vals), 0, (np.abs(close_vals) * 100).astype(np.int64))
+    price_dr = np.where(_ci > 0, digital_root_vec(_ci), np.nan)
+
+    _vi = np.where(np.isnan(vol_vals) | (vol_vals <= 0), 0,
+                   np.abs(vol_vals).astype(np.int64))
+    volume_dr = np.where(_vi > 0, digital_root_vec(_vi), np.nan)
+
+    # Date DR (digit-sum then DR)
+    _date_digits = (idx.year * 10000 + idx.month * 100 + idx.day).values.astype(np.int64)
+    _digit_sums = np.zeros(len(idx), dtype=np.int64)
+    _temp = _date_digits.copy()
+    while np.any(_temp > 0):
+        _digit_sums += _temp % 10
+        _temp //= 10
+    date_dr = digital_root_vec(_digit_sums).astype(np.float64)
+
+    # ── A. Rodin Vortex Math ────────────────────────────────────────────
+    # Family Number Groups (Rodin coil)
+    #   Group 1: {1,4,7} — Physical/Magnetic
+    #   Group 2: {2,5,8} — Electric
+    #   Group 3: {3,6,9} — Flux/Control (Tesla axis)
+    cols['vortex_family_group'] = np.where(
+        np.isnan(price_dr), np.nan,
+        np.where(np.isin(price_dr, [1, 4, 7]), 1.0,
+        np.where(np.isin(price_dr, [2, 5, 8]), 2.0,
+        np.where(np.isin(price_dr, [3, 6, 9]), 3.0, np.nan))))
+
+    cols['vortex_date_family_group'] = np.where(
+        np.isin(date_dr, [1, 4, 7]), 1.0,
+        np.where(np.isin(date_dr, [2, 5, 8]), 2.0,
+        np.where(np.isin(date_dr, [3, 6, 9]), 3.0, np.nan)))
+
+    cols['vortex_vol_family_group'] = np.where(
+        np.isnan(volume_dr), np.nan,
+        np.where(np.isin(volume_dr, [1, 4, 7]), 1.0,
+        np.where(np.isin(volume_dr, [2, 5, 8]), 2.0,
+        np.where(np.isin(volume_dr, [3, 6, 9]), 3.0, np.nan))))
+
+    # Family group alignment: price vs date (same group = resonance)
+    cols['vortex_family_align'] = np.where(
+        np.isnan(price_dr) | np.isnan(date_dr), np.nan,
+        (cols['vortex_family_group'] == cols['vortex_date_family_group']).astype(np.float64))
+
+    # Doubling Circuit position: {1,2,4,8,7,5} → positions 0-5
+    # DR 3,6,9 are NOT on the doubling circuit → NaN
+    _doubling_lut = np.full(10, np.nan)  # index 0-9
+    _doubling_lut[1] = 0.0
+    _doubling_lut[2] = 1.0
+    _doubling_lut[4] = 2.0
+    _doubling_lut[8] = 3.0
+    _doubling_lut[7] = 4.0
+    _doubling_lut[5] = 5.0
+    _safe_dr = np.where(np.isnan(price_dr), 0, price_dr).astype(np.int64)
+    cols['vortex_doubling_pos'] = np.where(
+        np.isnan(price_dr), np.nan, _doubling_lut[_safe_dr])
+
+    # 3-6-9 on candle body and range
+    body = np.abs(close_vals - open_vals)
+    _body_nan = np.isnan(body) | (body == 0)
+    body_int = np.where(_body_nan, 1, (body * 100).astype(np.int64)).clip(min=1)
+    body_dr = digital_root_vec(body_int).astype(np.float64)
+    cols['candle_body_dr'] = np.where(_body_nan, np.nan, body_dr)
+    cols['candle_body_is_369'] = np.where(_body_nan, np.nan,
+                                          np.isin(body_dr, [3, 6, 9]).astype(np.float64))
+
+    range_val = high_vals - low_vals
+    _range_nan = np.isnan(range_val) | (range_val == 0)
+    range_int = np.where(_range_nan, 1, (range_val * 100).astype(np.int64)).clip(min=1)
+    range_dr = digital_root_vec(range_int).astype(np.float64)
+    cols['candle_range_dr'] = np.where(_range_nan, np.nan, range_dr)
+    cols['candle_range_is_369'] = np.where(_range_nan, np.nan,
+                                            np.isin(range_dr, [3, 6, 9]).astype(np.float64))
+
+    # ── B. Sacred Geometry Ratios (Vesica Piscis) ───────────────────────
+    SACRED_ROOTS = np.array([
+        np.sqrt(2),              # 1.41421 — diagonal of unit square
+        np.sqrt(3),              # 1.73205 — vesica piscis height ratio
+        (1.0 + np.sqrt(5)) / 2, # 1.61803 — phi / golden ratio
+        np.sqrt(5),              # 2.23607 — diagonal of 1x2 rectangle
+    ])
+    # Reciprocals of sacred roots (also sacred)
+    SACRED_RECIP = 1.0 / SACRED_ROOTS
+
+    close_series = pd.Series(close_vals, index=idx)
+
+    for lag in [1, 2, 3, 5, 8, 13]:
+        shifted = close_series.shift(lag).values
+        ratio = np.where((shifted > 0) & ~np.isnan(shifted) & ~np.isnan(close_vals),
+                         close_vals / shifted, np.nan)
+        # Minimum distance to any sacred root or its reciprocal
+        min_dist = np.full(len(ratio), np.inf)
+        for root, recip in zip(SACRED_ROOTS, SACRED_RECIP):
+            dist_root = np.abs(ratio - root)
+            dist_recip = np.abs(ratio - recip)
+            min_dist = np.minimum(min_dist, np.minimum(dist_root, dist_recip))
+        cols[f'sacred_ratio_dist_{lag}'] = np.where(np.isnan(ratio), np.nan, min_dist)
+
+    # Vesica piscis: sqrt(3) retracement level within candle
+    hl_range = high_vals - low_vals
+    _hl_valid = (hl_range > 0) & ~np.isnan(hl_range) & ~np.isnan(close_vals) & ~np.isnan(low_vals)
+    retrace_pct = np.where(_hl_valid, (close_vals - low_vals) / hl_range, np.nan)
+    cols['vesica_sqrt3_retrace'] = np.where(_hl_valid, retrace_pct - (1.0 / np.sqrt(3)), np.nan)
+
+    # ── C. Platonic Solid Cycles ────────────────────────────────────────
+    bar_idx = np.arange(len(df), dtype=np.float64)
+
+    # 5 Platonic solids: tetrahedron(4), cube(6), octahedron(8), dodecahedron(12), icosahedron(20)
+    for n_faces in [4, 6, 8, 12, 20]:
+        cols[f'platonic_{n_faces}_phase'] = (bar_idx % n_faces)
+
+    # Torus 7-phase (seven-color map theorem on torus)
+    cols['torus_7_phase'] = (bar_idx % 7)
+
+    # Metatron's Cube: 13-sphere cycle (13 circles of Fruit of Life)
+    cols['metatron_13_phase'] = (bar_idx % 13)
+
+    # Cosmic Cube / 144 (12x12 grid, New Jerusalem 144,000)
+    cols['metatron_144_phase'] = (bar_idx % 144)
+
+    # 72-degree pentagonal rotation (DNA double helix, 360/5=72)
+    cols['pentagonal_72_phase'] = (bar_idx % 72)
+
+    # ── D. Tesla 3-6-9 Temporal ─────────────────────────────────────────
+    cols['tesla_3_phase'] = (bar_idx % 3)
+    cols['tesla_6_phase'] = (bar_idx % 6)
+    cols['tesla_9_phase'] = (bar_idx % 9)
+    cols['tesla_36_phase'] = (bar_idx % 36)
+
+    # DOY mod 3 and 6 (doy_div_9 already exists in numerology, skip)
+    doy = idx.dayofyear.values.astype(np.float64)
+    cols['doy_mod_3'] = (doy % 3)
+    cols['doy_mod_6'] = (doy % 6)
+
+    # ── E. Kabbalah Tree of Life Pillars ────────────────────────────────
+    # Note: these groupings differ from Rodin vortex groups!
+    #   Pillar of Mercy   = {2,4,7}  (Chokmah, Chesed, Netzach)
+    #   Pillar of Severity = {3,5,8}  (Binah, Geburah, Hod)
+    #   Middle Pillar      = {1,6,9}  (Kether, Tiphareth, Yesod)
+    cols['kabbalah_pillar_mercy'] = np.where(
+        np.isnan(price_dr), np.nan, np.isin(price_dr, [2, 4, 7]).astype(np.float64))
+    cols['kabbalah_pillar_severity'] = np.where(
+        np.isnan(price_dr), np.nan, np.isin(price_dr, [3, 5, 8]).astype(np.float64))
+    cols['kabbalah_pillar_balance'] = np.where(
+        np.isnan(price_dr), np.nan, np.isin(price_dr, [1, 6, 9]).astype(np.float64))
+
+    # Date-based pillar (same groupings on date DR)
+    cols['kabbalah_date_pillar_mercy'] = np.isin(date_dr, [2, 4, 7]).astype(np.float64)
+    cols['kabbalah_date_pillar_severity'] = np.isin(date_dr, [3, 5, 8]).astype(np.float64)
+    cols['kabbalah_date_pillar_balance'] = np.isin(date_dr, [1, 6, 9]).astype(np.float64)
+
+    # ── Batch assign all columns ────────────────────────────────────────
+    out = pd.DataFrame(cols, index=idx)
+    return out
 
 
 # ============================================================
@@ -1668,7 +1978,7 @@ def compute_astrology_features(df: pd.DataFrame, astro_cache: dict) -> pd.DataFr
         out['lunar_phase_cos'] = np.cos(2 * np.pi * moon_phase / 30)
 
     # --- Vedic Astrology (from astrology_full) ---
-    for col in ['nakshatra', 'tithi', 'yoga']:
+    for col in ['nakshatra', 'tithi', 'yoga', 'karana']:
         if col in astro_df.columns:
             s = pd.to_numeric(astro_df[col], errors='coerce')
             s.index = s.index.normalize()
@@ -1785,7 +2095,121 @@ def compute_astrology_features(df: pd.DataFrame, astro_cache: dict) -> pd.DataFr
         out['tzolkin_sign_idx'] = df_dates_for_astro.map(lambda d: tzolkin_map.get(d, (0, 0, 0))[1])
         out['tzolkin_kin'] = df_dates_for_astro.map(lambda d: tzolkin_map.get(d, (0, 0, 0))[2])
 
+    # --- Venus/Mars retrograde + Void-of-Course Moon (from get_western) ---
+    # These are NOT in astro_df (DB doesn't store them), so compute per unique date
+    unique_dates_w = pd.Series(_cpu_idx.date).unique()
+    west_map = {}
+    for d in unique_dates_w:
+        try:
+            dt = datetime.combine(d, datetime.min.time())
+            w = get_western(dt)
+            west_map[d] = (w['venus_retrograde'], w['mars_retrograde'], w['voc_moon'])
+        except Exception:
+            west_map[d] = (np.nan, np.nan, np.nan)
+    df_dates_w = pd.Series(_cpu_idx.date, index=_cpu_idx)
+    out['west_venus_retrograde'] = df_dates_w.map(lambda d: west_map.get(d, (np.nan,))[0])
+    out['west_mars_retrograde'] = df_dates_w.map(lambda d: west_map.get(d, (np.nan,))[1])
+    out['west_voc_moon'] = df_dates_w.map(lambda d: west_map.get(d, (np.nan,))[2])
+
+    # --- Zodiac sign (sun sign 0-11) from get_zodiac ---
+    _zodiac_name_to_idx = {
+        'Aries': 0, 'Taurus': 1, 'Gemini': 2, 'Cancer': 3, 'Leo': 4, 'Virgo': 5,
+        'Libra': 6, 'Scorpio': 7, 'Sagittarius': 8, 'Capricorn': 9, 'Aquarius': 10, 'Pisces': 11,
+    }
+    zodiac_map = {}
+    for d in unique_dates_w:
+        try:
+            dt = datetime.combine(d, datetime.min.time())
+            sign = get_zodiac(dt)
+            zodiac_map[d] = _zodiac_name_to_idx.get(sign, np.nan)
+        except Exception:
+            zodiac_map[d] = np.nan
+    out['west_zodiac_sign_idx'] = df_dates_w.map(zodiac_map)
+
+    # --- Planetary hour (standalone bar feature) ---
+    # Uses hour from each bar's timestamp; only meaningful for intraday, but
+    # for daily bars the noon (12:00) approximation still yields a valid planetary hour.
+    _ph_day_start = np.array([0, 1, 2, 3, 4, 5, 6], dtype=np.int32)  # indexed by dow (Mon=0)
+    _ph_hours = _cpu_idx.hour.values
+    _ph_dows = _cpu_idx.dayofweek.values  # Mon=0
+    _ph_offset = np.where(_ph_hours >= 6, _ph_hours - 6, _ph_hours + 18)
+    _ph_planet_idx = (_ph_day_start[_ph_dows] + _ph_offset) % 7
+    out['planetary_hour_idx'] = _ph_planet_idx
+    # Jupiter=4 (prosperity), Saturn=6 (restriction)
+    out['planetary_hour_is_jupiter'] = (_ph_planet_idx == 4).astype(np.int32)
+    out['planetary_hour_is_saturn'] = (_ph_planet_idx == 6).astype(np.int32)
+    # Double power: day ruler == hour ruler
+    # Day rulers: Mon=Moon(1), Tue=Mars(2), Wed=Mercury(3), Thu=Jupiter(4),
+    #             Fri=Venus(5), Sat=Saturn(6), Sun=Sun(0)
+    _day_ruler_idx = _ph_day_start[_ph_dows]
+    out['planetary_double_power'] = (_ph_planet_idx == _day_ruler_idx).astype(np.int32)
+
     return out
+
+
+# ============================================================
+# COMPUTE PLANETARY EXPANSION FEATURES (~30 cols)
+# ============================================================
+
+def compute_planetary_expansion_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute ~30 planetary expansion features via PyEphem.
+
+    Features: planetary speeds (10), combustion/cazimi (12), essential dignity (10),
+    synodic cycle phases (8), sun decan (1), Behenian star conjunctions (8).
+
+    Computation is per unique *date* (PyEphem is date-resolution for most of these).
+    For intraday TFs, values are forward-filled to bar frequency.
+    NaN propagation: if ephem fails for a date, that date's features stay NaN.
+
+    Args:
+        df: OHLCV DataFrame with DatetimeIndex (pandas or cuDF).
+
+    Returns:
+        DataFrame aligned to df.index with ~30 float columns.
+    """
+    from astrology_engine import get_planetary_expansion
+
+    _gpu = _is_gpu(df)
+    if _gpu:
+        _cpu_idx = pd.DatetimeIndex(_np(df.index))
+    else:
+        _cpu_idx = df.index
+
+    # Get unique dates (PyEphem is daily resolution)
+    dates_series = _cpu_idx.normalize()
+    if hasattr(dates_series, 'tz') and dates_series.tz is not None:
+        dates_series = dates_series.tz_localize(None)
+    unique_dates = dates_series.unique()
+
+    # Compute per unique date
+    date_features = {}
+    for d in unique_dates:
+        dt = d.to_pydatetime()
+        try:
+            feats = get_planetary_expansion(dt)
+            date_features[d] = feats
+        except Exception:
+            # Leave this date as NaN (will propagate naturally)
+            pass
+
+    if not date_features:
+        # No dates computed successfully — return empty frame with NaN
+        return pd.DataFrame(index=_cpu_idx)
+
+    # Build DataFrame from date->features dict, then map back to bars
+    feat_df = pd.DataFrame.from_dict(date_features, orient='index')
+    feat_df.index = pd.DatetimeIndex(feat_df.index)
+
+    # Map to bar-level index via date alignment + ffill for intraday
+    mapped = feat_df.reindex(dates_series)
+    mapped.index = _cpu_idx
+    mapped = mapped.ffill()
+
+    # Ensure float dtype (no ints, no objects)
+    for col in mapped.columns:
+        mapped[col] = pd.to_numeric(mapped[col], errors='coerce').astype(np.float32)
+
+    return mapped
 
 
 # ============================================================
@@ -1946,11 +2370,15 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             tw['tweet_gem_eng'] = _tw_gem['tweet_gem_english'].values
             tw['tweet_gem_jew'] = _tw_gem['tweet_gem_jewish'].values
             tw['tweet_gem_sat'] = _tw_gem['tweet_gem_satanic'].values
+            tw['tweet_gem_chal'] = _tw_gem['tweet_gem_chaldean'].values
+            tw['tweet_gem_alb'] = _tw_gem['tweet_gem_albam'].values
             tw['tweet_gem_dr_ord'] = _tw_gem['tweet_gem_dr_ordinal'].values
             tw['tweet_gem_dr_rev'] = _tw_gem['tweet_gem_dr_reverse'].values
             tw['tweet_gem_dr_eng'] = digital_root_vec(_tw_gem['tweet_gem_english'].values)
             tw['tweet_gem_dr_jew'] = digital_root_vec(_tw_gem['tweet_gem_jewish'].values)
             tw['tweet_gem_dr_sat'] = digital_root_vec(_tw_gem['tweet_gem_satanic'].values)
+            tw['tweet_gem_dr_chal'] = _tw_gem['tweet_gem_dr_chaldean'].values
+            tw['tweet_gem_dr_alb'] = _tw_gem['tweet_gem_dr_albam'].values
             tw['tweet_is_caution'] = _tw_gem['tweet_gem_is_caution'].values
             tw['tweet_is_pump'] = _tw_gem['tweet_gem_is_pump'].values
             tw['tweet_is_btc_energy'] = _tw_gem['tweet_gem_is_btc_energy'].values
@@ -1963,6 +2391,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             tw['user_gem_eng'] = _uh_gem['user_gem_english'].values
             tw['user_gem_jew'] = _uh_gem['user_gem_jewish'].values
             tw['user_gem_sat'] = _uh_gem['user_gem_satanic'].values
+            tw['user_gem_chal'] = _uh_gem['user_gem_chaldean'].values
+            tw['user_gem_alb'] = _uh_gem['user_gem_albam'].values
             tw['user_gem_dr'] = _uh_gem['user_gem_dr_ordinal'].values
 
             # Sentiment — single GPU batch call
@@ -1991,12 +2421,16 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 'tweet_gem_english_mean': ('tweet_gem_eng', 'mean'),
                 'tweet_gem_jewish_mean': ('tweet_gem_jew', 'mean'),
                 'tweet_gem_satanic_mean': ('tweet_gem_sat', 'mean'),
+                'tweet_gem_chaldean_mean': ('tweet_gem_chal', 'mean'),
+                'tweet_gem_albam_mean': ('tweet_gem_alb', 'mean'),
                 # DR modes for each cipher
                 'tweet_gem_dr_ord_mode': ('tweet_gem_dr_ord', _mode_or_nan),
                 'tweet_gem_dr_rev_mode': ('tweet_gem_dr_rev', _mode_or_nan),
                 'tweet_gem_dr_eng_mode': ('tweet_gem_dr_eng', _mode_or_nan),
                 'tweet_gem_dr_jew_mode': ('tweet_gem_dr_jew', _mode_or_nan),
                 'tweet_gem_dr_sat_mode': ('tweet_gem_dr_sat', _mode_or_nan),
+                'tweet_gem_dr_chal_mode': ('tweet_gem_dr_chal', _mode_or_nan),
+                'tweet_gem_dr_alb_mode': ('tweet_gem_dr_alb', _mode_or_nan),
                 # User handle gematria means
                 'tweet_user_gem_ordinal_mean': ('user_gem_ord', 'mean'),
                 'tweet_user_gem_reverse_mean': ('user_gem_rev', 'mean'),
@@ -2004,6 +2438,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 'tweet_user_gem_english_mean': ('user_gem_eng', 'mean'),
                 'tweet_user_gem_jewish_mean': ('user_gem_jew', 'mean'),
                 'tweet_user_gem_satanic_mean': ('user_gem_sat', 'mean'),
+                'tweet_user_gem_chaldean_mean': ('user_gem_chal', 'mean'),
+                'tweet_user_gem_albam_mean': ('user_gem_alb', 'mean'),
                 'tweet_user_gem_dr_mode': ('user_gem_dr', _mode_or_nan),
                 # Caution/pump/energy flags (any tweet in bucket)
                 'tweet_gem_caution': ('tweet_is_caution', 'max'),
@@ -2103,6 +2539,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             nw['headline_gem_eng'] = _nw_gem['headline_gem_english'].values
             nw['headline_gem_jew'] = _nw_gem['headline_gem_jewish'].values
             nw['headline_gem_sat'] = _nw_gem['headline_gem_satanic'].values
+            nw['headline_gem_chal'] = _nw_gem['headline_gem_chaldean'].values
+            nw['headline_gem_alb'] = _nw_gem['headline_gem_albam'].values
 
             # Override with pre-computed if available (trust stored values)
             if 'title_gematria_ordinal' in nw.columns:
@@ -2121,7 +2559,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             # Digital roots — vectorized
             for _gem_sfx, _gem_col in [('ord', 'headline_gem_ord'), ('rev', 'headline_gem_rev'),
                                        ('eng', 'headline_gem_eng'), ('jew', 'headline_gem_jew'),
-                                       ('sat', 'headline_gem_sat')]:
+                                       ('sat', 'headline_gem_sat'),
+                                       ('chal', 'headline_gem_chal'), ('alb', 'headline_gem_alb')]:
                 _gem_vals = nw[_gem_col].values
                 _gem_mask = pd.notna(_gem_vals)
                 _gem_safe = np.where(_gem_mask, np.nan_to_num(_gem_vals, nan=0), 0).astype(np.int64)
@@ -2152,11 +2591,13 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                     nw['news_source_gem_eng'] = _src_gem['news_source_gem_english'].values
                     nw['news_source_gem_jew'] = _src_gem['news_source_gem_jewish'].values
                     nw['news_source_gem_sat'] = _src_gem['news_source_gem_satanic'].values
+                    nw['news_source_gem_chal'] = _src_gem['news_source_gem_chaldean'].values
+                    nw['news_source_gem_alb'] = _src_gem['news_source_gem_albam'].values
                     nw['news_source_gem_dr'] = _src_gem['news_source_gem_dr_ordinal'].values
                     has_source = True
                     break
 
-            # Aggregation dict -- all 6 cipher means + DR modes
+            # Aggregation dict -- all 8 cipher means + DR modes
             nw_gem_agg = {
                 # 6 cipher means
                 'news_gem_ordinal_mean': ('headline_gem_ord', 'mean'),
@@ -2165,12 +2606,16 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 'news_gem_english_mean': ('headline_gem_eng', 'mean'),
                 'news_gem_jewish_mean': ('headline_gem_jew', 'mean'),
                 'news_gem_satanic_mean': ('headline_gem_sat', 'mean'),
+                'news_gem_chaldean_mean': ('headline_gem_chal', 'mean'),
+                'news_gem_albam_mean': ('headline_gem_alb', 'mean'),
                 # DR modes
                 'news_gem_dr_ord_mode': ('headline_gem_dr_ord', _mode_or_nan),
                 'news_gem_dr_rev_mode': ('headline_gem_dr_rev', _mode_or_nan),
                 'news_gem_dr_eng_mode': ('headline_gem_dr_eng', _mode_or_nan),
                 'news_gem_dr_jew_mode': ('headline_gem_dr_jew', _mode_or_nan),
                 'news_gem_dr_sat_mode': ('headline_gem_dr_sat', _mode_or_nan),
+                'news_gem_dr_chal_mode': ('headline_gem_dr_chal', _mode_or_nan),
+                'news_gem_dr_alb_mode': ('headline_gem_dr_alb', _mode_or_nan),
                 # Flags
                 'news_gem_caution': ('headline_is_caution', 'max'),
                 'news_gem_pump': ('headline_is_pump', 'max'),
@@ -2199,6 +2644,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 nw_gem_agg['news_source_gem_english_mean'] = ('news_source_gem_eng', 'mean')
                 nw_gem_agg['news_source_gem_jewish_mean'] = ('news_source_gem_jew', 'mean')
                 nw_gem_agg['news_source_gem_satanic_mean'] = ('news_source_gem_sat', 'mean')
+                nw_gem_agg['news_source_gem_chaldean_mean'] = ('news_source_gem_chal', 'mean')
+                nw_gem_agg['news_source_gem_albam_mean'] = ('news_source_gem_alb', 'mean')
                 nw_gem_agg['news_source_gem_dr_mode'] = ('news_source_gem_dr', _mode_or_nan)
 
             nw_agg = nw.groupby('bucket').agg(**nw_gem_agg).reset_index()
@@ -2250,6 +2697,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             gm['winner_gem_english'] = _w_gem['winner_gem_english'].values
             gm['winner_gem_jewish'] = _w_gem['winner_gem_jewish'].values
             gm['winner_gem_satanic'] = _w_gem['winner_gem_satanic'].values
+            gm['winner_gem_chaldean'] = _w_gem['winner_gem_chaldean'].values
+            gm['winner_gem_albam'] = _w_gem['winner_gem_albam'].values
             gm['winner_gem_dr'] = _w_gem['winner_gem_dr_ordinal'].values
 
             # Loser gematria (derive loser from home/away) — GPU batch
@@ -2263,6 +2712,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 gm['loser_gem_english'] = _l_gem['loser_gem_english'].values
                 gm['loser_gem_jewish'] = _l_gem['loser_gem_jewish'].values
                 gm['loser_gem_satanic'] = _l_gem['loser_gem_satanic'].values
+                gm['loser_gem_chaldean'] = _l_gem['loser_gem_chaldean'].values
+                gm['loser_gem_albam'] = _l_gem['loser_gem_albam'].values
                 gm['loser_gem_dr'] = _l_gem['loser_gem_dr_ordinal'].values
 
             # Venue gematria — GPU batch
@@ -2274,6 +2725,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 gm['venue_gem_english'] = _v_gem['venue_gem_english'].values
                 gm['venue_gem_jewish'] = _v_gem['venue_gem_jewish'].values
                 gm['venue_gem_satanic'] = _v_gem['venue_gem_satanic'].values
+                gm['venue_gem_chaldean'] = _v_gem['venue_gem_chaldean'].values
+                gm['venue_gem_albam'] = _v_gem['venue_gem_albam'].values
                 gm['venue_gem_dr'] = _v_gem['venue_gem_dr_ordinal'].values
 
             # Score DRs — vectorized
@@ -2299,6 +2752,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 'sport_winner_gem_english_mean': ('winner_gem_english', 'mean'),
                 'sport_winner_gem_jewish_mean': ('winner_gem_jewish', 'mean'),
                 'sport_winner_gem_satanic_mean': ('winner_gem_satanic', 'mean'),
+                'sport_winner_gem_chaldean_mean': ('winner_gem_chaldean', 'mean'),
+                'sport_winner_gem_albam_mean': ('winner_gem_albam', 'mean'),
                 'sport_winner_gem_dr_mode': ('winner_gem_dr', _mode_or_nan),
                 # Score DRs
                 'sport_score_dr_mode': ('score_dr', _mode_or_nan) if 'score_dr' in gm.columns else ('winner_gem_dr', _mode_or_nan),
@@ -2316,6 +2771,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 sp_agg['sport_loser_gem_english_mean'] = ('loser_gem_english', 'mean')
                 sp_agg['sport_loser_gem_jewish_mean'] = ('loser_gem_jewish', 'mean')
                 sp_agg['sport_loser_gem_satanic_mean'] = ('loser_gem_satanic', 'mean')
+                sp_agg['sport_loser_gem_chaldean_mean'] = ('loser_gem_chaldean', 'mean')
+                sp_agg['sport_loser_gem_albam_mean'] = ('loser_gem_albam', 'mean')
                 sp_agg['sport_loser_gem_dr_mode'] = ('loser_gem_dr', _mode_or_nan)
 
             # Venue aggregations
@@ -2326,6 +2783,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 sp_agg['sport_venue_gem_english_mean'] = ('venue_gem_english', 'mean')
                 sp_agg['sport_venue_gem_jewish_mean'] = ('venue_gem_jewish', 'mean')
                 sp_agg['sport_venue_gem_satanic_mean'] = ('venue_gem_satanic', 'mean')
+                sp_agg['sport_venue_gem_chaldean_mean'] = ('venue_gem_chaldean', 'mean')
+                sp_agg['sport_venue_gem_albam_mean'] = ('venue_gem_albam', 'mean')
                 sp_agg['sport_venue_gem_dr_mode'] = ('venue_gem_dr', _mode_or_nan)
 
             # Score total/diff DR aggregations
@@ -2361,6 +2820,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             hr['horse_gem_english'] = _h_gem['horse_gem_english'].values
             hr['horse_gem_jewish'] = _h_gem['horse_gem_jewish'].values
             hr['horse_gem_satanic'] = _h_gem['horse_gem_satanic'].values
+            hr['horse_gem_chaldean'] = _h_gem['horse_gem_chaldean'].values
+            hr['horse_gem_albam'] = _h_gem['horse_gem_albam'].values
             hr['horse_gem_dr'] = _h_gem['horse_gem_dr_ordinal'].values
 
             # Jockey gematria -- GPU batch
@@ -2372,6 +2833,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 hr['jockey_gem_english'] = _j_gem['jockey_gem_english'].values
                 hr['jockey_gem_jewish'] = _j_gem['jockey_gem_jewish'].values
                 hr['jockey_gem_satanic'] = _j_gem['jockey_gem_satanic'].values
+                hr['jockey_gem_chaldean'] = _j_gem['jockey_gem_chaldean'].values
+                hr['jockey_gem_albam'] = _j_gem['jockey_gem_albam'].values
                 hr['jockey_gem_dr'] = _j_gem['jockey_gem_dr_ordinal'].values
 
             # Trainer gematria -- GPU batch
@@ -2383,6 +2846,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 hr['trainer_gem_english'] = _t_gem['trainer_gem_english'].values
                 hr['trainer_gem_jewish'] = _t_gem['trainer_gem_jewish'].values
                 hr['trainer_gem_satanic'] = _t_gem['trainer_gem_satanic'].values
+                hr['trainer_gem_chaldean'] = _t_gem['trainer_gem_chaldean'].values
+                hr['trainer_gem_albam'] = _t_gem['trainer_gem_albam'].values
                 hr['trainer_gem_dr'] = _t_gem['trainer_gem_dr_ordinal'].values
 
             # Build horse aggregation dict
@@ -2394,6 +2859,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 'horse_winner_gem_english_mean': ('horse_gem_english', 'mean'),
                 'horse_winner_gem_jewish_mean': ('horse_gem_jewish', 'mean'),
                 'horse_winner_gem_satanic_mean': ('horse_gem_satanic', 'mean'),
+                'horse_winner_gem_chaldean_mean': ('horse_gem_chaldean', 'mean'),
+                'horse_winner_gem_albam_mean': ('horse_gem_albam', 'mean'),
                 'horse_winner_gem_dr_mode': ('horse_gem_dr', _mode_or_nan),
                 'horse_races_today': ('winner_horse', 'count'),
             }
@@ -2406,6 +2873,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 hr_agg['horse_jockey_gem_english_mean'] = ('jockey_gem_english', 'mean')
                 hr_agg['horse_jockey_gem_jewish_mean'] = ('jockey_gem_jewish', 'mean')
                 hr_agg['horse_jockey_gem_satanic_mean'] = ('jockey_gem_satanic', 'mean')
+                hr_agg['horse_jockey_gem_chaldean_mean'] = ('jockey_gem_chaldean', 'mean')
+                hr_agg['horse_jockey_gem_albam_mean'] = ('jockey_gem_albam', 'mean')
                 hr_agg['horse_jockey_gem_dr_mode'] = ('jockey_gem_dr', _mode_or_nan)
 
             # Trainer aggregations
@@ -2416,6 +2885,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 hr_agg['horse_trainer_gem_english_mean'] = ('trainer_gem_english', 'mean')
                 hr_agg['horse_trainer_gem_jewish_mean'] = ('trainer_gem_jewish', 'mean')
                 hr_agg['horse_trainer_gem_satanic_mean'] = ('trainer_gem_satanic', 'mean')
+                hr_agg['horse_trainer_gem_chaldean_mean'] = ('trainer_gem_chaldean', 'mean')
+                hr_agg['horse_trainer_gem_albam_mean'] = ('trainer_gem_albam', 'mean')
                 hr_agg['horse_trainer_gem_dr_mode'] = ('trainer_gem_dr', _mode_or_nan)
 
             # Position/odds DR
@@ -2866,7 +3337,9 @@ def _event_astro_daily_cache(dates_array):
     Returns dict: date -> {moon_phase_day, lunar_sin, lunar_cos,
                            is_full_moon, is_new_moon, nakshatra,
                            nakshatra_nature, nakshatra_guna, key_nakshatra,
-                           mercury_retrograde}
+                           mercury_retrograde,
+                           bazi_stem, bazi_element,
+                           tzolkin_tone, tzolkin_sign_idx}
     """
     cache = {}
     for d in dates_array:
@@ -2879,6 +3352,20 @@ def _event_astro_daily_cache(dates_array):
         moon = get_moon_phase(dt)
         vedic = get_vedic(dt)
         western = get_western(dt)
+        try:
+            bazi = get_bazi(dt)
+            bazi_stem = bazi['stem_idx']
+            bazi_element = bazi['element_idx']
+        except Exception:
+            bazi_stem = np.nan
+            bazi_element = np.nan
+        try:
+            tzolkin = get_tzolkin(dt)
+            tzolkin_tone = tzolkin['tone']
+            tzolkin_sign_idx = tzolkin['sign_idx']
+        except Exception:
+            tzolkin_tone = np.nan
+            tzolkin_sign_idx = np.nan
         cache[d] = {
             'moon_phase_day': moon['phase_day'],
             'lunar_sin': moon['lunar_sin'],
@@ -2890,6 +3377,10 @@ def _event_astro_daily_cache(dates_array):
             'nakshatra_guna': vedic['nakshatra_guna'],
             'key_nakshatra': vedic['key_nakshatra'],
             'mercury_retrograde': western['mercury_retrograde'],
+            'bazi_stem': bazi_stem,
+            'bazi_element': bazi_element,
+            'tzolkin_tone': tzolkin_tone,
+            'tzolkin_sign_idx': tzolkin_sign_idx,
         }
     return cache
 
@@ -2903,13 +3394,14 @@ def compute_event_astrology(df, tweets_df, news_df, sports_df,
     at the MOMENT the event occurred, then aggregates per candle bucket
     using LAST value.
 
-    Produces ~25 features total across all event types:
-      tweet_astro_*  (11 features: moon_phase_day, lunar_sin, lunar_cos,
+    Produces ~37 features total across all event types:
+      tweet_astro_*  (15 features: moon_phase_day, lunar_sin, lunar_cos,
                       is_full_moon, is_new_moon, nakshatra, nakshatra_nature,
-                      nakshatra_guna, key_nakshatra, mercury_retrograde,
+                      nakshatra_guna, key_nakshatra, bazi_stem, bazi_element,
+                      tzolkin_tone, tzolkin_sign_idx, mercury_retrograde,
                       planetary_hour_idx)
-      news_astro_*   (10 features: same minus mercury_retrograde)
-      game_astro_*   (10 features: same minus mercury_retrograde)
+      news_astro_*   (14 features: same minus mercury_retrograde)
+      game_astro_*   (14 features: same minus mercury_retrograde)
 
     Handles cuDF input by converting to CPU internally.
 
@@ -2965,6 +3457,7 @@ def compute_event_astrology(df, tweets_df, news_df, sports_df,
             'moon_phase_day', 'lunar_sin', 'lunar_cos',
             'is_full_moon', 'is_new_moon',
             'nakshatra', 'nakshatra_nature', 'nakshatra_guna', 'key_nakshatra',
+            'bazi_stem', 'bazi_element', 'tzolkin_tone', 'tzolkin_sign_idx',
         ]
         if has_mercury:
             daily_keys.append('mercury_retrograde')
@@ -3390,6 +3883,17 @@ def compute_cycle_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFram
     out['eclipse_window'] = np.array(
         [_in_eclipse_window(d.to_pydatetime()) for d in dates], dtype=np.int32)
 
+    # --- eclipse_proximity_days: continuous distance to nearest eclipse (0 = eclipse day) ---
+    # Vectorized: convert bar dates and eclipse dates to ordinals, then broadcast min-abs-diff
+    _bar_ordinals = np.array([d.to_pydatetime().toordinal() for d in dates], dtype=np.int64)
+    _eclipse_ordinals = np.array([edt.toordinal() for edt in eclipse_dt_list], dtype=np.int64)
+    if len(_eclipse_ordinals) > 0:
+        # shape: (n_bars, n_eclipses) — efficient for <60 eclipses
+        _abs_diffs = np.abs(_bar_ordinals[:, None] - _eclipse_ordinals[None, :])
+        out['eclipse_proximity_days'] = _abs_diffs.min(axis=1).astype(np.float64)
+    else:
+        out['eclipse_proximity_days'] = np.full(len(dates), np.nan)
+
     # --- equinox_pre_post: +1 within 30d before, -1 within 30d after ---
     def _equinox_pre_post(dt):
         dt = _to_naive(dt)
@@ -3542,42 +4046,86 @@ def compute_hebrew_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
         2017: (9, 30), 2018: (9, 19), 2019: (10, 9), 2020: (9, 28),
         2021: (9, 16), 2022: (10, 5), 2023: (9, 25), 2024: (10, 12),
         2025: (10, 2), 2026: (9, 22), 2027: (10, 11),
+        2028: (9, 30), 2029: (9, 19), 2030: (10, 7), 2031: (9, 27),
+        2032: (9, 15), 2033: (10, 3), 2034: (9, 23), 2035: (9, 12),
     }
     # Passover (15 Nisan)
     _PASSOVER = {
         2017: (4, 11), 2018: (3, 31), 2019: (4, 20), 2020: (4, 9),
         2021: (3, 28), 2022: (4, 16), 2023: (4, 6), 2024: (4, 23),
         2025: (4, 13), 2026: (4, 2), 2027: (4, 22),
+        2028: (4, 11), 2029: (3, 31), 2030: (4, 18), 2031: (4, 8),
+        2032: (3, 27), 2033: (4, 14), 2034: (4, 4), 2035: (4, 23),
     }
     # Rosh Hashanah (1 Tishrei)
     _ROSH_HASHANAH = {
         2017: (9, 21), 2018: (9, 10), 2019: (9, 30), 2020: (9, 19),
         2021: (9, 7), 2022: (9, 26), 2023: (9, 16), 2024: (10, 3),
         2025: (9, 23), 2026: (9, 12), 2027: (10, 2),
+        2028: (9, 21), 2029: (9, 10), 2030: (9, 28), 2031: (9, 18),
+        2032: (9, 6), 2033: (9, 24), 2034: (9, 14), 2035: (9, 3),
     }
     # Sukkot (15 Tishrei)
     _SUKKOT = {
         2017: (10, 5), 2018: (9, 24), 2019: (10, 14), 2020: (10, 3),
         2021: (9, 21), 2022: (10, 10), 2023: (9, 30), 2024: (10, 17),
         2025: (10, 7), 2026: (9, 27), 2027: (10, 16),
+        2028: (10, 5), 2029: (9, 24), 2030: (10, 12), 2031: (10, 2),
+        2032: (9, 20), 2033: (10, 8), 2034: (9, 28), 2035: (9, 17),
     }
     # Chinese New Year
     _CHINESE_NY = {
         2017: (1, 28), 2018: (2, 16), 2019: (2, 5), 2020: (1, 25),
         2021: (2, 12), 2022: (2, 1), 2023: (1, 22), 2024: (2, 10),
         2025: (1, 29), 2026: (2, 17), 2027: (2, 6),
+        2028: (1, 26), 2029: (2, 13), 2030: (2, 3), 2031: (1, 23),
+        2032: (2, 11), 2033: (1, 31), 2034: (2, 19), 2035: (2, 8),
     }
     # Diwali
     _DIWALI = {
         2017: (10, 19), 2018: (11, 7), 2019: (10, 27), 2020: (11, 14),
         2021: (11, 4), 2022: (10, 24), 2023: (11, 12), 2024: (11, 1),
         2025: (10, 20), 2026: (11, 8), 2027: (10, 29),
+        2028: (10, 26), 2029: (11, 14), 2030: (11, 4), 2031: (10, 24),
+        2032: (11, 11), 2033: (11, 1), 2034: (10, 21), 2035: (11, 8),
     }
     # Ramadan start (approximate)
     _RAMADAN_START = {
         2017: (5, 27), 2018: (5, 16), 2019: (5, 6), 2020: (4, 24),
         2021: (4, 13), 2022: (4, 2), 2023: (3, 23), 2024: (3, 11),
         2025: (3, 1), 2026: (2, 18), 2027: (2, 8),
+        2028: (12, 4), 2029: (11, 24), 2030: (11, 13), 2031: (11, 2),
+        2032: (10, 22), 2033: (10, 12), 2034: (10, 1), 2035: (9, 20),
+    }
+    # Eid al-Fitr (end of Ramadan, 1st of Shawwal)
+    _EID_AL_FITR = {
+        2026: (3, 30), 2027: (3, 20), 2028: (1, 3), 2029: (12, 23),
+        2030: (12, 13), 2031: (12, 2), 2032: (11, 20), 2033: (11, 10),
+        2034: (10, 30), 2035: (10, 20),
+    }
+    # Eid al-Adha (10th of Dhul Hijjah)
+    _EID_AL_ADHA = {
+        2026: (6, 7), 2027: (5, 27), 2028: (5, 15), 2029: (5, 5),
+        2030: (4, 24), 2031: (4, 13), 2032: (4, 2), 2033: (3, 22),
+        2034: (3, 12), 2035: (3, 1),
+    }
+    # Navratri (Sharad Navratri, 9 nights before Dussehra)
+    _NAVRATRI = {
+        2026: (9, 22), 2027: (10, 12), 2028: (9, 30), 2029: (9, 19),
+        2030: (10, 8), 2031: (9, 28), 2032: (9, 16), 2033: (10, 5),
+        2034: (9, 24), 2035: (9, 14),
+    }
+    # Holi (full moon of Phalguna)
+    _HOLI = {
+        2026: (3, 10), 2027: (2, 28), 2028: (3, 17), 2029: (3, 7),
+        2030: (2, 24), 2031: (3, 15), 2032: (3, 4), 2033: (3, 22),
+        2034: (3, 11), 2035: (3, 1),
+    }
+    # Chuseok Korea (15th of 8th lunar month)
+    _CHUSEOK = {
+        2026: (9, 25), 2027: (10, 15), 2028: (10, 3), 2029: (9, 22),
+        2030: (10, 11), 2031: (10, 1), 2032: (9, 19), 2033: (10, 7),
+        2034: (9, 27), 2035: (9, 16),
     }
 
     def _holiday_window(dt, holiday_dict, window=3):
@@ -3633,8 +4181,93 @@ def compute_hebrew_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
         [_holiday_window(d, _DIWALI) for d in pydates], dtype=np.int32)
     out['ramadan_window'] = np.array(
         [_ramadan_window(d) for d in pydates], dtype=np.int32)
+    out['eid_al_fitr_window'] = np.array(
+        [_holiday_window(d, _EID_AL_FITR) for d in pydates], dtype=np.int32)
+    out['eid_al_adha_window'] = np.array(
+        [_holiday_window(d, _EID_AL_ADHA) for d in pydates], dtype=np.int32)
+    out['navratri_window'] = np.array(
+        [_holiday_window(d, _NAVRATRI) for d in pydates], dtype=np.int32)
+    out['holi_window'] = np.array(
+        [_holiday_window(d, _HOLI) for d in pydates], dtype=np.int32)
+    out['chuseok_window'] = np.array(
+        [_holiday_window(d, _CHUSEOK) for d in pydates], dtype=np.int32)
+    # Golden Week Japan (Apr 29 - May 5, fixed Gregorian — pure calendar logic)
+    out['golden_week_window'] = np.array(
+        [1 if (d.month == 4 and d.day >= 29) or (d.month == 5 and d.day <= 5) else 0
+         for d in pydates], dtype=np.int32)
     out['date_palindrome'] = np.array(
         [_is_date_palindrome(d) for d in pydates], dtype=np.int32)
+
+    return out
+
+
+# ============================================================
+# MARKET SIGNAL FEATURES (DeFi TVL, BTC dominance, mining stats)
+# ============================================================
+
+def compute_market_signal_features(df: pd.DataFrame,
+                                    market_signals: dict,
+                                    tf_name: str = '1d') -> pd.DataFrame:
+    """Compute features from DeFi TVL, BTC dominance, and mining stats."""
+    cfg = TF_CONFIG.get(tf_name, TF_CONFIG['1d'])
+    bars_per_day = max(1, 86400 // cfg['bucket_seconds'])
+    out = pd.DataFrame(index=df.index)
+
+    if market_signals is None:
+        return out
+
+    def _align_daily(daily_df, col_map):
+        if daily_df is None or daily_df.empty:
+            return
+        aligned = daily_df.copy()
+        if hasattr(aligned.index, 'tz') and aligned.index.tz is not None:
+            aligned.index = aligned.index.tz_localize(None)
+        _idx = _strip_tz(df.index)
+        aligned = aligned.reindex(_idx, method='ffill')
+        aligned.index = df.index
+        for src, dst in col_map.items():
+            if src in aligned.columns:
+                out[dst] = pd.to_numeric(aligned[src], errors='coerce')
+
+    _align_daily(market_signals.get('defi_tvl', pd.DataFrame()), {
+        'total_tvl': 'mkt_defi_tvl',
+        'total_tvl_change_1d': 'mkt_defi_tvl_change_1d',
+    })
+    _align_daily(market_signals.get('btc_dominance', pd.DataFrame()), {
+        'btc_dominance': 'mkt_btc_dominance',
+        'eth_dominance': 'mkt_eth_dominance',
+        'total_market_cap': 'mkt_total_market_cap',
+        'total_volume': 'mkt_total_volume',
+        'active_cryptos': 'mkt_active_cryptos',
+    })
+    _align_daily(market_signals.get('mining_stats', pd.DataFrame()), {
+        'hash_rate': 'mkt_hash_rate',
+        'difficulty': 'mkt_difficulty',
+        'blocks_mined': 'mkt_blocks_mined',
+        'miners_revenue': 'mkt_miners_revenue',
+        'avg_block_size': 'mkt_avg_block_size',
+    })
+
+    # Derived features
+    tvl = out.get('mkt_defi_tvl')
+    if tvl is not None:
+        shift_7d = 7 * bars_per_day
+        if shift_7d > 0 and len(tvl) > shift_7d:
+            out['mkt_defi_tvl_pct_7d'] = tvl.pct_change(shift_7d)
+
+    btc_dom = out.get('mkt_btc_dominance')
+    if btc_dom is not None:
+        shift_7d = 7 * bars_per_day
+        if shift_7d > 0 and len(btc_dom) > shift_7d:
+            out['mkt_btc_dom_delta_7d'] = btc_dom - btc_dom.shift(shift_7d)
+        out['mkt_alt_season'] = (btc_dom < 40).astype(float)
+        out.loc[btc_dom.isna(), 'mkt_alt_season'] = np.nan
+
+    hr = out.get('mkt_hash_rate')
+    if hr is not None:
+        shift_30d = 30 * bars_per_day
+        if shift_30d > 0 and len(hr) > shift_30d:
+            out['mkt_hash_rate_pct_30d'] = hr.pct_change(shift_30d)
 
     return out
 
@@ -3643,7 +4276,7 @@ def compute_hebrew_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
 # MARKET CALENDAR FEATURES (real-world events that move markets)
 # ============================================================
 
-# FOMC meeting dates (announcement day, 2019-2027)
+# FOMC meeting dates (announcement day, 2019-2028)
 _FOMC_DATES = [
     # 2019
     (2019,1,30),(2019,3,20),(2019,5,1),(2019,6,19),(2019,7,31),(2019,9,18),(2019,10,30),(2019,12,11),
@@ -3663,6 +4296,8 @@ _FOMC_DATES = [
     (2026,1,28),(2026,3,18),(2026,4,29),(2026,6,17),(2026,7,29),(2026,9,16),(2026,11,4),(2026,12,16),
     # 2027
     (2027,1,27),(2027,3,17),(2027,4,28),(2027,6,16),(2027,7,28),(2027,9,22),(2027,11,3),(2027,12,15),
+    # 2028 (projected — Fed publishes ~1 year ahead)
+    (2028,1,26),(2028,3,15),(2028,4,26),(2028,6,14),(2028,7,26),(2028,9,20),(2028,11,1),(2028,12,13),
 ]
 
 # Bitcoin halving dates
@@ -3871,6 +4506,9 @@ def compute_market_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     # BTC birthday: Jan 3 (genesis block)
     out['btc_birthday'] = ((month == 1) & (day_of_month == 3)).astype(int)
 
+    # BTC Pizza Day: May 22 (first real-world BTC transaction, culturally significant)
+    out['btc_pizza_day'] = ((month == 5) & (day_of_month == 22)).astype(int)
+
     # Block reward era (which halving epoch are we in)
     def _block_reward_era(dt):
         dt = _to_naive(dt)
@@ -4072,6 +4710,100 @@ def compute_space_weather_features(df: pd.DataFrame,
     return out
 
 
+# ============================================================
+# LUNAR / ELECTROMAGNETIC FEATURES
+# ============================================================
+
+def compute_lunar_electromagnetic_features(df: pd.DataFrame,
+                                           tf_name: str = '1d') -> pd.DataFrame:
+    """
+    Lunar distance, solunar periods, biorhythm, tidal force, synodic cycles.
+
+    Pure function -- NO database calls. Uses PyEphem for per-date lunar
+    computations and numpy broadcasting for cycle features.
+
+    Args:
+        df: OHLCV DataFrame with DatetimeIndex
+        tf_name: timeframe name for TF_CONFIG lookup
+
+    Returns:
+        DataFrame with lunar/electromagnetic features. NaN for missing data.
+    """
+    from astrology_engine import get_moon_distance, get_lunar_node_sign, get_solunar_period, get_tidal_force
+
+    _gpu = _is_gpu(df)
+    _cpu_idx = pd.DatetimeIndex(_np(df.index)) if _gpu else df.index
+    n = len(df)
+
+    # Accumulate all features in dict, then build DataFrame once
+    feat_dict = {}
+
+    # ------------------------------------------------------------------
+    # BTC genesis biorhythm cycles (vectorized numpy)
+    # ------------------------------------------------------------------
+    GENESIS = pd.Timestamp('2009-01-03')
+    if hasattr(_cpu_idx, 'tz') and _cpu_idx.tz is not None:
+        days_since = (_cpu_idx - GENESIS.tz_localize(_cpu_idx.tz)).total_seconds() / 86400.0
+    else:
+        days_since = (_cpu_idx - GENESIS).total_seconds() / 86400.0
+    days_arr = days_since.values.astype(np.float64)
+
+    # Core biorhythm cycles
+    feat_dict['biorhythm_physical'] = np.sin(2.0 * np.pi * days_arr / 23.0)
+    feat_dict['biorhythm_emotional'] = np.sin(2.0 * np.pi * days_arr / 28.0)
+    feat_dict['biorhythm_intellectual'] = np.sin(2.0 * np.pi * days_arr / 33.0)
+
+    # Critical days (zero crossings) -- near-zero = transitional energy
+    feat_dict['biorhythm_physical_critical'] = (np.abs(feat_dict['biorhythm_physical']) < 0.05).astype(np.float64)
+    feat_dict['biorhythm_emotional_critical'] = (np.abs(feat_dict['biorhythm_emotional']) < 0.05).astype(np.float64)
+    feat_dict['biorhythm_intellectual_critical'] = (np.abs(feat_dict['biorhythm_intellectual']) < 0.05).astype(np.float64)
+
+    # ------------------------------------------------------------------
+    # Planetary synodic cycles (vectorized numpy sin/cos encoding)
+    # ------------------------------------------------------------------
+    # Venus synodic: 583.9 days
+    feat_dict['venus_synodic_sin'] = np.sin(2.0 * np.pi * days_arr / 583.9)
+    feat_dict['venus_synodic_cos'] = np.cos(2.0 * np.pi * days_arr / 583.9)
+    # Mars synodic: 779.9 days
+    feat_dict['mars_synodic_sin'] = np.sin(2.0 * np.pi * days_arr / 779.9)
+    feat_dict['mars_synodic_cos'] = np.cos(2.0 * np.pi * days_arr / 779.9)
+    # Saturn cycle: ~10759 days (29.46 years)
+    feat_dict['saturn_cycle_sin'] = np.sin(2.0 * np.pi * days_arr / 10759.0)
+    feat_dict['saturn_cycle_cos'] = np.cos(2.0 * np.pi * days_arr / 10759.0)
+    # Lunar node cycle: 6798 days (18.6 years / Saros)
+    feat_dict['lunar_node_cycle_sin'] = np.sin(2.0 * np.pi * days_arr / 6798.0)
+    feat_dict['lunar_node_cycle_cos'] = np.cos(2.0 * np.pi * days_arr / 6798.0)
+    # Metonic cycle: 6940 days (19 years)
+    feat_dict['metonic_cycle_sin'] = np.sin(2.0 * np.pi * days_arr / 6940.0)
+    feat_dict['metonic_cycle_cos'] = np.cos(2.0 * np.pi * days_arr / 6940.0)
+
+    # ------------------------------------------------------------------
+    # Moon distance, solunar, lunar node sign, tidal force — PyEphem per unique date
+    # (slow per call, so deduplicate to unique dates then map back)
+    # ------------------------------------------------------------------
+    df_dates = _cpu_idx.date
+    unique_dates = pd.Series(df_dates).unique()
+
+    moon_records = {}
+    for d in unique_dates:
+        dt = datetime(d.year, d.month, d.day)
+        md = get_moon_distance(dt)
+        sl = get_solunar_period(dt)
+        ln = get_lunar_node_sign(dt)
+        tf = get_tidal_force(dt)
+        moon_records[d] = {**md, **sl, **ln, **tf}
+
+    moon_df = pd.DataFrame.from_dict(moon_records, orient='index')
+    date_series = pd.Series(df_dates)
+    for col in moon_df.columns:
+        mapping = moon_df[col].to_dict()
+        feat_dict[col] = date_series.map(mapping).values.astype(np.float64)
+
+    # Build output DataFrame in one shot
+    out = pd.DataFrame(feat_dict, index=_cpu_idx)
+    return out
+
+
 @njit(cache=True)
 def _bars_since_event_kernel(event_arr):
     """Numba-compiled bars-since-event kernel. ~50-100x faster than Python loop."""
@@ -4249,6 +4981,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
                        htf_data: dict = None,
                        astro_cache: dict = None,
                        space_weather_df: pd.DataFrame = None,
+                       market_signals: dict = None,
                        include_targets: bool = True,
                        include_knn: bool = True) -> pd.DataFrame:
     """
@@ -4279,6 +5012,11 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
             and/or kp_history.txt, forward-filled to bar frequency.
             Columns: kp_index, sunspot_number, solar_flux_f107,
             solar_wind_speed, solar_wind_bz, r_scale, s_scale, g_scale
+        market_signals: {
+            'defi_tvl': df,        # from DeFi TVL streamer
+            'btc_dominance': df,   # from CoinGecko/CMC
+            'mining_stats': df,    # from blockchain.info
+        }
         include_targets: whether to compute future-looking targets
         include_knn: whether to compute KNN features (slow)
 
@@ -4372,12 +5110,33 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     for col in num_feats.columns:
         result[col] = num_feats[col]
 
+    # 3b. Numerology expansion (Lo Shu, angel numbers, Haramein, Pythagorean challenges)
+    t0 = time.time()
+    numx_feats = compute_numerology_expansion_features(df, tf_name)
+    print(f"    Numerology expansion features: {time.time()-t0:.1f}s ({len(numx_feats.columns)} cols)")
+    for col in numx_feats.columns:
+        result[col] = numx_feats[col]
+
+    # 3c. Vortex math & sacred geometry features
+    t0 = time.time()
+    vortex_feats = compute_vortex_sacred_geometry_features(df, tf_name)
+    print(f"    Vortex/Sacred Geometry features: {time.time()-t0:.1f}s ({len(vortex_feats.columns)} cols)")
+    for col in vortex_feats.columns:
+        result[col] = vortex_feats[col]
+
     # 4. Astrology features (from cached daily data)
     t0 = time.time()
     astro_feats = compute_astrology_features(df, astro_cache)
     print(f"    Astrology features: {time.time()-t0:.1f}s ({len(astro_feats.columns)} cols)")
     for col in astro_feats.columns:
         result[col] = astro_feats[col]
+
+    # 4b. Planetary expansion features (speeds, combustion, dignity, synodic, decan, stars)
+    t0 = time.time()
+    planet_exp_feats = compute_planetary_expansion_features(df)
+    print(f"    Planetary expansion features: {time.time()-t0:.1f}s ({len(planet_exp_feats.columns)} cols)")
+    for col in planet_exp_feats.columns:
+        result[col] = planet_exp_feats[col]
 
     # 5. Esoteric features — GPU BATCH gematria/sentiment (zero .apply())
     t0 = time.time()
@@ -4432,6 +5191,13 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         for col in sw_feats.columns:
             result[col] = sw_feats[col]
 
+    # 8b. Lunar / electromagnetic features
+    t0 = time.time()
+    lunar_feats = compute_lunar_electromagnetic_features(df, tf_name)
+    print(f"    Lunar/EM features: {time.time()-t0:.1f}s ({len(lunar_feats.columns)} cols)")
+    for col in lunar_feats.columns:
+        result[col] = lunar_feats[col]
+
     # 9. Confirmed cycle features
     t0 = time.time()
     cycle_feats = compute_cycle_features(df, tf_name)
@@ -4452,6 +5218,14 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     print(f"    Market calendar features: {time.time()-t0:.1f}s ({len(mkt_feats.columns)} cols)")
     for col in mkt_feats.columns:
         result[col] = mkt_feats[col]
+
+    # 10c. Market signal features (DeFi TVL, BTC dominance, mining stats)
+    if market_signals is not None:
+        t0 = time.time()
+        mkt_sig_feats = compute_market_signal_features(result, market_signals, tf_name)
+        print(f"    Market signal features: {time.time()-t0:.1f}s ({len(mkt_sig_feats.columns)} cols)")
+        for col in mkt_sig_feats.columns:
+            result[col] = mkt_sig_feats[col]
 
     # 11. Composite vol-to-direction features (after cycles are in result)
     # Pass cuDF copy to get GPU-accelerated rolling/ewm ops inside composite
@@ -5564,6 +6338,6 @@ if __name__ == '__main__':
     print(f"  TF configs: {list(TF_CONFIG.keys())}")
     print(f"  Functions: compute_ta_features, compute_esoteric_features, "
           f"compute_higher_tf_features, compute_regime_features, "
-          f"compute_space_weather_features, compute_decay_features, "
-          f"compute_llm_features, build_all_features")
+          f"compute_space_weather_features, compute_lunar_electromagnetic_features, "
+          f"compute_decay_features, compute_llm_features, build_all_features")
     print(f"  LLM features available: {_HAS_LLM}")
