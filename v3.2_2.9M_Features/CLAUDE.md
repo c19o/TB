@@ -179,6 +179,8 @@ REMAINING ISSUES (if any):
 - **After fixing a bug, grep ALL files for the SAME pattern.** The .nnz bug was fixed in one place but existed in another. The parquet symlink bug hit 1w, then 1h, then 1d, then 4h — same bug, never properly fixed at the root.
 - **Pre-flight code audit before EVERY deploy.** Run the pre-flight checklist in CLOUD_TRAINING_PROTOCOL.md. Never deploy code that hasn't been verified against the checklist. The single-threaded bug (v3.3) could have been caught by checking load average within 60 seconds of launch.
 - **STALE PARQUET CHECK is MANDATORY.** If feature_library.py changed since parquets were built, DELETE old parquets AND NPZs. The pipeline skips rebuild when parquet exists with >2000 cols — it does NOT detect new features. cloud_run_tf.py now has a v3.3 fingerprint check, but ALWAYS verify parquet col count matches expected after any feature_library.py change.
+- **VERIFY DATA DIRECTORY BEFORE EVERY RUN.** config.py's V30_DATA_DIR defaults to `v3.0 (LGBM)/` which has OLD data. Cloud sets V30_DATA_DIR=/workspace. Locally, MUST set `export V30_DATA_DIR=/path/to/v3.2_2.9M_Features` or training silently uses v3.0 features. ALWAYS check the "Loaded from parquet:" log line — if it shows v3.0 path, STOP.
+- **CHECK ALL CONFIG PATHS IN FIRST 10 LOG LINES.** DB_DIR, V30_DATA_DIR, SAVAGE22_DB_DIR, PROJECT_DIR — verify all point to correct directories. Wrong paths = training on wrong/stale data = wasted time and money.
 
 ### Code
 - No fallback modes. No TA-only mode. Full pipeline or fix it

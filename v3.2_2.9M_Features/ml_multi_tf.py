@@ -619,48 +619,12 @@ if __name__ == '__main__':
                   sample_weights = sample_weights[_keep_start:]
                   df = df.iloc[_keep_start:].reset_index(drop=True)
                   log(f"  After subsample: {X_all.shape[0]:,} rows, {X_all.nnz:,} NNZ (under limit: {X_all.nnz < _NNZ_LIMIT})")
-              # Convert sparse→dense for multi-core LightGBM (sparse serializes OpenMP)
-              # But only if the dense matrix fits in available RAM
-              _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32
-              try:
-                  import psutil
-                  _avail_ram = psutil.virtual_memory().available
-              except ImportError:
-                  # Fallback: read /proc/meminfo on Linux (cloud machines)
-                  try:
-                      with open('/proc/meminfo') as _mf:
-                          for _ml in _mf:
-                              if 'MemAvailable' in _ml:
-                                  _avail_ram = int(_ml.split()[1]) * 1024  # KB → bytes
-                                  break
-                          else:
-                              _avail_ram = 64 * 1024**3  # conservative 64GB
-                  except (FileNotFoundError, Exception):
-                      _avail_ram = 64 * 1024**3
-              if _dense_bytes < _avail_ram * 0.7:  # 70% of available RAM
-                  log(f"  Converting sparse to dense ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
-                  X_all = X_all.toarray()
-              elif _avail_ram > 100e9:  # >100GB RAM: subsample rows to fit dense
-                  # Keep ALL features, subsample rows to fit 70% of available RAM
-                  _max_rows = int(_avail_ram * 0.7 / (X_all.shape[1] * 4))
-                  if _max_rows < X_all.shape[0]:
-                      log(f"  Dense needs {_dense_bytes/1e9:.1f} GB but only {_avail_ram/1e9:.0f} GB avail")
-                      log(f"  Subsampling {_max_rows:,} of {X_all.shape[0]:,} rows (keeping ALL {X_all.shape[1]:,} features)")
-                      # Keep most recent rows (time series — recent data more relevant)
-                      _keep_start = X_all.shape[0] - _max_rows
-                      X_all = X_all[_keep_start:]
-                      y_3class = y_3class[_keep_start:]
-                      sample_weights = sample_weights[_keep_start:]
-                      df = df.iloc[_keep_start:].reset_index(drop=True)
-                      log(f"  Converting subsampled sparse to dense ({_max_rows:,} rows)...")
-                      X_all = X_all.toarray()
-                  else:
-                      X_all = X_all.toarray()
-              else:
-                  log(f"  Keeping SPARSE (dense would need {_dense_bytes/1e9:.1f} GB, only {_avail_ram/1e9:.0f} GB avail)")
-                  log(f"  WARNING: Training will be single-threaded on sparse data")
+              # Keep SPARSE for training. Parallel CPCV workers each train on sparse CSR
+              # with 1 thread per worker — this is the fastest path (confirmed by Perplexity).
+              # Dense conversion is a regression: scans 100% elements including 96% zeros,
+              # and multi-threading doesn't help with <20K rows anyway.
               feature_cols = feature_cols + cross_cols
-              _X_all_is_sparse = hasattr(X_all, 'nnz')  # Track ACTUAL type: True if still sparse, False if converted to dense
+              _X_all_is_sparse = True  # Always sparse when crosses loaded — parallel path handles this
               nnz = X_all.nnz if hasattr(X_all, 'nnz') else int((X_all != 0).sum())
               total = X_all.shape[0] * X_all.shape[1]
               density = nnz / total * 100 if total > 0 else 0
@@ -844,11 +808,21 @@ if __name__ == '__main__':
               #                       10 splits -> 10 workers x 2 threads
               #                       15 splits -> 15 workers x 1-2 threads
               _pending_splits = len(splits) - len(_completed_folds)
-              _n_workers = int(os.environ.get('V3_CPCV_WORKERS', min(_pending_splits, _total_cores)))
-              _threads_per_worker = max(1, _total_cores // _n_workers)
-              log(f"\n  PARALLEL CPCV: {_pending_splits} pending splits, {_n_workers} workers x {_threads_per_worker} threads = {_n_workers * _threads_per_worker} total ({_total_cores} cores)")
+              # Tiered concurrency: cap workers by TF to prevent OOM from multiple CSR copies
+              # Each worker holds a full copy of CSR arrays (~280MB for 1w, ~13.5GB for 1h, ~16GB for 15m)
+              _nnz = X_all.nnz if hasattr(X_all, 'nnz') else 0
+              _csr_bytes = _nnz * 8  # data (4B) + indices (4B) per non-zero
+              if _csr_bytes > 10e9:  # >10 GB per copy (1h, 15m)
+                  _max_workers = 3
+              elif _csr_bytes > 2e9:  # >2 GB per copy (4h)
+                  _max_workers = min(_pending_splits, 8)
+              else:  # small (1w, 1d)
+                  _max_workers = _pending_splits
+              _n_workers = int(os.environ.get('V3_CPCV_WORKERS', min(_max_workers, _total_cores)))
+              # Cap threads at 16 per worker — Perplexity: "too many threads degrades perf on small datasets"
+              _threads_per_worker = min(16, max(1, _total_cores // _n_workers))
+              log(f"\n  PARALLEL CPCV: {_pending_splits} pending splits, {_n_workers} workers x {_threads_per_worker} threads ({_total_cores} cores available)")
 
-              # Set num_threads per worker to avoid oversubscription (each worker gets fair share of cores)
               _base_lgb_params = _base_lgb_params.copy()
               _base_lgb_params['num_threads'] = _threads_per_worker
               log(f"  num_threads per worker: {_base_lgb_params['num_threads']}")
