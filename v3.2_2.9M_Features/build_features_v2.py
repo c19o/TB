@@ -184,22 +184,27 @@ def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=Fa
         raise ValueError(f"Unexpected duplicate columns after V2 layers: {dupes[:10]}")
     log(f"  After V2 layers: {len(df.columns):,} cols")
 
-    # Step 3: Cross generation (everything × everything → sparse)
-    log("  Step 3: Cross generation...")
-    df._v2_symbol = symbol  # Tag for per-symbol sparse output naming
-    _gpu_id = int(os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')[0])
-    df = generate_all_crosses(df, tf=tf, gpu_id=_gpu_id, save_sparse=True, output_dir=V2_DIR,
-                              max_crosses=max_crosses)
-    # Note: crosses saved as sparse .npz separately (too big for dense DataFrame)
-    # df only contains base + V2 layer features
-
-    # Save base features (atomic: temp file → rename)
+    # Save base features BEFORE cross gen (prevents OOM from killing unsaved parquet)
     if save:
         from atomic_io import atomic_save_parquet
         out_path = os.path.join(V2_DIR, f'features_{symbol}_{tf}.parquet')
         atomic_save_parquet(df, out_path)
         size_mb = os.path.getsize(out_path) / 1e6
         log(f"  Saved base: {out_path} ({size_mb:.1f} MB)")
+
+    # Step 3: Cross generation (everything × everything → sparse)
+    # Runs as SEPARATE step in cloud_run_tf.py (Step 3) — skip here to avoid OOM
+    # Cross gen materializes large dense intermediates; running it separately gives
+    # cloud_run_tf.py control over memory and resumability.
+    _skip_inline_cross = os.environ.get('V2_SKIP_INLINE_CROSS', '1') == '1'
+    if _skip_inline_cross:
+        log("  Step 3: Cross generation SKIPPED (handled by cloud_run_tf.py Step 3)")
+    else:
+        log("  Step 3: Cross generation (inline)...")
+        df._v2_symbol = symbol
+        _gpu_id = int(os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')[0])
+        df = generate_all_crosses(df, tf=tf, gpu_id=_gpu_id, save_sparse=True, output_dir=V2_DIR,
+                                  max_crosses=max_crosses)
 
     elapsed = time.time() - t0
     log(f"  DONE: {symbol} {tf} — {len(df):,} rows × {len(df.columns):,} cols ({elapsed:.0f}s)")
