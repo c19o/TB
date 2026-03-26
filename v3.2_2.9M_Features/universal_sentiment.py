@@ -11,6 +11,7 @@ Usage:
   result = sentiment("Bitcoin crashes to new low!")
 """
 
+import os
 import re
 
 
@@ -171,6 +172,8 @@ def sentiment_gpu_batch(text_series, prefix='sent'):
 
     Falls back to CPU vectorized path if cuDF unavailable.
     """
+    if os.environ.get('V2_SKIP_GPU') == '1':
+        return _sentiment_cpu_vectorized(text_series, prefix)
     try:
         import cudf
         import cupy as cp

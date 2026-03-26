@@ -79,7 +79,7 @@ print(f"\n{'='*60}", flush=True)
 print(f"  OPTUNA COMPLETE: {TF} ({elapsed:.0f}s / {elapsed/60:.1f} min)", flush=True)
 print(f"{'='*60}", flush=True)
 
-for f in [f'optuna_configs_{TF}.json', f'model_{TF}.json', f'cpcv_oos_predictions_{TF}.pkl',
+for f in [f'optuna_configs_{TF}.json', f'optuna_model_{TF}.json', f'cpcv_oos_predictions_{TF}.pkl',
           f'optuna_{TF}.db', f'optuna_search_results.json', f'platt_{TF}.pkl',
           f'features_{TF}_all.json', f'feature_importance_top500_{TF}.json']:
     if os.path.exists(f):

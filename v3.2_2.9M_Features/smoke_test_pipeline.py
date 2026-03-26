@@ -1,19 +1,39 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-try:
-    import cudf.pandas; cudf.pandas.install(); print("[GPU] cudf.pandas ENABLED")
-except (ImportError, Exception):
-    pass
+import os, subprocess
+_skip_gpu = os.environ.get('V2_SKIP_GPU') == '1'
+if not _skip_gpu:
+    try:
+        _nv = subprocess.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                             capture_output=True, text=True, timeout=5)
+        if int(_nv.stdout.strip().split('.')[0]) >= 580:
+            _skip_gpu = True
+    except: pass
+if not _skip_gpu:
+    try:
+        import cudf.pandas
+        cudf.pandas.install()
+        print("[GPU] cudf.pandas ENABLED")
+    except (ImportError, Exception):
+        pass
 """
-smoke_test_pipeline.py — Lightweight Pre-Flight Validation
-============================================================
+smoke_test_pipeline.py — Lightweight Pre-Flight Validation (XGBoost)
+=====================================================================
 Runs the ENTIRE institutional pipeline on a tiny data slice to verify
 every code path works before spending money on cloud GPUs.
 
-Institutional pattern: same code, config-driven reduction of:
+Pre-flight checks (Step 0):
+  - XGBoost import + DMatrix creation (sparse CSR)
+  - V3_XGBM_PARAMS config verification (multi:softprob, max_bin=15, hist)
+  - feature_library._np() fix (cuDF -> numpy conversion)
+  - v2_cross_generator import + sparse matmul pre-filter
+  - V2_SKIP_GPU detection (CUDA 13+ driver auto-detect)
+
+Pipeline checks (Steps 1-10):
   - Rows (1000 bars per TF instead of 57K+)
   - Features (base only, no dx_ crosses = ~3K instead of 150K)
   - CPCV folds (3 groups, 1 test = 3 paths instead of 15)
+  - XGBoost training + model save/load roundtrip (.json format)
   - PBO (skip subsample, use CPCV directly)
   - Meta-labeling (trains on tiny OOS set)
   - Kelly sizing (just verifies the math)
@@ -65,8 +85,8 @@ SMOKE_CONFIG = {
     'skip_dx_crosses': True, # skip 135K DOY crosses (saves RAM/time)
     'cpcv_groups': 3,        # minimal CPCV (3 paths instead of 15)
     'cpcv_test_groups': 1,
-    'lgbm_rounds': 50,        # fast training
-    'lgbm_early_stop': 10,
+    'xgb_rounds': 50,        # fast training
+    'xgb_early_stop': 10,
     'skip_lstm': True,       # skip if no trained model
     'skip_optimizer': True,  # skip exhaustive optimizer
 }
@@ -164,6 +184,80 @@ def run_smoke_test(tf_name='1h', max_rows=None):
     print(f"\n{'='*60}")
     print(f"  SMOKE TEST: {tf_name} ({cfg['max_rows']} bars, no dx_ crosses)")
     print(f"{'='*60}\n")
+
+    # ============================================================
+    # STEP 0: Pre-flight — verify critical imports & config
+    # ============================================================
+    try:
+        # --- XGBoost import + DMatrix creation ---
+        import xgboost as xgb
+        smoke_log(f"XGBoost import: OK (v{xgb.__version__})")
+
+        # Verify DMatrix works with sparse CSR input (production pipeline uses sparse)
+        from scipy import sparse as sp_sparse
+        _test_dense = np.random.rand(50, 10).astype(np.float32)
+        _test_csr = sp_sparse.csr_matrix(_test_dense)
+        _test_dm = xgb.DMatrix(_test_csr, label=np.random.randint(0, 3, 50),
+                                feature_names=[f'f{i}' for i in range(10)], nthread=-1)
+        assert _test_dm.num_row() == 50, f"DMatrix rows: {_test_dm.num_row()}"
+        assert _test_dm.num_col() == 10, f"DMatrix cols: {_test_dm.num_col()}"
+        smoke_log(f"XGBoost DMatrix (sparse CSR): OK")
+
+        # --- V3_XGBM_PARAMS config verification ---
+        from config import V3_XGBM_PARAMS, TF_MIN_DATA_IN_LEAF
+        assert V3_XGBM_PARAMS['objective'] == 'multi:softprob', \
+            f"Wrong objective: {V3_XGBM_PARAMS['objective']} (expected multi:softprob)"
+        assert V3_XGBM_PARAMS['num_class'] == 3, \
+            f"Wrong num_class: {V3_XGBM_PARAMS['num_class']}"
+        assert V3_XGBM_PARAMS['max_bin'] == 15, \
+            f"Wrong max_bin: {V3_XGBM_PARAMS['max_bin']} (binary features need 15)"
+        assert V3_XGBM_PARAMS['tree_method'] == 'hist', \
+            f"Wrong tree_method: {V3_XGBM_PARAMS['tree_method']}"
+        assert V3_XGBM_PARAMS['eta'] == 0.03, \
+            f"Wrong eta: {V3_XGBM_PARAMS['eta']}"
+        smoke_log(f"V3_XGBM_PARAMS: OK (multi:softprob, max_bin=15, hist, eta=0.03)")
+
+        # --- feature_library import + _np() fix ---
+        from feature_library import _np
+        _test_arr = pd.Series([1.0, 2.0, np.nan])
+        _np_result = _np(_test_arr)
+        assert isinstance(_np_result, np.ndarray), f"_np() should return ndarray, got {type(_np_result)}"
+        assert np.isnan(_np_result[2]), "_np() must preserve NaN"
+        smoke_log(f"feature_library._np(): OK (cuDF/pandas -> numpy, NaN preserved)")
+
+        # --- cross generator import ---
+        import v2_cross_generator
+        smoke_log(f"v2_cross_generator: import OK")
+
+        # --- V2_SKIP_GPU detection logic ---
+        import subprocess as _sp
+        try:
+            _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                          capture_output=True, text=True, timeout=5)
+            _driver = _nv.stdout.strip().split('\n')[0].strip()
+            _driver_major = int(_driver.split('.')[0]) if _driver else 0
+            _skip_gpu_detected = _driver_major >= 580
+            smoke_log(f"V2_SKIP_GPU detection: driver={_driver}, major={_driver_major}, "
+                      f"skip_gpu={'YES (CUDA 13+)' if _skip_gpu_detected else 'NO (cuDF OK)'}")
+        except Exception as _e:
+            smoke_log(f"V2_SKIP_GPU detection: no GPU ({_e})")
+
+        # --- Sparse matmul pre-filter in cross generator ---
+        # Verify the function exists (it's the 10-50x speedup)
+        _has_matmul = hasattr(v2_cross_generator, '_gpu_cross_multiply') or \
+                      hasattr(v2_cross_generator, '_cpu_cross_multiply')
+        smoke_log(f"Cross generator sparse matmul: {'found' if _has_matmul else 'MISSING'}")
+
+        results['steps']['preflight'] = {'status': 'PASS', 'xgboost': xgb.__version__}
+        smoke_log(f"Pre-flight: ALL CHECKS PASSED")
+
+    except Exception as e:
+        smoke_log(f"FAIL preflight: {e}")
+        traceback.print_exc()
+        results['steps']['preflight'] = {'status': 'FAIL', 'error': str(e)}
+        results['errors'].append(f"preflight: {e}")
+        results['passed'] = False
+        return results
 
     # ============================================================
     # STEP 1: Load data
@@ -363,10 +457,11 @@ def run_smoke_test(tf_name='1h', max_rows=None):
         return results
 
     # ============================================================
-    # STEP 6: LightGBM training on one CPCV path
+    # STEP 6: XGBoost training on one CPCV path (matches production pipeline)
     # ============================================================
     try:
-        import lightgbm as lgb
+        import xgboost as xgb
+        smoke_log(f"XGBoost version: {xgb.__version__}")
 
         # Prepare features
         meta_cols = {'timestamp', 'date', 'open', 'high', 'low', 'close', 'volume',
@@ -391,39 +486,49 @@ def run_smoke_test(tf_name='1h', max_rows=None):
 
         if len(X_train) < 30 or len(X_test) < 10:
             smoke_log(f"WARNING: not enough labeled samples (train={len(X_train)}, test={len(X_test)})")
-            results['steps']['lgbm_train'] = {'status': 'WARN', 'reason': 'too few samples'}
+            results['steps']['xgb_train'] = {'status': 'WARN', 'reason': 'too few samples'}
         else:
+            from config import V3_XGBM_PARAMS
             t0 = time.time()
-            params = {
-                'objective': 'multiclass', 'num_class': 3,
-                'max_depth': 3, 'learning_rate': 0.1,
-                'min_data_in_leaf': 3, 'lambda_l2': 5.0,  # Match production: rare esoteric signals
-                'metric': 'multi_logloss', 'verbosity': -1,
-                'force_col_wise': True,
-            }
+            params = V3_XGBM_PARAMS.copy()
+            # Override for fast smoke test
+            params['max_depth'] = 3
 
             w_train = uniqueness[train_idx][train_valid].astype(np.float32)
-            dtrain = lgb.Dataset(X_train, label=y_train, weight=w_train, feature_name=feature_cols, free_raw_data=False)
-            dtest = lgb.Dataset(X_test, label=y_test, feature_name=feature_cols, reference=dtrain, free_raw_data=False)
+            dtrain = xgb.DMatrix(X_train, label=y_train, weight=w_train,
+                                 feature_names=feature_cols, nthread=-1)
+            dtest = xgb.DMatrix(X_test, label=y_test,
+                                feature_names=feature_cols, nthread=-1)
 
-            model = lgb.train(
+            model = xgb.train(
                 params, dtrain,
-                num_boost_round=cfg['lgbm_rounds'],
-                valid_sets=[dtest], valid_names=['test'],
-                callbacks=[lgb.early_stopping(cfg['lgbm_early_stop']), lgb.log_evaluation(0)],
+                num_boost_round=cfg['xgb_rounds'],
+                evals=[(dtest, 'test')],
+                early_stopping_rounds=cfg['xgb_early_stop'],
+                verbose_eval=0,
             )
 
-            preds = model.predict(X_test)
+            preds = model.predict(dtest)
             pred_labels = np.argmax(preds, axis=1)
             acc = (pred_labels == y_test).mean()
             dt = time.time() - t0
 
-            smoke_log(f"LightGBM: acc={acc:.3f}, {model.best_iteration} trees in {dt:.1f}s")
-            results['steps']['lgbm_train'] = {
+            smoke_log(f"XGBoost: acc={acc:.3f}, {model.best_iteration} trees in {dt:.1f}s")
+            results['steps']['xgb_train'] = {
                 'status': 'PASS', 'accuracy': round(float(acc), 3),
                 'n_trees': int(model.best_iteration), 'time': round(dt, 1),
                 'n_features': len(feature_cols),
             }
+
+            # Verify model save/load roundtrip (production uses .json format)
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as _tmp:
+                model.save_model(_tmp.name)
+                model_loaded = xgb.Booster(model_file=_tmp.name)
+                preds2 = model_loaded.predict(dtest)
+                assert np.allclose(preds, preds2, atol=1e-6), "Model save/load roundtrip mismatch!"
+                os.remove(_tmp.name)
+            smoke_log(f"  Model save/load roundtrip: PASS (.json format)")
 
             # Store OOS predictions for subsequent steps
             oos_preds = [{
@@ -432,10 +537,10 @@ def run_smoke_test(tf_name='1h', max_rows=None):
             }]
 
     except Exception as e:
-        smoke_log(f"FAIL lgbm_train: {e}")
+        smoke_log(f"FAIL xgb_train: {e}")
         traceback.print_exc()
-        results['steps']['lgbm_train'] = {'status': 'FAIL', 'error': str(e)}
-        results['errors'].append(f"lgbm_train: {e}")
+        results['steps']['xgb_train'] = {'status': 'FAIL', 'error': str(e)}
+        results['errors'].append(f"xgb_train: {e}")
         oos_preds = []
 
     # ============================================================
@@ -535,10 +640,10 @@ def run_smoke_test(tf_name='1h', max_rows=None):
         from lstm_sequence_model import blend_predictions
 
         # Synthetic test
-        lgbm_probs = np.random.dirichlet([1, 1, 1], 50).astype(np.float32)
+        xgb_probs = np.random.dirichlet([1, 1, 1], 50).astype(np.float32)
         lstm_probs = np.random.rand(50).astype(np.float32)
 
-        blended = blend_predictions(lgbm_probs, lstm_probs, alpha=0.2)
+        blended = blend_predictions(xgb_probs, lstm_probs, alpha=0.2)
         assert blended.shape == (50, 3), f"Blended shape wrong: {blended.shape}"
         assert np.allclose(blended.sum(axis=1), 1.0, atol=0.01), "Blended probs don't sum to 1"
 

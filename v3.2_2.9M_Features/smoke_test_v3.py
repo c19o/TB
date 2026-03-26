@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-smoke_test_v3.py — V3.0 LightGBM Pipeline End-to-End Smoke Test
-=================================================================
-Validates ALL plumbing: imports, file formats, data flow, LightGBM train/infer,
+smoke_test_v3.py — V3.3 XGBoost Pipeline End-to-End Smoke Test
+================================================================
+Validates ALL plumbing: imports, file formats, data flow, XGBoost train/infer,
 co-occurrence filter, Optuna TPE, and meta-labeling in ~3-5 minutes on an
 i9-13900K + RTX 3090.
 
@@ -202,17 +202,17 @@ def step_co_occurrence_filter(sparse_mat):
 
 
 # ==============================================================
-# STEP 4: LightGBM Mini-Train
+# STEP 4: XGBoost Mini-Train
 # ==============================================================
-def step_lgbm_mini_train(df, filtered_sparse, tmp_dir):
-    header(4, "LIGHTGBM MINI-TRAIN — 100 trees, 3-class, save/load/predict")
+def step_xgb_mini_train(df, filtered_sparse, tmp_dir):
+    header(4, "XGBOOST MINI-TRAIN — 100 trees, 3-class, save/load/predict")
     import numpy as np
     import pandas as pd
     from scipy import sparse
-    import lightgbm as lgb
+    import xgboost as xgb
 
     if df is None:
-        result("step4_lgbm", False, "No parquet data loaded — skipped")
+        result("step4_xgb", False, "No parquet data loaded — skipped")
         return None
 
     try:
@@ -264,71 +264,55 @@ def step_lgbm_mini_train(df, filtered_sparse, tmp_dir):
         y_train, y_test = y[:split], y[split:]
         print(f"  Train: {X_train.shape[0]}, Test: {X_test.shape[0]}")
 
-        # ── V3 LightGBM params from config.py (100 trees for smoke test) ──
-        try:
-            from config import V3_LGBM_PARAMS
-            params = V3_LGBM_PARAMS.copy()
-        except ImportError:
-            params = {
-                "objective": "multiclass",
-                "num_class": 3,
-                "metric": "multi_logloss",
-                "boosting_type": "gbdt",
-                "device": "cpu",
-                "force_col_wise": True,
-                "max_bin": 15,
-                "num_threads": -1,
-                "is_enable_sparse": True,
-                "min_data_in_leaf": 3,
-                "min_gain_to_split": 2.0,
-                "lambda_l1": 0.5,
-                "lambda_l2": 3.0,
-                "feature_fraction": 0.10,
-                "feature_fraction_bynode": 0.5,
-                "bagging_fraction": 0.8,
-                "bagging_freq": 1,
-                "num_leaves": 63,
-                "learning_rate": 0.03,
-                "verbosity": -1,
-            }
+        # ── V3 XGBoost params from config.py (100 trees for smoke test) ──
+        from config import V3_XGBM_PARAMS
+        params = V3_XGBM_PARAMS.copy()
 
-        dtrain = lgb.Dataset(X_train, label=y_train, free_raw_data=False)
-        dtest = lgb.Dataset(X_test, label=y_test, reference=dtrain, free_raw_data=False)
+        # Feature names for all columns (base + sparse)
+        n_base = len(feature_cols)
+        n_sparse = X_all.shape[1] - n_base
+        all_feature_names = feature_cols + [f'cross_{i}' for i in range(n_sparse)]
 
-        print(f"  Training LightGBM (100 rounds, {X_all.shape[1]:,} features)...")
+        dtrain = xgb.DMatrix(X_train, label=y_train,
+                              feature_names=all_feature_names, nthread=-1)
+        dtest = xgb.DMatrix(X_test, label=y_test,
+                             feature_names=all_feature_names, nthread=-1)
+
+        print(f"  Training XGBoost (100 rounds, {X_all.shape[1]:,} features)...")
         t0 = time.time()
-        model = lgb.train(
+        model = xgb.train(
             params, dtrain, num_boost_round=100,
-            valid_sets=[dtest], valid_names=['test'],
-            callbacks=[lgb.early_stopping(20, verbose=False), lgb.log_evaluation(0)]
+            evals=[(dtest, 'test')],
+            early_stopping_rounds=20,
+            verbose_eval=0,
         )
         train_time = time.time() - t0
-        result("lgbm_train", True, f"Trained in {train_time:.1f}s, best_iter={model.best_iteration}")
+        result("xgb_train", True, f"Trained in {train_time:.1f}s, best_iter={model.best_iteration}")
 
-        # ── Save model ──
-        model_path = os.path.join(tmp_dir, "smoke_model_1d.lightgbm")
+        # ── Save model (.json format — matches production) ──
+        model_path = os.path.join(tmp_dir, "smoke_model_1d.json")
         model.save_model(model_path)
         model_size = os.path.getsize(model_path)
-        result("lgbm_save", True, f"Saved to {model_path} ({model_size/1024:.1f} KB)")
+        result("xgb_save", True, f"Saved to {model_path} ({model_size/1024:.1f} KB)")
 
         # ── Load model back ──
-        model_loaded = lgb.Booster(model_file=model_path)
-        result("lgbm_load", True, "Model loaded from file")
+        model_loaded = xgb.Booster(model_file=model_path)
+        result("xgb_load", True, "Model loaded from file (.json)")
 
         # ── Predict on test set ──
-        y_pred_probs = model_loaded.predict(X_test)
+        y_pred_probs = model_loaded.predict(dtest)
         y_pred = np.argmax(y_pred_probs, axis=1)
 
         # Verify 3-class output shape
         assert y_pred_probs.shape == (X_test.shape[0], 3), \
             f"Expected shape ({X_test.shape[0]}, 3), got {y_pred_probs.shape}"
-        result("lgbm_predict_shape", True,
+        result("xgb_predict_shape", True,
                f"Predictions: {y_pred_probs.shape} (3-class confirmed)")
 
         # Accuracy
         from sklearn.metrics import accuracy_score
         acc = accuracy_score(y_test, y_pred)
-        result("lgbm_accuracy", True, f"Test accuracy: {acc:.4f} (random baseline ~0.33)")
+        result("xgb_accuracy", True, f"Test accuracy: {acc:.4f} (random baseline ~0.33)")
 
         # ── Save mock OOS predictions as .pkl (matches meta-labeling input format) ──
         oos_preds = [{
@@ -340,14 +324,14 @@ def step_lgbm_mini_train(df, filtered_sparse, tmp_dir):
         oos_path = os.path.join(tmp_dir, "cpcv_oos_predictions_1d.pkl")
         with open(oos_path, 'wb') as f:
             pickle.dump(oos_preds, f)
-        result("lgbm_save_oos", True, f"OOS predictions saved: {oos_path}")
+        result("xgb_save_oos", True, f"OOS predictions saved: {oos_path}")
 
-        result("step4_lgbm", True,
+        result("step4_xgb", True,
                f"train={train_time:.1f}s, acc={acc:.4f}, shape={y_pred_probs.shape}")
         return oos_preds, y_pred_probs
 
     except Exception as e:
-        result("step4_lgbm", False, f"{type(e).__name__}: {e}")
+        result("step4_xgb", False, f"{type(e).__name__}: {e}")
         traceback.print_exc()
         return None, None
 
@@ -529,7 +513,7 @@ def step_meta_labeling_test(oos_preds, tmp_dir):
 def print_summary():
     total_time = time.time() - START
     print(f"\n{'='*70}")
-    print(f"  SMOKE TEST SUMMARY — V3.0 LightGBM Pipeline")
+    print(f"  SMOKE TEST SUMMARY — V3.3 XGBoost Pipeline")
     print(f"{'='*70}")
 
     # Group by step
@@ -537,7 +521,7 @@ def print_summary():
         ("Step 1: Imports",        [k for k in RESULTS if k.startswith("step1") or k.startswith("import_")]),
         ("Step 2: Feature Load",   [k for k in RESULTS if k.startswith("step2") or k.startswith("load_")]),
         ("Step 3: Co-occurrence",  [k for k in RESULTS if k.startswith("step3") or k.startswith("co_occurrence")]),
-        ("Step 4: LightGBM",      [k for k in RESULTS if k.startswith("step4") or k.startswith("lgbm_")]),
+        ("Step 4: XGBoost",        [k for k in RESULTS if k.startswith("step4") or k.startswith("xgb_")]),
         ("Step 5: Optuna",         [k for k in RESULTS if k.startswith("step5") or k.startswith("optuna_")]),
         ("Step 6: Meta-Labeling",  [k for k in RESULTS if k.startswith("step6") or k.startswith("meta_")]),
     ]
@@ -572,7 +556,7 @@ def print_summary():
     print(f"  TOTAL: {total_pass} passed, {total_fail} failed, {total_time:.1f}s elapsed")
 
     if total_fail == 0:
-        print(f"  ALL CHECKS PASSED — V3.0 pipeline plumbing is healthy")
+        print(f"  ALL CHECKS PASSED — V3.3 XGBoost pipeline plumbing is healthy")
     else:
         print(f"  {total_fail} FAILURES — investigate before proceeding")
     print(f"{'='*70}\n")
@@ -584,7 +568,7 @@ def print_summary():
 # MAIN
 # ==============================================================
 def main():
-    parser = argparse.ArgumentParser(description="V3.0 LightGBM Smoke Test")
+    parser = argparse.ArgumentParser(description="V3.3 XGBoost Smoke Test")
     parser.add_argument('--quick', action='store_true',
                         help='Run in quick/minimal mode (required)')
     args = parser.parse_args()
@@ -595,7 +579,7 @@ def main():
         sys.exit(1)
 
     print(f"{'='*70}")
-    print(f"  V3.0 LIGHTGBM PIPELINE — END-TO-END SMOKE TEST")
+    print(f"  V3.3 XGBOOST PIPELINE — END-TO-END SMOKE TEST")
     print(f"  Directory: {V3_DIR}")
     print(f"  Mode: --quick (minimal, ~3-5 min target)")
     print(f"{'='*70}")
@@ -614,8 +598,8 @@ def main():
         # Step 3: Co-occurrence filter
         filtered_sparse = step_co_occurrence_filter(sparse_mat)
 
-        # Step 4: LightGBM mini-train
-        oos_preds, y_pred_probs = step_lgbm_mini_train(df, filtered_sparse, tmp_dir)
+        # Step 4: XGBoost mini-train
+        oos_preds, y_pred_probs = step_xgb_mini_train(df, filtered_sparse, tmp_dir)
 
         # Step 5: Optuna mini-test
         step_optuna_mini_test(tmp_dir)

@@ -24,24 +24,45 @@ from datetime import datetime
 
 warnings.filterwarnings('ignore')
 
-# GPU acceleration
+# ── CUDA version detection (BEFORE any GPU library imports) ──
+# RAPIDS 25.02 (cuDF, cuML, CuPy-cuda12x) are compiled for CUDA 12.x.
+# On CUDA 13.0+ (driver 580+), ALL RAPIDS GPU operations SEGFAULT.
+# Detect driver version FIRST and skip ALL GPU imports on CUDA 13+.
+_CUDA_MAJOR = 0
 try:
-    import cupy as cp
-    _N_GPUS = cp.cuda.runtime.getDeviceCount()
-    _HAS_GPU = _N_GPUS > 0
-    if _HAS_GPU:
-        _gpu_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
-        print(f"[feature_library] CuPy GPU: {_gpu_name} x{_N_GPUS}")
-except (ImportError, Exception):
+    import subprocess as _sp
+    _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                   capture_output=True, text=True, timeout=5)
+    _drv = int(_nv.stdout.strip().split('.')[0])
+    _CUDA_MAJOR = 13 if _drv >= 580 else 12
+except Exception:
+    _CUDA_MAJOR = 12  # assume CUDA 12 compatible
+
+# GPU acceleration — skip entirely on CUDA 13+ (RAPIDS binary incompat)
+if _CUDA_MAJOR >= 13:
     cp = None
     _HAS_GPU = False
     _N_GPUS = 0
-
-# GPU pinning handled by caller (build_single_asset sets cp.cuda.Device)
+    os.environ['V2_SKIP_GPU'] = '1'  # Signal to sub-modules (knn_feature_engine, etc.)
+    print(f"[feature_library] GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). RAPIDS 25.02 needs CUDA 12.x. Using CPU mode.")
+else:
+    try:
+        import cupy as cp
+        _N_GPUS = cp.cuda.runtime.getDeviceCount()
+        _HAS_GPU = _N_GPUS > 0
+        if _HAS_GPU:
+            _gpu_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
+            print(f"[feature_library] CuPy GPU: {_gpu_name} x{_N_GPUS}")
+    except (ImportError, Exception):
+        cp = None
+        _HAS_GPU = False
+        _N_GPUS = 0
 
 try:
+    if _CUDA_MAJOR >= 13:
+        raise ImportError("CUDA 13+ — all RAPIDS disabled")
     import cudf
-    _HAS_CUDF = _HAS_GPU  # Only use cuDF if GPU is available
+    _HAS_CUDF = _HAS_GPU
     if _HAS_CUDF:
         print(f"[feature_library] cuDF available — GPU DataFrames enabled")
 except ImportError:
@@ -64,6 +85,8 @@ except ImportError:
     def prange(*a): return range(*a)
 
 try:
+    if _CUDA_MAJOR >= 13:
+        raise ImportError("CUDA 13+ driver — cuML disabled (same RAPIDS 25.02 binary compat issue)")
     from cuml.neighbors import KNeighborsClassifier as cuml_KNN
     _HAS_CUML = True
     print(f"[feature_library] cuML KNN available — GPU-accelerated KNN")
@@ -71,6 +94,8 @@ except ImportError:
     _HAS_CUML = False
 
 try:
+    if _CUDA_MAJOR >= 13:
+        raise ImportError("CUDA 13+ — CuPy kernels segfault at runtime")
     from cupyx.scipy.signal import convolve as cp_convolve
     _HAS_CP_CONV = True
     print(f"[feature_library] CuPy convolve available — GPU FFD")
@@ -118,12 +143,16 @@ def _is_gpu(df):
 
 
 def _np(x):
-    """Extract numpy array from pandas/cuDF Series, CuPy array, or numpy array."""
+    """Extract numpy array — universal driver compat (CUDA 12.8 + 13.0)."""
+    if hasattr(x, 'to_pandas'):
+        try:
+            return x.to_pandas().values
+        except Exception:
+            pass
     if hasattr(x, 'to_numpy'):
         try:
             return x.to_numpy()
-        except ValueError:
-            # cuDF 25.02+: "Column must have no nulls" — fill NaN first
+        except (ValueError, Exception):
             return x.to_numpy(dtype='float64', na_value=np.nan)
     if cp is not None and hasattr(x, 'get'):
         return x.get()

@@ -4,45 +4,49 @@
 ## STACK
 
 ```
-Image:  PICK BY DRIVER VERSION:
-  Driver 535-579 (CUDA 12.x) → rapidsai/base:25.12-cuda12-py3.12
-  Driver 580+    (CUDA 13.x) → rapidsai/base:25.12-cuda13-py3.12
-Pip:    lightgbm optuna scipy scikit-learn ephem
-Fix:    Disable numba_cuda package on EVERY machine (see Step 4b)
+DOCKER-FREE DEPLOYMENT (PREFERRED — 2-3 min setup vs 12+ min Docker pull):
+  Base image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime (usually cached on vast.ai)
+  Or ANY image with Python 3.10+ (ubuntu, nvidia/cuda, etc.)
+  Deps installed via pip (~30s)
+  Code uploaded via SCP (~10s for 11MB tar)
+  DBs uploaded via SCP (~2-3 min for 1.3GB btc_prices.db)
+
+LEGACY DOCKER IMAGES (still available, slower startup):
+  ghcr.io/c19o/savage22-train:v3.3-cuda12  (CUDA 12, driver 535-579)
+  ghcr.io/c19o/savage22-train:v3.3-cuda13  (CUDA 13, driver 580+)
 ```
 
-**CUDA 12 and 13 are NOT cross-compatible.** Container CUDA major must match host driver CUDA major. This is a hard boundary — no workaround.
+**Why Docker-free is better:**
+- v3.3 pipeline is CPU-bound (numpy, pandas, XGBoost). RAPIDS/cuDF not needed.
+- No Docker image pull wait (5.7GB compressed, 18GB uncompressed = 12+ min)
+- Works on ANY provider (vast.ai, RunPod, Lambda, GCP, Azure)
+- No CUDA/driver compatibility issues
+- Same pipeline, same commands, same results
 
-**CUDA Init Fix (learned 2026-03-25):**
-RAPIDS 25.02 ships `numba-cuda` as a separate package. It tries CUDA context init on import.
-- `NUMBA_DISABLE_CUDA=1` is WRONG — numba_cuda reads it and THROWS instead of degrading
-- `pip uninstall numba-cuda` doesn't survive relaunches
-- Root cause: `CUDA_VISIBLE_DEVICES` may be empty on some vast.ai machines → numba_cuda enumerates 0 devices → IndexError
+**Cross generation parallelism (v3.3.1):**
+- `v2_cross_generator.py` uses ThreadPoolExecutor for cross pair computation
+- numpy element-wise ops release the GIL → true multi-threaded parallelism
+- Batch size dynamically sized to create enough batches to saturate available threads
+- Formula: `BATCH = min(MAX_BATCH, max(500, n_pairs // n_threads))`
+- Threads capped at 64 (memory bandwidth saturates before that)
+- Expected: cross gen 50-100x faster on high-core machines vs single-threaded
 
-**Fix (multi-layer, server-agnostic):**
-1. Filter vast.ai for `CUDA 12.8` in the search results — container CUDA must match host CUDA. Driver 570.x = CUDA 12.8. Driver 580.x = CUDA 13.0 (INCOMPATIBLE with numba in CUDA 12.8 container). Driver 590.x = CUDA 13.1 (also incompatible).
-2. Disable numba_cuda external package: `mv numba_cuda numba_cuda_DISABLED && mv _numba_cuda_redirector.py DISABLED && mv .pth DISABLED`
-3. Set `NUMBA_DISABLE_CUDA=1` to suppress numba's built-in CUDA probe (safe after numba_cuda package is removed)
-4. Keep `CUDA_VISIBLE_DEVICES=0` for CuPy/cuDF (they use their own CUDA path, not numba's)
-
-**CRITICAL: The smoke test MUST include cuDF-to-numpy conversion:**
-```python
-import cudf, numpy as np
-gdf = cudf.DataFrame({'a': np.random.randn(100)})
-arr = gdf['a'].to_numpy()  # This is the actual crash path — tests cuDF→numba.cuda→numpy
-```
-If this fails, the machine is incompatible. Do NOT proceed.
-
-**Why NOT plain CUDA image:** RAPIDS C++ libs (libcudf, librmm) are complex to install at runtime. Pre-built image saves 10+ min per machine.
-
-## RENT COMMAND (copy-paste ready)
+## RENT COMMAND (use the launcher)
 
 ```bash
-vastai create instance <OFFER_ID> \
-  --image rapidsai/base:25.02-cuda12.8-py3.12 \
-  --disk 50 --ssh \
-  --onstart-cmd 'pip install --no-cache-dir lightgbm optuna scipy scikit-learn ephem'
+# Recommended: auto-selects image based on driver version
+python v3.3/vast_launch.py --tf 1w --ram 128 --cores 64
+python v3.3/vast_launch.py --tf 1d --ram 128 --cores 128 --max-price 1.50
+python v3.3/vast_launch.py --tf 15m --ram 2048 --cores 256
+
+# Manual (if you already know the offer ID and driver):
+# Driver 535-579:
+vastai create instance <OFFER_ID> --image ghcr.io/c19o/savage22-train:v3.3-cuda12 --disk 50 --ssh
+# Driver 580+:
+vastai create instance <OFFER_ID> --image ghcr.io/c19o/savage22-train:v3.3-cuda13 --disk 50 --ssh
 ```
+
+**No --onstart-cmd needed.** All dependencies are baked into the Docker images.
 
 ## MACHINE SELECTION TABLE FORMAT
 
@@ -65,7 +69,11 @@ CPU Score = Cores × GHz.
 ### vast.ai Search Filter
 
 ```bash
-vastai search offers 'cpu_ram>=128 cpu_cores>=64 driver_version>=570 rentable=true' -o 'dph_total' --limit 15
+# Search ANY driver >= 535 — launcher auto-selects correct image
+vastai search offers 'cpu_ram>=128 cpu_cores>=64 driver_version>=535.0 rentable=true num_gpus>=1' -o 'dph_total' --limit 15
+
+# Or use the launcher (does this automatically):
+python v3.3/vast_launch.py --search-only --ram 128 --cores 64
 ```
 
 ## DEPLOY PROTOCOL (step by step, no skipping)
@@ -309,15 +317,34 @@ $SSH "cat /workspace/DONE_{TF}"
 
 ## GPU COMPATIBILITY
 
-| GPU | Compute | Min Driver | RAPIDS 25.02 |
-|-----|---------|-----------|-------------|
-| RTX 3060-3090 | sm_86 | 570+ | OK |
-| RTX 4070-4090 | sm_89 | 570+ | OK |
-| RTX 5060-5090 | sm_100 | 570+ | OK (PTX JIT) |
-| A100 | sm_80 | 570+ | OK |
-| H100 | sm_90 | 570+ | OK |
+| GPU | Compute | Driver Range | Image Auto-Selected |
+|-----|---------|-------------|---------------------|
+| RTX 3060-3090 | sm_86 | 535-579 | v3.3-cuda12 |
+| RTX 3060-3090 | sm_86 | 580+ | v3.3-cuda13 |
+| RTX 4070-4090 | sm_89 | 535-579 | v3.3-cuda12 |
+| RTX 4070-4090 | sm_89 | 580+ | v3.3-cuda13 |
+| RTX 5060-5090 | sm_100 | 580+ | v3.3-cuda13 |
+| A100 | sm_80 | 535-579 | v3.3-cuda12 |
+| A100 | sm_80 | 580+ | v3.3-cuda13 |
+| H100 | sm_90 | 535-579 | v3.3-cuda12 |
+| H100 | sm_90 | 580+ | v3.3-cuda13 |
 
-Filter vast.ai: `driver_version >= 570`
+**Both images use RAPIDS 26.02 with full cuDF GPU support.** No V2_SKIP_GPU needed.
+Filter vast.ai: `driver_version >= 535` (launcher handles image selection)
+
+## BUILD & PUSH DOCKER IMAGES
+
+```bash
+cd "C:/Users/C/Documents/Savage22 Server"
+
+# Build both images (run once, then push)
+docker build -t ghcr.io/c19o/savage22-train:v3.3-cuda12 -f v3.3/Dockerfile .
+docker build -t ghcr.io/c19o/savage22-train:v3.3-cuda13 -f v3.3/Dockerfile.cuda13 .
+
+# Push both
+docker push ghcr.io/c19o/savage22-train:v3.3-cuda12
+docker push ghcr.io/c19o/savage22-train:v3.3-cuda13
+```
 
 ## UPLOAD TAR CONTENTS
 

@@ -55,8 +55,8 @@ except ImportError:
     GPU_ARRAY = False
     print("[CPU] CuPy not available — using NumPy")
 
-import lightgbm as lgb
-print(f"[LightGBM] Loaded LightGBM {lgb.__version__}")
+import xgboost as xgb
+print(f"[XGBoost] Loaded XGBoost {xgb.__version__}")
 
 # ---------------------------------------------------------------------------
 # Paths & constants
@@ -278,11 +278,11 @@ def load_full_history(tf_name):
     # Combine base + crosses into X_all for prediction
     _X_all_is_sparse = False
     if cross_matrix is not None and cross_matrix.shape[0] == X.shape[0]:
-        # Convert base to sparse, preserving NaN (LightGBM treats NaN as missing natively)
+        # Convert base to sparse, preserving NaN (XGBoost treats NaN as missing natively)
         X_base_sparse = sp_sparse.csr_matrix(X)
         X_all = sp_sparse.hstack([X_base_sparse, cross_matrix], format='csr')
         # DO NOT call eliminate_zeros() — it converts explicit 0.0 values into
-        # structural zeros, which LightGBM treats as "missing." 0.0 means "the value
+        # structural zeros, which XGBoost treats as "missing." 0.0 means "the value
         # is zero" (a real signal), not "data is absent." NaN already encodes missing.
         model_features = model_features + cross_cols
         _X_all_is_sparse = True
@@ -298,9 +298,9 @@ def load_full_history(tf_name):
         del cross_matrix
 
     # Load model and predict ALL bars
-    model = lgb.Booster(model_file=model_path)
+    model = xgb.Booster(model_file=model_path)
 
-    raw_preds = model.predict(X)
+    raw_preds = model.predict(xgb.DMatrix(X))
 
     if raw_preds.ndim == 2 and raw_preds.shape[1] == 3:
         pred_class = np.argmax(raw_preds, axis=1)  # 0=SHORT, 1=FLAT, 2=LONG

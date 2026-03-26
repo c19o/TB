@@ -30,17 +30,39 @@ import os, time, argparse, warnings, gc
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from concurrent.futures import ThreadPoolExecutor
+from numba import njit, prange
 
 warnings.filterwarnings('ignore')
 
 V2_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ── GPU setup ──
+# ── CUDA version detection (BEFORE any GPU library imports) ──
+# RAPIDS 25.02 (CuPy-cuda12x) is compiled for CUDA 12.x.
+# On CUDA 13.0+ (driver 580+), CuPy runtime operations SEGFAULT.
+# Detect driver version FIRST and skip CuPy import on CUDA 13+.
+_CUDA_MAJOR = 12
 try:
-    import cupy as cp
-    GPU = True
-except ImportError:
+    import subprocess as _sp
+    _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                   capture_output=True, text=True, timeout=5)
+    _drv = int(_nv.stdout.strip().split('.')[0])
+    _CUDA_MAJOR = 13 if _drv >= 580 else 12
+except Exception:
+    pass
+
+# ── GPU setup (guarded by CUDA version) ──
+if _CUDA_MAJOR >= 13:
+    cp = None
     GPU = False
+    print(f"[v2_cross_generator] GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy would SEGFAULT. Using CPU mode.")
+else:
+    try:
+        import cupy as cp
+        GPU = True
+    except ImportError:
+        cp = None
+        GPU = False
 
 
 def log(msg):
@@ -66,15 +88,48 @@ def _get_right_chunk():
             ram_gb = 64.0  # conservative default
 
     if ram_gb >= 512:
-        return 2000   # cloud: 512GB+ RAM, process 2000 contexts at a time
+        RIGHT_CHUNK = 2000   # cloud: 512GB+ RAM, process 2000 contexts at a time
     elif ram_gb >= 256:
-        return 1000   # cloud: 256GB RAM
+        RIGHT_CHUNK = 1000   # cloud: 256GB RAM
     elif ram_gb >= 128:
-        return 500    # mid-range
+        RIGHT_CHUNK = 500    # mid-range
     elif ram_gb >= 64:
-        return 200    # local 64GB
+        RIGHT_CHUNK = 200    # local 64GB
     else:
-        return 100    # low RAM
+        RIGHT_CHUNK = 100    # low RAM
+
+    # Scale down for high-row-count TFs to prevent memory accumulation
+    # n_rows is not available here, so we check via environment variable or default
+    _env_nrows = os.environ.get('V2_NROWS')
+    if _env_nrows:
+        _nrows = int(_env_nrows)
+        RIGHT_CHUNK = max(200, int(RIGHT_CHUNK * min(1.0, 50000 / _nrows)))
+
+    return RIGHT_CHUNK
+
+
+def _get_cross_batch_size(n_rows):
+    """Auto-size batch for vectorized cross computation. Targets 25% of available RAM."""
+    try:
+        import psutil
+        avail = psutil.virtual_memory().available
+    except (ImportError, Exception):
+        try:
+            with open('/proc/meminfo') as f:
+                for line in f:
+                    if 'MemAvailable' in line:
+                        avail = int(line.split()[1]) * 1024
+                        break
+                else:
+                    avail = 16 * 1024**3
+        except Exception:
+            avail = 16 * 1024**3
+    target = int(avail * 0.25)
+    # Each pair: 2 column reads (N×4B) + 1 result (N×4B) = 12N bytes
+    bytes_per_pair = n_rows * 12
+    batch = max(500, min(50000, target // max(1, bytes_per_pair)))
+    return batch
+
 
 # Env var override for orchestrator OOM retry
 _env_chunk = os.environ.get('V2_RIGHT_CHUNK')
@@ -91,9 +146,10 @@ MIN_CO_OCCURRENCE = int(_env_co_occur) if _env_co_occur else 8
 
 # ── GPU VRAM-adaptive batch sizing ──
 def _get_gpu_vram_gb(gpu_id=0):
-    """Detect GPU VRAM in GB."""
+    """Detect GPU VRAM in GB. Returns 0 on CUDA 13+ (GPU disabled)."""
+    if _CUDA_MAJOR >= 13 or cp is None:
+        return 0.0
     try:
-        import cupy as cp
         mem = cp.cuda.Device(gpu_id).mem_info  # returns (free, total)
         return mem[1] / (1024**3)  # total VRAM in GB
     except Exception:
@@ -321,9 +377,9 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
         r_arrays_chunk = right_arrays[rc_start:rc_end]
         right_mat_chunk = np.column_stack(r_arrays_chunk)  # (N, <=RIGHT_CHUNK)
 
-        # Skip GPU for large row counts (>100K) — guaranteed OOM on any GPU.
-        # Also skip if V2_SKIP_GPU=1 env var is set.
-        _skip_gpu = os.environ.get('V2_SKIP_GPU') == '1' or N > 100000
+        # GPU now uses sparse matmul pre-filter — no 3D tensor, works for ANY row count.
+        # Skip if: CUDA 13+ detected, env var override, or CuPy unavailable.
+        _skip_gpu = _CUDA_MAJOR >= 13 or os.environ.get('V2_SKIP_GPU') == '1'
         if GPU and not _skip_gpu:
             try:
                 c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
@@ -367,77 +423,140 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                      gpu_id, min_nonzero, max_features, feats_so_far,
                      col_offset=0):
     """
-    GPU cross multiply — returns COO triplets directly, never stores dense columns.
-    Peak memory = tensor (N × BATCH × n_right) + COO triplets (sparse, tiny).
+    GPU cross multiply with sparse matmul pre-filter.
+    Step 1: Sparse matmul on CPU for co-occurrence (instant, tiny output).
+    Step 2: GPU element-wise multiply ONLY for valid pairs.
+    No 3D tensor — works for ANY row count including 217K+ (15m).
     """
     names = []
     rows_list = []
     cols_list = []
     data_list = []
-    n_right = right_mat.shape[1]
-    n_bars = left_mat.shape[0]
     col_idx = 0
 
-    gpu_vram_gb = _get_gpu_vram_gb(gpu_id=gpu_id)
-    BATCH = _get_optimal_batch(n_bars, n_right, gpu_vram_gb, gpu_id=gpu_id)
-    log(f"  GPU VRAM: {gpu_vram_gb:.1f} GB | n_bars={n_bars} n_right={n_right} -> BATCH={BATCH}")
+    # ── Step 1: Sparse matmul pre-filter (CPU — instant, output is tiny) ──
+    left_sp = sparse.csc_matrix(left_mat)
+    if left_sp.indices.dtype != np.int64:
+        left_sp.indices = left_sp.indices.astype(np.int64)
+        left_sp.indptr = left_sp.indptr.astype(np.int64)
+    right_sp = sparse.csc_matrix(right_mat)
+    if right_sp.indices.dtype != np.int64:
+        right_sp.indices = right_sp.indices.astype(np.int64)
+        right_sp.indptr = right_sp.indptr.astype(np.int64)
+    co_occur = (left_sp.T @ right_sp).toarray()  # (n_left, n_right) — small
+    valid_pairs = np.argwhere(co_occur >= min_nonzero)
+    n_valid = len(valid_pairs)
 
+    if n_valid == 0:
+        return names, rows_list, cols_list, data_list, col_idx
+
+    gpu_vram_gb = _get_gpu_vram_gb(gpu_id=gpu_id)
+    log(f"  GPU VRAM: {gpu_vram_gb:.1f} GB | {n_valid} valid pairs (pre-filtered from {left_mat.shape[1]}×{right_mat.shape[1]})")
+
+    # Pre-build all feature names (preserves exact order)
+    all_names = [f'{prefix}_{left_names[int(p[0])][:40]}_{right_names[int(p[1])][:40]}'
+                 for p in valid_pairs]
+
+    # ── Step 2: Vectorized GPU batch multiply ──
     _dev = 0 if os.environ.get('CUDA_VISIBLE_DEVICES') else gpu_id
     cp.cuda.Device(_dev).use()
+    left_gpu = cp.asarray(np.ascontiguousarray(left_mat))
     right_gpu = cp.asarray(np.ascontiguousarray(right_mat))
 
-    for b_start in range(0, left_mat.shape[1], BATCH):
-        b_end = min(b_start + BATCH, left_mat.shape[1])
-        left_batch = cp.asarray(np.ascontiguousarray(left_mat[:, b_start:b_end]))
+    N = left_mat.shape[0]
+    avail_vram = int(gpu_vram_gb * 0.5 * 1024**3)
+    bytes_per_pair = N * 12
+    BATCH = max(100, min(50000, avail_vram // max(1, bytes_per_pair)))
 
-        # GPU outer product: (N, batch, 1) * (N, 1, n_right) = (N, batch, n_right)
-        crosses = left_batch[:, :, None] * right_gpu[:, None, :]
+    for b_start in range(0, n_valid, BATCH):
+        b_end = min(b_start + BATCH, n_valid)
+        chunk = valid_pairs[b_start:b_end]
 
-        # Sum along rows on GPU to check co-occurrence threshold
-        sums = cp.sum(crosses, axis=0)  # (batch, n_right)
+        # Vectorized batch multiply on GPU
+        left_cols = left_gpu[:, chunk[:, 0]]
+        right_cols = right_gpu[:, chunk[:, 1]]
+        crosses_gpu = left_cols * right_cols
 
-        # Find valid (i, j) pairs on GPU — avoids transferring entire tensor
-        valid_ij = cp.argwhere(sums >= min_nonzero)  # (K, 2)
-
-        if len(valid_ij) > 0:
-            valid_ij_cpu = cp.asnumpy(valid_ij)
-            for idx in range(len(valid_ij_cpu)):
-                i, j = int(valid_ij_cpu[idx, 0]), int(valid_ij_cpu[idx, 1])
-                ln = left_names[b_start + i]
-                rn = right_names[j]
-                fname = f'{prefix}_{ln[:40]}_{rn[:40]}'
-
-                # Extract single column from GPU, get nonzeros directly
-                col_gpu = crosses[:, i, j]
-                nz_mask = col_gpu != 0
-                nz_rows = cp.asnumpy(cp.flatnonzero(nz_mask))
-                nz_vals = cp.asnumpy(col_gpu[nz_mask]).astype(np.float32)
-
-                if len(nz_rows) > 0:
-                    names.append(fname)
-                    rows_list.append(nz_rows)
-                    cols_list.append(np.full(len(nz_rows), col_offset + col_idx, dtype=np.int64))
-                    data_list.append(nz_vals)
-                    col_idx += 1
-
-                if max_features and (feats_so_far + col_idx) >= max_features:
-                    break
-
-        del crosses, left_batch, sums, valid_ij
+        # Transfer to CPU for nonzero extraction
+        crosses = cp.asnumpy(crosses_gpu)
+        del crosses_gpu, left_cols, right_cols
         cp.get_default_memory_pool().free_all_blocks()
+
+        nz_rows_all, nz_cols_all = np.nonzero(crosses)
+
+        if len(nz_rows_all) > 0:
+            unique_cols, col_starts = np.unique(nz_cols_all, return_index=True)
+            col_ends = np.append(col_starts[1:], len(nz_cols_all))
+
+            for k in range(len(unique_cols)):
+                c = int(unique_cols[k])
+                s, e = int(col_starts[k]), int(col_ends[k])
+                nz = nz_rows_all[s:e]
+                names.append(all_names[b_start + c])
+                rows_list.append(nz)
+                cols_list.append(np.full(len(nz), col_offset + col_idx, dtype=np.int64))
+                data_list.append(crosses[nz, c].astype(np.float32))
+                col_idx += 1
 
         if max_features and (feats_so_far + col_idx) >= max_features:
             break
 
-    del right_gpu
+    del left_gpu, right_gpu
     cp.get_default_memory_pool().free_all_blocks()
     return names, rows_list, cols_list, data_list, col_idx
+
+
+@njit(parallel=True, cache=True)
+def _parallel_cross_multiply(left, right, out):
+    n_rows, n_pairs = left.shape
+    for j in prange(n_pairs):
+        for i in range(n_rows):
+            out[i, j] = left[i, j] * right[i, j]
+
+
+def _process_cross_block(left_mat, right_mat, valid_pairs, all_names,
+                         b_start, b_end, col_offset_base):
+    """
+    Process a block of cross pairs. Thread-safe — numpy element-wise ops release GIL.
+    Returns (names, rows_list, cols_list, data_list) for this block.
+    """
+    chunk = valid_pairs[b_start:b_end]
+    left_cols = np.ascontiguousarray(left_mat[:, chunk[:, 0]])     # (N, chunk_size)
+    right_cols = np.ascontiguousarray(right_mat[:, chunk[:, 1]])   # (N, chunk_size)
+    crosses = np.empty_like(left_cols)
+    _parallel_cross_multiply(left_cols, right_cols, crosses)       # Numba parallel prange
+
+    nz_rows_all, nz_cols_all = np.nonzero(crosses)
+
+    names = []
+    rows_list = []
+    cols_list = []
+    data_list = []
+
+    if len(nz_rows_all) > 0:
+        unique_cols, col_starts = np.unique(nz_cols_all, return_index=True)
+        col_ends = np.append(col_starts[1:], len(nz_cols_all))
+
+        for k in range(len(unique_cols)):
+            c = int(unique_cols[k])
+            s, e = int(col_starts[k]), int(col_ends[k])
+            nz = nz_rows_all[s:e]
+            names.append(all_names[b_start + c])
+            rows_list.append(nz)
+            # col indices assigned later during merge to ensure correct global ordering
+            data_list.append(crosses[nz, c].astype(np.float32))
+
+    return names, rows_list, data_list
 
 
 def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                      min_nonzero, max_features, feats_so_far, col_offset=0):
     """
-    CPU cross multiply — returns COO triplets directly, never stores dense columns.
+    CPU cross multiply with sparse matmul pre-filter + MULTI-THREADED execution.
+    Step 1: Compute ALL co-occurrence counts via sparse matmul (instant).
+    Step 2: Only compute actual crosses for valid pairs (skip ~92% of work).
+    Step 3: Parallel thread execution — numpy element-wise ops release GIL.
+    Returns COO triplets directly, never stores dense columns.
     """
     names = []
     rows_list = []
@@ -445,24 +564,91 @@ def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     data_list = []
     col_idx = 0
 
-    for i in range(left_mat.shape[1]):
-        la = left_mat[:, i]
-        ln = left_names[i]
-        for j in range(right_mat.shape[1]):
-            ra = right_mat[:, j]
-            cross = la * ra
-            if cross.sum() >= min_nonzero:
-                rn = right_names[j]
-                fname = f'{prefix}_{ln[:40]}_{rn[:40]}'
-                nz = np.nonzero(cross)[0]
-                if len(nz) > 0:
-                    names.append(fname)
-                    rows_list.append(nz)
-                    cols_list.append(np.full(len(nz), col_offset + col_idx, dtype=np.int64))
-                    data_list.append(cross[nz].astype(np.float32))
-                    col_idx += 1
+    # ── Sparse matmul pre-filter: compute ALL co-occurrence counts at once ──
+    left_sp = sparse.csc_matrix(left_mat)
+    if left_sp.indices.dtype != np.int64:
+        left_sp.indices = left_sp.indices.astype(np.int64)
+        left_sp.indptr = left_sp.indptr.astype(np.int64)
+    right_sp = sparse.csc_matrix(right_mat)
+    if right_sp.indices.dtype != np.int64:
+        right_sp.indices = right_sp.indices.astype(np.int64)
+        right_sp.indptr = right_sp.indptr.astype(np.int64)
+    co_occur = (left_sp.T @ right_sp).toarray()  # small: (n_left, n_right)
+
+    valid_pairs = np.argwhere(co_occur >= min_nonzero)
+
+    if len(valid_pairs) == 0:
+        return names, rows_list, cols_list, data_list, col_idx
+
+    all_names = [f'{prefix}_{left_names[int(p[0])][:40]}_{right_names[int(p[1])][:40]}'
+                 for p in valid_pairs]
+
+    # ── Multi-threaded batch cross multiply ──
+    # numpy element-wise * releases the GIL, so threads give true parallelism.
+    # Cap at 64 threads — memory bandwidth saturates before that on most machines.
+    N = left_mat.shape[0]
+    n_valid = len(valid_pairs)
+
+    # Determine thread count first, then size batches to fill threads
+    try:
+        n_cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        n_cpus = os.cpu_count() or 1
+    n_threads = min(64, n_cpus)
+
+    # Size batches so we get at least n_threads batches (saturate all threads)
+    # But don't make batches too small (< 500 pairs) — overhead dominates
+    BATCH_MAX = _get_cross_batch_size(N)
+    BATCH = min(BATCH_MAX, max(500, n_valid // n_threads))
+    n_batches = (n_valid + BATCH - 1) // BATCH
+    n_threads = min(n_threads, n_batches)
+
+    if n_threads <= 1 or n_batches <= 1:
+        # Single-threaded fast path (small cross, no overhead)
+        for b_start in range(0, n_valid, BATCH):
+            b_end = min(b_start + BATCH, n_valid)
+            blk_names, blk_rows, blk_data = _process_cross_block(
+                left_mat, right_mat, valid_pairs, all_names, b_start, b_end, 0)
+            for i in range(len(blk_names)):
+                names.append(blk_names[i])
+                rows_list.append(blk_rows[i])
+                cols_list.append(np.full(len(blk_rows[i]), col_offset + col_idx, dtype=np.int64))
+                data_list.append(blk_data[i])
+                col_idx += 1
+            if max_features and (feats_so_far + col_idx) >= max_features:
+                break
+        return names, rows_list, cols_list, data_list, col_idx
+
+    # ── Multi-threaded execution ──
+    batch_ranges = []
+    for b_start in range(0, n_valid, BATCH):
+        b_end = min(b_start + BATCH, n_valid)
+        batch_ranges.append((b_start, b_end))
+
+    log(f"    Parallel cross: {n_valid} pairs, {len(batch_ranges)} batches, {n_threads} threads")
+
+    results = [None] * len(batch_ranges)
+    with ThreadPoolExecutor(max_workers=n_threads) as executor:
+        futures = {}
+        for idx, (b_start, b_end) in enumerate(batch_ranges):
+            f = executor.submit(_process_cross_block,
+                                left_mat, right_mat, valid_pairs, all_names,
+                                b_start, b_end, 0)
+            futures[f] = idx
+        for f in futures:
+            results[futures[f]] = f.result()
+
+    # Merge results in order (preserves deterministic feature ordering)
+    for blk_names, blk_rows, blk_data in results:
+        for i in range(len(blk_names)):
+            names.append(blk_names[i])
+            rows_list.append(blk_rows[i])
+            cols_list.append(np.full(len(blk_rows[i]), col_offset + col_idx, dtype=np.int64))
+            data_list.append(blk_data[i])
+            col_idx += 1
         if max_features and (feats_so_far + col_idx) >= max_features:
             break
+
     return names, rows_list, cols_list, data_list, col_idx
 
 
@@ -925,6 +1111,16 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         else:
             cross_names = [str(n) for n in cross_names]
         atomic_save_npz(sparse_mat, npz_path)
+        # FIX 26: Verify NPZ integrity immediately after save
+        try:
+            _verify = sparse.load_npz(npz_path)
+            assert _verify.shape == sparse_mat.shape, f"NPZ verify failed: shape {_verify.shape} != {sparse_mat.shape}"
+            del _verify
+            log(f"  NPZ verified: {npz_path} ({os.path.getsize(npz_path)/1e6:.1f} MB)")
+        except Exception as e:
+            log(f"  NPZ CORRUPT: {e} — deleting and retrying")
+            os.remove(npz_path)
+            raise
         atomic_save_json(cross_names, names_path)
 
         size_mb = os.path.getsize(npz_path) / 1e6

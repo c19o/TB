@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
+import xgboost as xgb
 import sqlite3
 from collections import defaultdict
 
@@ -308,7 +308,7 @@ class MultiTFPredictor:
             feat_path_pruned = f'{DB_DIR}/features_{tf}_pruned.json'
             feat_path = feat_path_all if os.path.exists(feat_path_all) else feat_path_pruned
             if os.path.exists(model_path) and os.path.exists(feat_path):
-                self.models[tf] = lgb.Booster(model_file=model_path)
+                self.models[tf] = xgb.Booster(model_file=model_path)
                 with open(feat_path) as f:
                     self.features[tf] = json.load(f)
                 print(f"  Loaded {tf} model: {len(self.features[tf])} features from {os.path.basename(feat_path)}")
@@ -324,7 +324,7 @@ class MultiTFPredictor:
         feat_names = self.features[tf]
         values = [float(feature_dict.get(f, float('nan'))) for f in feat_names]
         X = np.array([values], dtype=np.float32)
-        preds = self.models[tf].predict(X)
+        preds = self.models[tf].predict(xgb.DMatrix(X, feature_names=feat_names))
 
         if preds.ndim == 2:
             # 3-class multiclass: [P(short), P(flat), P(long)]
@@ -372,7 +372,7 @@ def backtest_portfolio():
         if not os.path.exists(model_path):
             continue
 
-        model = lgb.Booster(model_file=model_path)
+        model = xgb.Booster(model_file=model_path)
         with open(feat_path) as f:
             feat_names = json.load(f)
 
@@ -403,14 +403,14 @@ def backtest_portfolio():
         X = df_test[available_feats].values.astype(np.float32)
         X = np.where(np.isinf(X), np.nan, X)
 
-        # Pad missing features with NaN (LightGBM treats as missing)
+        # Pad missing features with NaN (XGBoost treats as missing)
         full_X = np.full((len(X), len(feat_names)), np.nan, dtype=np.float32)
         for i, fn in enumerate(feat_names):
             if fn in available_feats:
                 col_idx = available_feats.index(fn)
                 full_X[:, i] = X[:, col_idx]
 
-        probs = model.predict(full_X)
+        probs = model.predict(xgb.DMatrix(full_X, feature_names=feat_names))
 
         trade_count = 0
         for i in range(len(probs)):

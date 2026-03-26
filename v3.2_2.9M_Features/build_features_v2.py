@@ -22,10 +22,28 @@ from concurrent.futures import ProcessPoolExecutor
 
 warnings.filterwarnings('ignore')
 
+# ── CUDA 13 detection (must run BEFORE any CuPy GPU calls) ──
+# feature_library.py sets V2_SKIP_GPU=1 on CUDA 13+, but it's imported lazily
+# inside build_base_features(). GPU ops in _gpu_gc() and build_single_asset()
+# run BEFORE that import, so we need early detection here too.
+if os.environ.get('V2_SKIP_GPU') != '1':
+    try:
+        import subprocess as _sp
+        _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                       capture_output=True, text=True, timeout=5)
+        _drv = int(_nv.stdout.strip().split('.')[0])
+        if _drv >= 580:  # CUDA 13.0+ — RAPIDS/CuPy GPU ops segfault
+            os.environ['V2_SKIP_GPU'] = '1'
+            print(f"[build_features_v2] GPU DISABLED — driver {_drv} (CUDA 13+). Using CPU mode.")
+    except Exception:
+        pass  # nvidia-smi not available or parse error — assume CUDA 12 compatible
+
 # Force CuPy memory pool cleanup helper
 def _gpu_gc():
     """Release GPU memory pool + Python GC."""
     gc.collect()
+    if os.environ.get('V2_SKIP_GPU') == '1':
+        return  # CUDA 13+ — CuPy GPU ops segfault, skip entirely
     try:
         import cupy as cp
         cp.get_default_memory_pool().free_all_blocks()
@@ -92,15 +110,17 @@ def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=Fa
     # CUDA_VISIBLE_DEVICES is set per-subprocess by cloud runner (round-robin).
     # It remaps so the subprocess always sees its assigned GPU as device 0.
     # When called in-process (mini_train), gpu_id param is used directly.
-    if os.environ.get('CUDA_VISIBLE_DEVICES'):
-        _gpu_id = 0  # remapped by env var
-    else:
-        _gpu_id = gpu_id  # direct assignment
-    try:
-        import cupy as cp
-        cp.cuda.Device(_gpu_id).use()
-    except Exception:
-        pass
+    # CUDA 13+ (driver 580+): skip GPU device selection — RAPIDS/CuPy segfault.
+    if os.environ.get('V2_SKIP_GPU') != '1':
+        if os.environ.get('CUDA_VISIBLE_DEVICES'):
+            _gpu_id = 0  # remapped by env var
+        else:
+            _gpu_id = gpu_id  # direct assignment
+        try:
+            import cupy as cp
+            cp.cuda.Device(_gpu_id).use()
+        except Exception:
+            pass
 
     t0 = time.time()
     log(f"\n{'='*60}")

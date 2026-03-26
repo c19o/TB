@@ -22,15 +22,35 @@ import numpy as np
 import time as _time
 from numpy.lib.stride_tricks import sliding_window_view
 
-# GPU backend
-try:
-    import cupy as cp
-    GPU_KNN = True
-    print(f"[KNN] CuPy GPU detected — GPU-accelerated KNN")
-except ImportError:
+# GPU backend — respects V2_SKIP_GPU env var (set by feature_library.py on CUDA 13+)
+# and does its own driver version check as a safety net.
+def _cuda_major():
+    """Detect CUDA major version from driver. Returns 13 if driver >= 580, else 12."""
+    try:
+        import subprocess as _sp
+        _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                       capture_output=True, text=True, timeout=5)
+        _drv = int(_nv.stdout.strip().split('.')[0])
+        return 13 if _drv >= 580 else 12
+    except Exception:
+        return 12
+
+_skip_gpu = os.environ.get('V2_SKIP_GPU', '') == '1' or _cuda_major() >= 13
+
+if _skip_gpu:
     cp = None
     GPU_KNN = False
-    print(f"[KNN] CuPy not available — CPU fallback")
+    _reason = "V2_SKIP_GPU=1" if os.environ.get('V2_SKIP_GPU') == '1' else "CUDA 13+ driver (580+)"
+    print(f"[KNN] GPU disabled — {_reason}. CuPy/RAPIDS segfault on CUDA 13. Using CPU fallback.")
+else:
+    try:
+        import cupy as cp
+        GPU_KNN = True
+        print(f"[KNN] CuPy GPU detected — GPU-accelerated KNN")
+    except ImportError:
+        cp = None
+        GPU_KNN = False
+        print(f"[KNN] CuPy not available — CPU fallback")
 
 # Per-TF config
 KNN_TF_CONFIG = {

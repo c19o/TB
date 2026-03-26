@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-exhaustive_optimizer.py — Optuna TPE Optimizer (LightGBM)
+exhaustive_optimizer.py — Optuna TPE Optimizer (XGBoost)
 ==========================================================
 Replaces exhaustive grid search with Optuna's TPE sampler for intelligent
 Bayesian optimization across 6 timeframes (5m, 15m, 1H, 4H, 1D, 1W).
 
 Uses RTX 3090 GPU via CuPy (falls back to NumPy) for vectorized simulation.
-LightGBM replaces XGBoost for model inference.
+XGBoost for model inference.
 
 Usage:
     python exhaustive_optimizer.py --n-trials 200
@@ -32,28 +32,56 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # ---------------------------------------------------------------------------
 # GPU backend: try CuPy, fall back to NumPy
+# Respects V2_SKIP_GPU env var and detects CUDA 13+ (driver 580+) which
+# causes CuPy segfaults with RAPIDS 25.02 containers.
 # ---------------------------------------------------------------------------
-try:
-    import cupy as cp
-    xp = cp
-    GPU_ARRAY = True
-    print(f"[GPU] CuPy + CUDA detected — RTX 3090 24GB — OPTUNA OPTIMIZER")
-except ImportError:
-    xp = np
-    GPU_ARRAY = False
-    print("[CPU] CuPy not available — using NumPy (slower)")
+GPU_ARRAY = False
+cp = None
 
-import lightgbm as lgb
+def _detect_cuda_major():
+    """Detect CUDA major version from nvidia-smi driver version."""
+    try:
+        import subprocess as _sp
+        _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                       capture_output=True, text=True, timeout=5)
+        _drv = int(_nv.stdout.strip().split('.')[0])
+        return 13 if _drv >= 580 else 12
+    except Exception:
+        return 12  # assume CUDA 12 compatible
+
+_skip_gpu = os.environ.get('V2_SKIP_GPU') == '1'
+if not _skip_gpu and _detect_cuda_major() >= 13:
+    _skip_gpu = True
+    os.environ['V2_SKIP_GPU'] = '1'
+    print("[GPU] CUDA 13+ driver (580+) detected — CuPy disabled (segfault risk). Using NumPy.")
+
+if not _skip_gpu:
+    try:
+        import cupy as cp
+        # Verify CuPy actually works (catches binary incompat before runtime segfault)
+        cp.cuda.runtime.getDeviceCount()
+        GPU_ARRAY = True
+        print(f"[GPU] CuPy + CUDA detected — OPTUNA OPTIMIZER")
+    except (ImportError, Exception) as e:
+        cp = None
+        GPU_ARRAY = False
+        print(f"[CPU] CuPy not available ({e}) — using NumPy (slower)")
+else:
+    print(f"[CPU] GPU skipped (V2_SKIP_GPU=1) — using NumPy for backtesting")
+
+xp = cp if GPU_ARRAY else np
+
+import xgboost as xgb
 from hardware_detect import detect_hardware
 from config import (FEE_RATE as CONFIG_FEE_RATE, STARTING_BALANCE as CONFIG_STARTING_BALANCE,
                     REGIME_MULT as CONFIG_REGIME_MULT, REGIME_SLOPE_THRESHOLD,
                     REGIME_CRASH_VOL_MULT, REGIME_CRASH_DD_THRESHOLD,
                     OPTUNA_SEED, OPTUNA_N_STARTUP_TRIALS,
-                    CONFIDENCE_SIZE_TIERS)
+                    CONFIDENCE_SIZE_TIERS, TF_SLIPPAGE)
 
 _HW = detect_hardware()
 _N_GPUS = _HW['n_gpus'] or 1
-print(f"[LGB] LightGBM loaded for model inference")
+print(f"[XGB] XGBoost loaded for model inference")
 print(f"[HW] {_N_GPUS} GPU(s) detected for parallel TF optimization")
 
 # ---------------------------------------------------------------------------
@@ -86,7 +114,7 @@ TF_GRIDS = {
         'stop_atr': list(np.round(np.arange(0.1, 1.51, 0.14), 4)),           # 11
         'rr': list(np.round(np.arange(1.0, 5.1, 0.40), 4)),                  # 11
         'hold': [1,2,4,8,12,20,30,42,48,60],                                  # 10
-        'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
+        'exit_type': [0, -2, -3],                                              # 0=full exit, -2/-3=trailing stop
         'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
     },
     '1h': {
@@ -95,7 +123,7 @@ TF_GRIDS = {
         'stop_atr': list(np.round(np.arange(0.2, 2.01, 0.18), 4)),           # 10
         'rr': list(np.round(np.arange(1.0, 6.1, 0.50), 4)),                  # 11
         'hold': [1,2,4,8,12,20,30,48,60,72],                                  # 10
-        'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
+        'exit_type': [0, -2, -3],                                              # 0=full exit, -2/-3=trailing stop
         'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
     },
     '4h': {
@@ -104,7 +132,7 @@ TF_GRIDS = {
         'stop_atr': list(np.round(np.arange(0.3, 3.01, 0.27), 4)),           # 10
         'rr': list(np.round(np.arange(1.0, 8.1, 0.70), 4)),                  # 11
         'hold': [1,2,4,8,12,20,30,48,66,84],                                  # 10
-        'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
+        'exit_type': [0, -2, -3],                                              # 0=full exit, -2/-3=trailing stop
         'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
     },
     '1d': {
@@ -113,7 +141,7 @@ TF_GRIDS = {
         'stop_atr': list(np.round(np.arange(1.0, 4.01, 0.30), 4)),           # wider stops for daily
         'rr': list(np.round(np.arange(1.5, 8.1, 0.60), 4)),                  # 11
         'hold': [3, 7, 14, 21, 30, 45, 60, 90],                               # days to months
-        'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
+        'exit_type': [0, -2, -3],                                              # 0=full exit, -2/-3=trailing stop
         'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
     },
     '1w': {
@@ -122,7 +150,7 @@ TF_GRIDS = {
         'stop_atr': list(np.round(np.arange(2.0, 8.01, 0.60), 4)),           # wide stops for weekly
         'rr': list(np.round(np.arange(1.5, 10.1, 0.80), 4)),                 # big R:R — let winners run
         'hold': [4, 8, 13, 20, 26, 39, 52],                                   # 1 month to 1 year
-        'exit_type': [0, 25, -2, -3],                                         # trailing stops preferred
+        'exit_type': [0, -2, -3],                                              # 0=full exit, -2/-3=trailing stop
         'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
     },
 }
@@ -256,13 +284,13 @@ def load_tf_data(tf_name: str):
         print(f"  No feature file found — using all {len(model_features)} feature columns from DB")
 
     # Build feature matrix in model's expected column order
-    # LightGBM handles NaN natively — do NOT replace with 0
+    # XGBoost handles NaN natively — do NOT replace with 0
     X_model = np.empty((len(df), len(model_features)), dtype=np.float32)
     for i, feat in enumerate(model_features):
         if feat in feature_cols:
             X_model[:, i] = pd.to_numeric(df[feat], errors='coerce').values.astype(np.float32)
         else:
-            X_model[:, i] = np.nan  # missing feature — LightGBM treats NaN as missing
+            X_model[:, i] = np.nan  # missing feature — XGBoost treats NaN as missing
 
     # Recreate walk-forward splits (same logic as ml_multi_tf.py)
     n = len(df)
@@ -290,52 +318,57 @@ def load_tf_data(tf_name: str):
         print(f"  SKIP {tf_name} — no valid walk-forward splits")
         return None
 
-    # Use the LAST split's test window (same as GA in ml_multi_tf.py)
-    ts, te, vs, ve = splits[-1]
-    print(f"  Walk-forward last window: test [{vs}:{ve}] ({ve - vs} bars)")
+    # Load trained XGBoost model
+    model = xgb.Booster(model_file=model_path)
 
-    # Load trained LightGBM model
-    model = lgb.Booster(model_file=model_path)
-
-    # Predict on full test window
-    # LightGBM predict() takes raw numpy arrays directly (no DMatrix needed)
-    raw_preds = model.predict(X_model[vs:ve])
-
-    # For 3-class: raw_preds shape is (N, 3) -> use max class prob as confidence
-    if raw_preds.ndim == 2 and raw_preds.shape[1] == 3:
-        pred_class = np.argmax(raw_preds, axis=1)  # 0=SHORT, 1=FLAT, 2=LONG
-        confidences = np.max(raw_preds, axis=1)
-        # Convert to direction: LONG=+1, SHORT=-1, FLAT=0
-        directions = np.where(pred_class == 2, 1.0, np.where(pred_class == 0, -1.0, 0.0))
-        print(f"  3-class preds: LONG={np.sum(pred_class==2)} FLAT={np.sum(pred_class==1)} SHORT={np.sum(pred_class==0)}")
-        print(f"  Confidence range: [{confidences.min():.3f}, {confidences.max():.3f}]")
-    else:
-        # Legacy binary mode fallback
-        confidences = raw_preds
-        directions = np.where(raw_preds > 0.5, 1.0, -1.0)
-        print(f"  Binary preds. Range: [{confidences.min():.3f}, {confidences.max():.3f}]")
-
-    test_returns = returns[vs:ve]
-    test_closes = closes[vs:ve]
-
-    # ATR
+    # Pre-compute full ATR array
     if 'atr_14' in df.columns:
-        test_atrs = pd.to_numeric(df['atr_14'], errors='coerce').values[vs:ve]
+        all_atrs = pd.to_numeric(df['atr_14'], errors='coerce').values
     else:
-        test_atrs = np.abs(test_returns) / 100 * test_closes
-    test_atrs = np.nan_to_num(test_atrs, nan=max(test_closes.mean() * 0.01, 1.0))
+        all_atrs = np.abs(returns) / 100 * closes
+    all_atrs = np.nan_to_num(all_atrs, nan=max(closes.mean() * 0.01, 1.0))
 
-    n_bars = ve - vs
-    return confidences.astype(np.float32), directions.astype(np.float32), \
-           test_returns.astype(np.float32), test_closes.astype(np.float32), \
-           test_atrs.astype(np.float32), highs[vs:ve].astype(np.float32), \
-           lows[vs:ve].astype(np.float32), n_bars
+    # Build per-fold data for ALL walk-forward splits (BUG 5 fix: average across all folds)
+    fold_data_list = []
+    for fold_idx, (ts, te, vs, ve) in enumerate(splits):
+        print(f"  Walk-forward fold {fold_idx+1}/{len(splits)}: test [{vs}:{ve}] ({ve - vs} bars)")
+
+        # Predict on this fold's test window
+        raw_preds = model.predict(xgb.DMatrix(X_model[vs:ve]))
+
+        # For 3-class: raw_preds shape is (N, 3) -> use max class prob as confidence
+        if raw_preds.ndim == 2 and raw_preds.shape[1] == 3:
+            pred_class = np.argmax(raw_preds, axis=1)  # 0=SHORT, 1=FLAT, 2=LONG
+            confidences = np.max(raw_preds, axis=1)
+            directions = np.where(pred_class == 2, 1.0, np.where(pred_class == 0, -1.0, 0.0))
+            print(f"    3-class preds: LONG={np.sum(pred_class==2)} FLAT={np.sum(pred_class==1)} SHORT={np.sum(pred_class==0)}")
+            print(f"    Confidence range: [{confidences.min():.3f}, {confidences.max():.3f}]")
+        else:
+            confidences = raw_preds
+            directions = np.where(raw_preds > 0.5, 1.0, -1.0)
+            print(f"    Binary preds. Range: [{confidences.min():.3f}, {confidences.max():.3f}]")
+
+        test_returns = returns[vs:ve]
+        test_closes = closes[vs:ve]
+        test_atrs = all_atrs[vs:ve]
+        n_bars = ve - vs
+
+        fold_data_list.append((
+            confidences.astype(np.float32), directions.astype(np.float32),
+            test_returns.astype(np.float32), test_closes.astype(np.float32),
+            test_atrs.astype(np.float32), highs[vs:ve].astype(np.float32),
+            lows[vs:ve].astype(np.float32), n_bars
+        ))
+
+    print(f"  Total folds for optimization: {len(fold_data_list)}")
+    return fold_data_list
 
 
 # ---------------------------------------------------------------------------
 # Vectorized simulation engine
 # ---------------------------------------------------------------------------
-def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime, xp_lib):
+def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime, xp_lib,
+                   slippage_rate=0.0):
     """
     Vectorized simulation of N parameter combos across T bars.
 
@@ -347,6 +380,7 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
     highs:  (T,) array of high prices (for intrabar SL/TP checks)
     lows:   (T,) array of low prices (for intrabar SL/TP checks)
     regime: (T,) array of regime labels (0=bull, 1=bear, 2=sideways, 3=volatile)
+    slippage_rate: float — per-TF slippage (from config.TF_SLIPPAGE)
 
     Returns: (N, 7) array — [final_balance, max_dd, win_rate, trade_count, roi_pct, sortino, total_trades]
 
@@ -411,7 +445,8 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
         p_val = float(closes[t]) if closes[t] > 0 else 1.0
         h_val = float(highs[t]) if highs[t] > 0 else p_val
         l_val = float(lows[t]) if lows[t] > 0 else p_val
-        a_val = float(atrs[t]) if atrs[t] > 0 else p_val * 0.01
+        _atr_idx = max(0, t - 1)  # BUG 3 fix: use previous bar's ATR (avoid lookahead)
+        a_val = float(atrs[_atr_idx]) if atrs[_atr_idx] > 0 else p_val * 0.01
 
         # Regime multipliers for this bar (scalar, broadcast to N combos)
         r = int(regime[t])
@@ -424,6 +459,9 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
         # --- Exit logic for those in trade ---
         active = in_trade & alive
         if active.any():
+            # BUG 4 fix: check hold BEFORE incrementing trade_bars (bars held so far, not including current)
+            hold_exit = active & (trade_bars >= max_hold * hold_m)
+
             trade_bars += active.astype(xp_lib.int32)
 
             # Update best price for trailing (use h_val for longs, l_val for shorts)
@@ -463,19 +501,20 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
             tp_short = active & (trade_dir == -1) & (l_val <= tp_pr)
             tp_hit = tp_long | tp_short
 
-            # Max hold check (regime-adjusted)
-            hold_exit = active & (trade_bars >= max_hold * hold_m)
-
             # Any exit
             exiting = sl_hit | tp_hit | hold_exit
 
             if exiting.any():
                 # PnL calc — use barrier price for SL/TP exits, close for time exits
                 # Priority: SL > TP > hold (conservative — if both barriers hit intrabar, assume SL)
+                # BUG 1 fix: apply slippage to exit prices (worse fill direction)
+                # For LONG exits: slippage lowers exit price. For SHORT exits: slippage raises exit price.
+                _sl_exit = stop_pr - trade_dir.astype(xp_lib.float32) * stop_pr * slippage_rate
+                _tp_exit = tp_pr - trade_dir.astype(xp_lib.float32) * tp_pr * slippage_rate
+                _hold_exit_pr = xp_lib.full(N, p_val, dtype=xp_lib.float32) - trade_dir.astype(xp_lib.float32) * p_val * slippage_rate
                 exit_price = xp_lib.where(
-                    sl_hit, stop_pr,
-                    xp_lib.where(tp_hit, tp_pr,
-                                 xp_lib.full(N, p_val, dtype=xp_lib.float32)))
+                    sl_hit, _sl_exit,
+                    xp_lib.where(tp_hit, _tp_exit, _hold_exit_pr))
                 price_chg = (exit_price - entry_pr) / xp_lib.maximum(entry_pr, 1e-8) * trade_dir.astype(xp_lib.float32)
                 eff_lev = lev * lev_m
                 gross_pnl = price_chg * eff_lev
@@ -549,25 +588,26 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
                 # Store conf_mult for this entry (used in PnL calc)
                 entry_conf_mult = xp_lib.where(entering, _conf_mult, entry_conf_mult)
 
-                # Entry price
-                entry_pr = xp_lib.where(entering, p_val, entry_pr)
+                # Entry price — BUG 1 fix: apply slippage (LONG buys higher, SHORT sells lower)
+                _slipped_entry = p_val * (1.0 + new_dir.astype(xp_lib.float32) * slippage_rate)
+                entry_pr = xp_lib.where(entering, _slipped_entry, entry_pr)
 
                 # Stop loss (regime-adjusted)
                 sl_dist = stop_mult * stop_m * a_val
                 stop_pr = xp_lib.where(
-                    entering & (new_dir == 1),  p_val - sl_dist,
-                    xp_lib.where(entering & (new_dir == -1), p_val + sl_dist, stop_pr)
+                    entering & (new_dir == 1),  _slipped_entry - sl_dist,
+                    xp_lib.where(entering & (new_dir == -1), _slipped_entry + sl_dist, stop_pr)
                 )
 
                 # Take profit (regime-adjusted)
                 tp_dist = stop_mult * stop_m * a_val * rr * rr_m
                 tp_pr = xp_lib.where(
-                    entering & (new_dir == 1),  p_val + tp_dist,
-                    xp_lib.where(entering & (new_dir == -1), p_val - tp_dist, tp_pr)
+                    entering & (new_dir == 1),  _slipped_entry + tp_dist,
+                    xp_lib.where(entering & (new_dir == -1), _slipped_entry - tp_dist, tp_pr)
                 )
 
-                # Best price init (for trailing)
-                best_pr = xp_lib.where(entering, p_val, best_pr)
+                # Best price init (for trailing) — from slipped entry
+                best_pr = xp_lib.where(entering, _slipped_entry, best_pr)
 
                 trade_dir  = xp_lib.where(entering, new_dir, trade_dir)
                 in_trade   = xp_lib.where(entering, True, in_trade)
@@ -642,43 +682,36 @@ def detect_regime(closes):
 # ---------------------------------------------------------------------------
 # Optuna TPE optimizer for one TF
 # ---------------------------------------------------------------------------
-def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n_trials=200):
+def run_optuna_search(tf_name, fold_data_list, n_trials=200):
     """
-    Run Optuna TPE search for one timeframe.
+    Run Optuna TPE search for one timeframe across ALL walk-forward folds.
+    fold_data_list: list of (confs, dirs, returns, closes, atrs, highs, lows, n_bars) per fold.
     Returns dict of best configs per profile (dd10_best, dd10_sortino, dd15_best, dd15_sortino).
     """
     grid = TF_GRIDS[tf_name]
+    n_folds = len(fold_data_list)
+    total_bars = sum(fd[7] for fd in fold_data_list)
     print(f"\n{'='*70}")
     print(f"  {tf_name.upper()} OPTUNA TPE OPTIMIZER")
     print(f"  Trials: {n_trials}")
-    print(f"  Test window: {n_bars} bars")
+    print(f"  Walk-forward folds: {n_folds} (total {total_bars} test bars)")
     print(f"{'='*70}")
 
-    # Compute regime
-    regime = detect_regime(closes)
-    regime_counts = {0: np.sum(regime==0), 1: np.sum(regime==1), 2: np.sum(regime==2), 3: np.sum(regime==3)}
-    print(f"  Regime distribution: bull={regime_counts[0]} bear={regime_counts[1]} "
-          f"sideways={regime_counts[2]} crash={regime_counts[3]}")
-
-    # Transfer market data to GPU ONCE (shared across all trials)
-    if GPU_ARRAY:
-        g_confs  = cp.asarray(confs)
-        g_dirs   = cp.asarray(dirs)
-        g_closes = cp.asarray(closes)
-        g_atrs   = cp.asarray(atrs)
-        g_highs  = cp.asarray(highs)
-        g_lows   = cp.asarray(lows)
-        g_regime = cp.asarray(regime)
-        xp_lib = cp
-    else:
-        g_confs  = confs
-        g_dirs   = dirs
-        g_closes = closes
-        g_atrs   = atrs
-        g_highs  = highs
-        g_lows   = lows
-        g_regime = regime
-        xp_lib = np
+    # Pre-compute regime + GPU transfer for each fold
+    gpu_fold_data = []
+    for fi, (confs, dirs, _rets, closes, atrs, highs, lows, n_bars) in enumerate(fold_data_list):
+        regime = detect_regime(closes)
+        regime_counts = {0: np.sum(regime==0), 1: np.sum(regime==1), 2: np.sum(regime==2), 3: np.sum(regime==3)}
+        print(f"  Fold {fi+1}: {n_bars} bars | regime: bull={regime_counts[0]} bear={regime_counts[1]} "
+              f"sideways={regime_counts[2]} crash={regime_counts[3]}")
+        if GPU_ARRAY:
+            gpu_fold_data.append((
+                cp.asarray(confs), cp.asarray(dirs), cp.asarray(closes),
+                cp.asarray(atrs), cp.asarray(highs), cp.asarray(lows),
+                cp.asarray(regime), cp
+            ))
+        else:
+            gpu_fold_data.append((confs, dirs, closes, atrs, highs, lows, regime, np))
 
     # Extract parameter ranges from TF_GRIDS
     lev_min, lev_max = int(grid['lev'][0]), int(grid['lev'][-1])
@@ -698,6 +731,9 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
     t_start = time.time()
     trial_count = [0]  # mutable for closure
 
+    # Look up slippage for this TF (BUG 1 fix)
+    _tf_slippage = TF_SLIPPAGE.get(tf_name, 0.0001)
+
     def objective(trial):
         lev = trial.suggest_int('lev', lev_min, lev_max)
         risk = trial.suggest_float('risk', risk_min, risk_max)
@@ -707,29 +743,41 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
         exit_type = trial.suggest_categorical('exit_type', exit_types)
         conf = trial.suggest_float('conf', conf_min, conf_max)
 
+        # BUG 6 fix: reject dangerously high effective risk per trade
+        if lev * risk > 10:  # max 10x effective risk per trade
+            return -999.0
+
         # Build (1, 7) param array for simulate_batch
         params_np = np.array([[lev, risk, stop_atr, rr, hold, exit_type, conf]], dtype=np.float32)
 
-        if GPU_ARRAY:
-            params_gpu = cp.asarray(params_np)
-            results = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
-                                     g_highs, g_lows, g_regime, cp)
-            results_np = cp.asnumpy(results)
-            del params_gpu, results
-        else:
-            results_np = simulate_batch(params_np, g_confs, g_dirs, g_closes, g_atrs,
-                                        g_highs, g_lows, g_regime, np)
+        # BUG 5 fix: simulate across ALL walk-forward folds and average metrics
+        fold_sortinos = []
+        fold_metrics_list = []
+        for g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime, xp_lib in gpu_fold_data:
+            if GPU_ARRAY:
+                params_gpu = cp.asarray(params_np)
+                results = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
+                                         g_highs, g_lows, g_regime, cp,
+                                         slippage_rate=_tf_slippage)
+                results_np = cp.asnumpy(results)
+                del params_gpu, results
+            else:
+                results_np = simulate_batch(params_np, g_confs, g_dirs, g_closes, g_atrs,
+                                            g_highs, g_lows, g_regime, np,
+                                            slippage_rate=_tf_slippage)
+            fold_metrics_list.append(results_np[0].copy())
+            fold_sortinos.append(float(results_np[0][5]))
 
-        # results_np: (1, 7) = [balance, max_dd_pct, win_rate, trade_count, roi_pct, sortino, total_trades]
-        result = results_np[0]
-        bal = float(result[0])
-        max_dd = float(result[1])
-        trades = float(result[3])
-        roi = float(result[4])
-        sortino_val = float(result[5])
+        # Average metrics across folds
+        avg_metrics = np.mean(np.array(fold_metrics_list), axis=0)
+        bal = float(avg_metrics[0])
+        max_dd = float(avg_metrics[1])
+        trades = float(avg_metrics[3])
+        roi = float(avg_metrics[4])
+        sortino_val = float(avg_metrics[5])
 
         # Store for 4-profile extraction later
-        all_trial_results.append((params_np[0].copy(), results_np[0].copy()))
+        all_trial_results.append((params_np[0].copy(), avg_metrics.copy()))
 
         # Store metrics as user attributes for later filtering
         trial.set_user_attr('balance', bal)
@@ -745,8 +793,9 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
             elapsed_s = time.time() - t_start
             rate = trial_count[0] / max(elapsed_s, 0.01)
             s_display = sortino_val if not np.isnan(sortino_val) else -999
+            fold_str = '/'.join(f"{s:.2f}" for s in fold_sortinos)
             print(f"  Trial {trial_count[0]:>4d}/{n_trials} | "
-                  f"sortino={s_display:+.3f} dd={max_dd:.1f}% roi={roi:+.1f}% trades={int(trades)} | "
+                  f"avg_sortino={s_display:+.3f} [{fold_str}] dd={max_dd:.1f}% roi={roi:+.1f}% trades={int(trades)} | "
                   f"{rate:.1f} trials/s", flush=True)
 
         # Penalize bad combos but let Optuna learn from them
@@ -776,8 +825,9 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
     )
 
     print(f"\n  Starting Optuna optimization ({n_trials} trials)...")
-    # n_jobs=4: CuPy releases GIL during kernel execution, so parallel trial evaluation is safe
-    study.optimize(objective, n_trials=n_trials, n_jobs=4, show_progress_bar=False)
+    # Scale n_jobs to machine — CuPy releases GIL, so parallel trial evaluation is safe
+    _opt_n_jobs = min(32, max(1, (os.cpu_count() or 4) // 4))
+    study.optimize(objective, n_trials=n_trials, n_jobs=_opt_n_jobs, show_progress_bar=False)
 
     total_time = time.time() - t_start
     print(f"\n  Completed {n_trials} trials in {total_time:.1f}s "
@@ -826,7 +876,7 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
 
     # Free GPU memory
     if GPU_ARRAY:
-        del g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime
+        del gpu_fold_data
         cp.get_default_memory_pool().free_all_blocks()
 
     return best
@@ -888,9 +938,8 @@ def _optimize_single_tf(args_tuple):
             print(f"  Skipping {tf_name} — data not available", flush=True)
             return (tf_name, None, 0)
 
-        confs, dirs, rets, closes, atrs, highs, lows, n_bars = data
-        best = run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
-                                 n_trials=n_trials)
+        fold_data_list = data
+        best = run_optuna_search(tf_name, fold_data_list, n_trials=n_trials)
 
         tf_config = {}
         for profile_name, profile_data in best.items():
@@ -918,7 +967,7 @@ def _optimize_single_tf(args_tuple):
 # ---------------------------------------------------------------------------
 def main(n_trials=200):
     print(f"\n{'='*70}")
-    print(f"  OPTUNA TPE OPTIMIZER (LightGBM)")
+    print(f"  OPTUNA TPE OPTIMIZER (XGBoost)")
     print(f"  GPU Array: {'CuPy (CUDA)' if GPU_ARRAY else 'NumPy (CPU)'}")
     print(f"  GPUs:      {_N_GPUS}")
     print(f"  Trials:    {n_trials} per TF")
@@ -966,9 +1015,8 @@ def main(n_trials=200):
                 print(f"  Skipping {tf_name} — data not available")
                 continue
 
-            confs, dirs, rets, closes, atrs, highs, lows, n_bars = data
-            best = run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
-                                     n_trials=n_trials)
+            fold_data_list = data
+            best = run_optuna_search(tf_name, fold_data_list, n_trials=n_trials)
 
             tf_config = {}
             for profile_name, profile_data in best.items():
@@ -1043,7 +1091,7 @@ def main(n_trials=200):
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='Optuna TPE Optimizer for LightGBM trading strategy')
+    parser = argparse.ArgumentParser(description='Optuna TPE Optimizer for XGBoost trading strategy')
     parser.add_argument('--tf', action='append', help='Only run specific timeframes (can repeat)')
     parser.add_argument('--n-trials', type=int, default=200, help='Number of Optuna trials per TF (default: 200)')
     args = parser.parse_args()

@@ -12,6 +12,7 @@ Usage:
   result = date_numerology(datetime)   # any date
 """
 
+import os
 from datetime import datetime, timedelta
 
 
@@ -367,39 +368,42 @@ import numpy as np
 
 def digital_root_vec(arr):
     """Vectorized digital root on numpy or cupy array. 0→0, else 1+((n-1)%9)."""
-    try:
-        import cupy as cp
-        if isinstance(arr, cp.ndarray):
-            x = cp.abs(arr).astype(cp.int64)
-            return cp.where(x == 0, cp.int32(0), (1 + (x - 1) % 9).astype(cp.int32))
-    except ImportError:
-        pass
+    if os.environ.get('V2_SKIP_GPU') != '1':
+        try:
+            import cupy as cp
+            if isinstance(arr, cp.ndarray):
+                x = cp.abs(arr).astype(cp.int64)
+                return cp.where(x == 0, cp.int32(0), (1 + (x - 1) % 9).astype(cp.int32))
+        except ImportError:
+            pass
     x = np.abs(np.asarray(arr, dtype=np.int64))
     return np.where(x == 0, 0, 1 + (x - 1) % 9).astype(np.int32)
 
 
 def is_in_set_vec(arr, target_set):
     """Vectorized set membership check. Returns int32 0/1 array."""
-    try:
-        import cupy as cp
-        if isinstance(arr, cp.ndarray):
-            targets_gpu = cp.asarray(sorted(target_set), dtype=cp.int64)
-            return cp.isin(arr.astype(cp.int64), targets_gpu).astype(cp.int32)
-    except ImportError:
-        pass
+    if os.environ.get('V2_SKIP_GPU') != '1':
+        try:
+            import cupy as cp
+            if isinstance(arr, cp.ndarray):
+                targets_gpu = cp.asarray(sorted(target_set), dtype=cp.int64)
+                return cp.isin(arr.astype(cp.int64), targets_gpu).astype(cp.int32)
+        except ImportError:
+            pass
     targets = np.array(sorted(target_set), dtype=np.int64)
     return np.isin(np.asarray(arr, dtype=np.int64), targets).astype(np.int32)
 
 
 def price_contains_pattern_vec(prices, pattern_str):
     """Vectorized check if price (as int string) contains a digit pattern."""
-    try:
-        import cudf
-        if hasattr(prices, 'str'):
-            # cuDF or pandas Series with .str accessor
-            return prices.astype(str).str.contains(pattern_str, regex=False).astype('int32')
-    except ImportError:
-        pass
+    if os.environ.get('V2_SKIP_GPU') != '1':
+        try:
+            import cudf
+            if hasattr(prices, 'str'):
+                # cuDF or pandas Series with .str accessor
+                return prices.astype(str).str.contains(pattern_str, regex=False).astype('int32')
+        except ImportError:
+            pass
     # Numpy fallback
     import pandas as pd
     s = pd.Series(prices).astype(str)

@@ -1,8 +1,8 @@
 """
-Savage22 Crypto Matrix V3.1 — Configuration
+Savage22 Crypto Matrix V3.3 — Configuration
 =============================================
 Multi-asset universal matrix. 31 training assets. 2-3M sparse features.
-V3.1: LightGBM, Optuna, no 5m, institutional risk framework.
+V3.3: XGBoost universal backend, Optuna, no 5m, institutional risk framework.
 """
 import os
 
@@ -221,66 +221,44 @@ def validate_no_protected_removed(original_cols, final_cols):
         raise ValueError(f"PHILOSOPHY VIOLATION: {len(missing)} protected features removed: {missing[:10]}")
 
 
-# ── LightGBM Training Parameters ──
-# V3.0: LightGBM replaces XGBoost. CPU-only (GPU doesn't support sparse).
-# Rare signal friendly: min_data_in_leaf=3 + min_gain_to_split=2.0
-V3_LGBM_PARAMS = {
-    "objective": "multiclass",
-    "num_class": 3,
-    "metric": "multi_logloss",
-    "boosting_type": "gbdt",
-    "device": "cpu",
-    "force_col_wise": True,
-    "max_bin": 15,       # Binary 0/1 features only use 2 bins — 63 was 4x wasted compute (Perplexity confirmed)
-    "num_threads": -1,
-    "is_enable_sparse": True,
-    "min_data_in_leaf": 3,
-    "min_gain_to_split": 2.0,
-    "lambda_l1": 0.5,
-    "lambda_l2": 3.0,
-    "feature_fraction": 0.05,
-    "feature_fraction_bynode": 0.5,
-    "bagging_fraction": 0.8,
-    "bagging_freq": 1,
-    "num_leaves": 63,
-    "learning_rate": 0.03,
-    "path_smooth": 0.1,
-    "extra_trees": False,
-    "verbosity": -1,
-    "max_conflict_rate": 0.3,  # Re-enable EFB bundling — LightGBM's core sparse optimization. 0.0 disabled it = massive slowdown.
-}
-
-# ── XGBoost Parameters (for 15m when NNZ > int32 limit) ──
-# XGBoost supports int64 sparse indices — no NNZ overflow.
-# Used ONLY when NNZ > XGBM_NNZ_THRESHOLD. LightGBM stays for all other TFs.
-XGBM_NNZ_THRESHOLD = 2_000_000_000  # Switch to XGBoost when NNZ > 2B
-
+# ── XGBoost Parameters — UNIVERSAL BACKEND (all timeframes) ──
+# XGBoost replaces LightGBM for all TFs:
+#   - int64 sparse indices (no NNZ overflow for 15m)
+#   - gpu_hist support when VRAM allows
+#   - Same histogram algorithm, equivalent accuracy
+#   - No EFB needed: max_bin=15 on binary features already minimal
 V3_XGBM_PARAMS = {
     "objective": "multi:softprob",
     "num_class": 3,
     "eval_metric": "mlogloss",
     "booster": "gbtree",
-    "tree_method": "hist",
-    "max_bin": 15,        # Binary features only need 2 bins
+    "tree_method": "hist",        # CPU default; auto-upgraded to gpu_hist when VRAM allows
+    "max_bin": 15,                # Binary 0/1 features only need 2 bins
     "nthread": -1,
     "max_depth": 6,
     "colsample_bytree": 0.05,
     "colsample_bylevel": 0.5,
     "subsample": 0.8,
-    "alpha": 0.5,
-    "lambda": 3.0,
-    "eta": 0.03,
-    "gamma": 2.0,
-    "min_child_weight": 3,
+    "alpha": 0.5,                 # L1 regularization (was lambda_l1 in LightGBM)
+    "lambda": 3.0,                # L2 regularization (was lambda_l2 in LightGBM)
+    "eta": 0.03,                  # learning_rate
+    "gamma": 2.0,                 # min_gain_to_split equivalent
+    "min_child_weight": 3,        # min_data_in_leaf equivalent (overridden per TF)
     "verbosity": 0,
+    "seed": 42,
 }
+
+# Backward compat alias
+V3_LGBM_PARAMS = V3_XGBM_PARAMS
 
 # SHAP analysis config
 SHAP_N_SAMPLES = 10000        # High-confidence samples for SHAP analysis
 SHAP_TOP_N = 1000             # Top N features by |SHAP| to report
 SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_', 'rdx_')
 
-# Per-TF min_data_in_leaf overrides (rare astro conjunctions fire 10-20x on daily)
+# Per-TF min_child_weight overrides (XGBoost equivalent of LightGBM's min_data_in_leaf)
+# Rare astro conjunctions fire 10-20x on daily — low values protect rare signals.
+# Consumers MUST map this to params['min_child_weight'] for XGBoost.
 TF_MIN_DATA_IN_LEAF = {
     '1w': 3,
     '1d': 3,
@@ -289,10 +267,11 @@ TF_MIN_DATA_IN_LEAF = {
     '15m': 15,
 }
 
-# Per-TF class_weight — reweights by inverse class frequency via LightGBM's class_weight param
+# Per-TF class_weight — reweights by inverse class frequency
+# XGBoost: applied via sample_weight (not a native param). Consumers must compute
+# balanced weights from class frequencies and multiply into sample_weight array.
 # 1d: 60% FLAT labels cause model to collapse to FLAT at high confidence, missing directional edge
 # 1w: 82% FLAT labels (339 samples) cause same FLAT collapse (prec_long=0, prec_short=0)
-# OLD: TF_IS_UNBALANCE = {'1d': True, '1w': True}  # is_unbalance is a binary flag, class_weight='balanced' is equivalent but more explicit
 TF_CLASS_WEIGHT = {
     '1d': 'balanced',
     '1w': 'balanced',
@@ -325,7 +304,7 @@ PORTFOLIO_FEE_RATE = 0.0018  # same for portfolio aggregator (was 0.0012 — now
 # Keys: 0=bull, 1=bear, 2=sideways, 3=crash
 REGIME_MULT = {
     0: {'lev': 1.0,  'risk': 1.0,  'stop': 1.0,  'rr': 1.5,  'hold': 1.0},   # bull
-    1: {'lev': 0.47, 'risk': 1.0,  'stop': 0.75, 'rr': 0.75, 'hold': 0.17},   # bear
+    1: {'lev': 0.47, 'risk': 0.5,  'stop': 0.75, 'rr': 0.75, 'hold': 0.17},   # bear
     2: {'lev': 0.67, 'risk': 0.47, 'stop': 0.5,  'rr': 0.5,  'hold': 1.0},    # sideways
     3: {'lev': 0.2,  'risk': 0.25, 'stop': 0.5,  'rr': 0.5,  'hold': 0.1},    # crash
 }

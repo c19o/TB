@@ -1,12 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# GPU acceleration: cudf.pandas makes ALL pandas ops run on GPU automatically
-try:
-    import cudf.pandas
-    cudf.pandas.install()
-    print("[GPU] cudf.pandas accelerator mode ENABLED")
-except (ImportError, Exception):
-    pass  # Falls back to CPU pandas — same code, no errors
+import os, subprocess
+_skip_gpu = os.environ.get('V2_SKIP_GPU') == '1'
+if not _skip_gpu:
+    try:
+        _nv = subprocess.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                             capture_output=True, text=True, timeout=5)
+        if int(_nv.stdout.strip().split('.')[0]) >= 580:
+            _skip_gpu = True
+    except: pass
+if not _skip_gpu:
+    try:
+        import cudf.pandas
+        cudf.pandas.install()
+        print("[GPU] cudf.pandas accelerator mode ENABLED")
+    except (ImportError, Exception):
+        pass
 """
 build_1h_features.py
 =====================

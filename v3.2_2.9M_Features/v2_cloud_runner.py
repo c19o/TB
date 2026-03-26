@@ -58,12 +58,13 @@ def gpu_cleanup(phase_name):
         torch.cuda.empty_cache()
     except Exception:
         pass
-    try:
-        import cupy as cp
-        pool = cp.get_default_memory_pool()
-        pool.free_all_blocks()
-    except Exception:
-        pass
+    if os.environ.get('V2_SKIP_GPU') != '1':
+        try:
+            import cupy as cp
+            pool = cp.get_default_memory_pool()
+            pool.free_all_blocks()
+        except (ImportError, Exception):
+            pass
     log(f"GPU cleanup after {phase_name}")
 
 

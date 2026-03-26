@@ -107,12 +107,13 @@ def gpu_cleanup(phase_name):
         torch.cuda.empty_cache()
     except Exception:
         pass
-    try:
-        import cupy as cp
-        pool = cp.get_default_memory_pool()
-        pool.free_all_blocks()
-    except Exception:
-        pass
+    if os.environ.get('V2_SKIP_GPU') != '1':
+        try:
+            import cupy as cp
+            pool = cp.get_default_memory_pool()
+            pool.free_all_blocks()
+        except (ImportError, Exception):
+            pass
     log(f"GPU memory cleanup after {phase_name}")
 
 
@@ -270,16 +271,19 @@ def tf_worker(tf, state):
 # ============================================================
 def sanity_check():
     log("=== SANITY CHECK ===")
-    try:
-        import cupy as cp
-        n = cp.cuda.runtime.getDeviceCount()
-        for i in range(n):
-            p = cp.cuda.runtime.getDeviceProperties(i)
-            name = p['name'].decode() if isinstance(p['name'], bytes) else p['name']
-            log(f"  GPU {i}: {name}")
-    except Exception as e:
-        log(f"  GPU check failed: {e}")
-        return False
+    if os.environ.get('V2_SKIP_GPU') == '1':
+        log("  GPU check skipped (V2_SKIP_GPU=1)")
+    else:
+        try:
+            import cupy as cp
+            n = cp.cuda.runtime.getDeviceCount()
+            for i in range(n):
+                p = cp.cuda.runtime.getDeviceProperties(i)
+                name = p['name'].decode() if isinstance(p['name'], bytes) else p['name']
+                log(f"  GPU {i}: {name}")
+        except (ImportError, Exception) as e:
+            log(f"  GPU check failed: {e}")
+            return False
 
     try:
         import lightgbm as lgb

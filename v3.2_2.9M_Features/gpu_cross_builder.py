@@ -30,15 +30,21 @@ parser.add_argument('--tf', nargs='+', default=['1h'])
 parser.add_argument('--gpu', type=int, default=0)
 args = parser.parse_args()
 
-try:
-    import cupy as cp
-    cp.cuda.Device(args.gpu).use()
-    GPU = True
-    pool = cp.get_default_memory_pool()
-    print(f'[GPU {args.gpu}] CuPy ready, VRAM free: {cp.cuda.runtime.memGetInfo()[0]/1e9:.1f} GB')
-except Exception as e:
-    GPU = False
-    print(f'[CPU fallback] {e}')
+GPU = False
+if os.environ.get('V2_SKIP_GPU') != '1':
+    try:
+        import subprocess as _sp
+        _sp.check_output(['nvidia-smi'], stderr=_sp.DEVNULL)
+        import cupy as cp
+        cp.cuda.Device(args.gpu).use()
+        GPU = True
+        pool = cp.get_default_memory_pool()
+        print(f'[GPU {args.gpu}] CuPy ready, VRAM free: {cp.cuda.runtime.memGetInfo()[0]/1e9:.1f} GB')
+    except (ImportError, FileNotFoundError, Exception) as e:
+        GPU = False
+        print(f'[CPU fallback] {e}')
+else:
+    print('[CPU fallback] V2_SKIP_GPU=1, skipping CuPy')
 
 
 def build_crosses(tf):
@@ -171,20 +177,42 @@ def build_crosses(tf):
         del ctx_gpu
         pool.free_all_blocks()
     else:
-        # CPU vectorized fallback
-        for d_idx in range(len(doy_cols)):
-            d = d_idx + 1
-            dv = doy_mat[:, d_idx]
-            if dv.sum() == 0:
-                continue
-            for j in range(n_ctx):
-                cross = dv * ctx_mat[:, j]
-                if np.nansum(cross) > 0:
+        # CPU vectorized fallback — multi-threaded via numpy GIL release
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _cross_doy_block(d_start, d_end):
+            """Process a block of DOY indices. Thread-safe — numpy ops release GIL."""
+            block_dict = {}
+            for d_idx in range(d_start, d_end):
+                d = d_idx + 1
+                dv = doy_mat[:, d_idx]
+                if dv.sum() == 0:
+                    continue
+                # Vectorized: multiply DOY column against ALL contexts at once
+                crosses = dv[:, None] * ctx_mat  # (N, n_ctx) — GIL released
+                sums = np.nansum(crosses, axis=0)  # (n_ctx,)
+                for j in np.where(sums > 0)[0]:
                     cn = ctx_names[j][:28]
-                    new_cols_dict[f'dx_{d}_{cn}'] = cross
-                    n_created += 1
-            if (d_idx + 1) % 50 == 0:
-                print(f'    [{(d_idx+1)/365*100:5.1f}%] DOY {d_idx+1}/365 | {n_created:,}')
+                    block_dict[f'dx_{d}_{cn}'] = crosses[:, j]
+            return block_dict
+
+        n_doy = len(doy_cols)
+        n_threads = min(32, n_doy, os.cpu_count() or 1)
+        block_size = max(1, (n_doy + n_threads - 1) // n_threads)
+
+        print(f'    CPU parallel: {n_doy} DOYs, {n_threads} threads')
+        with ThreadPoolExecutor(max_workers=n_threads) as executor:
+            futures = []
+            for t in range(n_threads):
+                s = t * block_size
+                e = min(s + block_size, n_doy)
+                if s >= e:
+                    break
+                futures.append(executor.submit(_cross_doy_block, s, e))
+            for f in futures:
+                block = f.result()
+                new_cols_dict.update(block)
+                n_created += len(block)
 
     # Batch assign all DOY crosses at once
     if new_cols_dict:

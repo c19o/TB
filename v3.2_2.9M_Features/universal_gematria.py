@@ -26,6 +26,7 @@ Usage:
   result = gematria("Bitcoin")  # returns dict with all values
 """
 
+import os
 import numpy as np
 
 
@@ -360,6 +361,8 @@ def gematria_gpu_batch(text_series, prefix='gem'):
 
     Falls back to CPU vectorized path if cuDF is unavailable.
     """
+    if os.environ.get('V2_SKIP_GPU') == '1':
+        return _gematria_cpu_vectorized(text_series, prefix)
     try:
         import cudf
         import cupy as cp
@@ -557,13 +560,14 @@ def _gematria_cpu_vectorized(text_series, prefix):
 
 def digital_root_gpu(arr):
     """Vectorized digital root. Works with numpy or cupy arrays."""
-    try:
-        import cupy as cp
-        if isinstance(arr, cp.ndarray):
-            x = cp.abs(arr).astype(cp.int64)
-            return cp.where(x == 0, cp.int32(0), (1 + (x - 1) % 9).astype(cp.int32))
-    except ImportError:
-        pass
+    if os.environ.get('V2_SKIP_GPU') != '1':
+        try:
+            import cupy as cp
+            if isinstance(arr, cp.ndarray):
+                x = cp.abs(arr).astype(cp.int64)
+                return cp.where(x == 0, cp.int32(0), (1 + (x - 1) % 9).astype(cp.int32))
+        except ImportError:
+            pass
     x = np.abs(np.asarray(arr)).astype(np.int64)
     return np.where(x == 0, 0, 1 + (x - 1) % 9).astype(np.int32)
 

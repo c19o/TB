@@ -146,12 +146,27 @@ _my_pid = os.getpid()
 os.system(f'pgrep -f "python.*(ml_multi_tf|cross_generator|optuna|exhaustive|meta_label|lstm_seq|backtest|backtesting|build_.*features)" | grep -v {_my_pid} | xargs -r kill -9 2>/dev/null; true')
 time.sleep(1)
 
-# CRITICAL: Must use --no-deps to prevent pip from upgrading cuda-python/cuda-bindings.
-# torch pulls cuda-bindings 13.x which breaks cudf in RAPIDS containers (CUDA 12.8).
-# All deps (numpy, scipy, pandas, pyarrow, torch) are ALREADY in the RAPIDS container.
-# Only need lightgbm, optuna, ephem, hmmlearn as new packages.
-run('pip install -q --no-deps lightgbm optuna ephem hmmlearn xgboost 2>&1 | tail -5 && pip install -q --no-cache-dir alembic cmaes colorlog sqlalchemy tqdm PyYAML joblib threadpoolctl 2>&1 | tail -3',
+# Install ALL dependencies — works on any base image (Docker-free deployment).
+# Covers both RAPIDS containers (where most are pre-installed) and lightweight images (pytorch, ubuntu).
+run('pip install -q xgboost lightgbm scikit-learn scipy ephem astropy pytz joblib '
+    'pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml '
+    'alembic cmaes colorlog sqlalchemy threadpoolctl 2>&1 | tail -5',
     'Install deps')
+
+# --- FIX 24: Lockfile — prevent duplicate pipeline runs for same TF ---
+_lockfile = f'RUNNING_{TF}.lock'
+if os.path.exists(_lockfile):
+    # Check if the process that created it is still alive
+    try:
+        _lock_pid = int(open(_lockfile).read().strip())
+        os.kill(_lock_pid, 0)  # Check if PID exists
+        log(f"*** ABORT: Another pipeline running for {TF} (PID {_lock_pid}) ***")
+        sys.exit(1)
+    except (ValueError, ProcessLookupError, OSError):
+        log(f"  Stale lockfile found — previous run crashed. Removing.")
+        os.remove(_lockfile)
+with open(_lockfile, 'w') as f:
+    f.write(str(os.getpid()))
 
 # ============================================================
 # STEP 1: Fix btc_prices.db symbol format
@@ -199,6 +214,15 @@ tfs = conn.execute(
 for tf_name, cnt in tfs:
     log(f"    {tf_name}: {cnt} rows")
 conn.close()
+
+# --- FIX 25: Disk space check before feature rebuild / cross gen ---
+import shutil
+_disk = shutil.disk_usage('.')
+_free_gb = _disk.free / (1024**3)
+if _free_gb < 20:
+    log(f"*** ABORT: Only {_free_gb:.1f} GB free disk space (need 20+) ***")
+    sys.exit(1)
+log(f"Disk space OK: {_free_gb:.1f} GB free")
 
 # ============================================================
 # STEP 2: Rebuild features if parquet missing or incomplete
@@ -314,6 +338,13 @@ if os.path.exists(parquet_path) and not os.path.exists(plain_pq):
     os.symlink(parquet_path, plain_pq)
     log(f"Symlinked {plain_pq} → {parquet_path}")
 
+# --- FIX 25: Disk space check before cross gen ---
+_disk = shutil.disk_usage('.')
+_free_gb = _disk.free / (1024**3)
+if _free_gb < 20:
+    log(f"*** ABORT: Only {_free_gb:.1f} GB free disk space (need 20+) ***")
+    sys.exit(1)
+
 # ============================================================
 # STEP 3: Build crosses (skip if NPZ already exists)
 # ============================================================
@@ -409,25 +440,35 @@ run_tee(f'python -X utf8 -u {_script("exhaustive_optimizer.py")} --tf {TF}',
         f'Optimizer {TF}', f'optimizer_{TF}.log', critical=False)
 
 # ============================================================
-# STEP 7: Meta-labeling
+# STEPS 7,8,9 — Run in PARALLEL (all depend only on Step 4)
+# Step 10 (Audit) runs AFTER — depends on Step 6 optimizer output
 # ============================================================
-run_tee(f'python -X utf8 -u {_script("meta_labeling.py")} --tf {TF}',
-        f'Meta {TF}', f'meta_{TF}.log', critical=False)
+from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+def _run_step(name, cmd, logfile):
+    """Wrapper for parallel step execution."""
+    try:
+        run_tee(cmd, name, logfile, critical=False)
+        return (name, True)
+    except Exception as e:
+        log(f"  {name} failed: {e}")
+        return (name, False)
+
+_parallel_steps = [
+    (f'Meta {TF}',  f'python -X utf8 -u {_script("meta_labeling.py")} --tf {TF}',  f'meta_{TF}.log'),
+    (f'LSTM {TF}',  f'python -X utf8 -u {_script("lstm_sequence_model.py")} --tf {TF} --train',  f'lstm_{TF}.log'),
+    (f'PBO {TF}',   f'python -X utf8 -u {_script("backtest_validation.py")} --tf {TF}',  f'pbo_{TF}.log'),
+]
+
+log(f"=== Steps 7,8,9 launching in parallel ({len(_parallel_steps)} tasks) ===")
+with ThreadPoolExecutor(max_workers=len(_parallel_steps)) as _step_pool:
+    _step_futures = {_step_pool.submit(_run_step, n, c, l): n for n, c, l in _parallel_steps}
+    for _sf in _as_completed(_step_futures):
+        _sname, _sok = _sf.result()
+        log(f"  {_sname}: {'OK' if _sok else 'FAIL'}")
 
 # ============================================================
-# STEP 8: LSTM
-# ============================================================
-run_tee(f'python -X utf8 -u {_script("lstm_sequence_model.py")} --tf {TF} --train',
-        f'LSTM {TF}', f'lstm_{TF}.log', critical=False)
-
-# ============================================================
-# STEP 9: PBO
-# ============================================================
-run_tee(f'python -X utf8 -u {_script("backtest_validation.py")} --tf {TF}',
-        f'PBO {TF}', f'pbo_{TF}.log', critical=False)
-
-# ============================================================
-# STEP 10: Audit
+# STEP 10: Audit (sequential — depends on Step 6 optimizer output)
 # ============================================================
 run_tee(f'python -X utf8 -u {_script("backtesting_audit.py")} --tf {TF}',
         f'Audit {TF}', f'audit_{TF}.log', critical=False)
@@ -440,13 +481,15 @@ log(f"=== SHAP cross feature analysis ===")
 try:
     import json
     import numpy as np
-    import lightgbm as lgb
+    import xgboost as xgb
 
     # Load model
-    model = lgb.Booster(model_file=f'model_{TF}.json')
+    model = xgb.Booster(model_file=f'model_{TF}.json')
 
     # Get features with non-zero split count (reduces 3.34M -> likely ~50K-200K active)
-    split_importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='split')))
+    all_features = model.feature_names
+    split_scores = model.get_score(importance_type='weight')  # weight = split count
+    split_importance = {f: split_scores.get(f, 0) for f in all_features}
     active_features = [f for f, v in split_importance.items() if v > 0]
     log(f"  Active features (split > 0): {len(active_features)} / {len(split_importance)}")
 
@@ -461,8 +504,8 @@ try:
     # Split importance is memory-safe and already shows which cross features contribute
     import pandas as pd
 
-    gain_importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='gain')))
-    all_features = model.feature_name()
+    gain_scores = model.get_score(importance_type='gain')
+    gain_importance = {f: gain_scores.get(f, 0) for f in all_features}
 
     # Build importance DataFrame
     imp_df = pd.DataFrame([
@@ -520,3 +563,7 @@ with open(f'DONE_{TF}', 'w') as f:
     f.write(f"Total time: {time.time()-START:.0f}s\n")
     f.write(f"Failures: {', '.join(FAILURES) if FAILURES else 'None'}\n")
 log(f"Wrote DONE_{TF} marker file")
+
+# --- FIX 24: Remove lockfile on clean exit ---
+if os.path.exists(_lockfile):
+    os.remove(_lockfile)

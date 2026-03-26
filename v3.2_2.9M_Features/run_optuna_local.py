@@ -786,11 +786,16 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
              f"mean_acc={final_result['mean_accuracy']:.4f} "
              f"mean_sortino={final_result['mean_sortino']:.2f}")
 
-    # Save best model
+    # Save best model — IMPORTANT: save as optuna_model_{tf}.json to avoid
+    # overwriting the production XGBoost model (model_{tf}.json) from ml_multi_tf.py.
+    # This is a LightGBM model; live_trader.py loads model_{tf}.json with xgb.Booster
+    # which would CRASH on a LightGBM file.
     if final_result['best_model'] is not None:
-        model_path = os.path.join(PROJECT_DIR, f'model_{tf_name}.json')
+        model_path = os.path.join(PROJECT_DIR, f'optuna_model_{tf_name}.json')
         final_result['best_model'].save_model(model_path)
-        log.info(f"  Model saved: {model_path}")
+        log.info(f"  LightGBM model saved: {model_path}")
+        log.info(f"  NOTE: This is a LightGBM model for analysis only. "
+                 f"Production model (model_{tf_name}.json) is XGBoost from ml_multi_tf.py.")
 
     # Save OOS predictions for meta-labeling
     oos_path = os.path.join(PROJECT_DIR, f'cpcv_oos_predictions_{tf_name}.pkl')

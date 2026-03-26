@@ -210,6 +210,16 @@ class LSTMDirectionModel(nn.Module):
         out = self.sigmoid(self.fc2(out))
         return out.squeeze(-1)
 
+    def forward_with_hidden(self, x):
+        """Single forward pass returning BOTH prediction AND hidden state.
+        Eliminates the redundant second LSTM pass from extract_hidden()."""
+        lstm_out, (h_n, c_n) = self.lstm(x)
+        last_hidden = lstm_out[:, -1, :]
+        out = self.dropout(last_hidden)
+        out = self.relu(self.fc1(out))
+        out = self.sigmoid(self.fc2(out))
+        return out.squeeze(-1), last_hidden
+
     def extract_hidden(self, x):
         """Extract hidden state features for XGBoost stacking."""
         with torch.no_grad():
@@ -550,16 +560,28 @@ class LSTMFeatureExtractor:
                 'lstm_hidden_std': hidden_stds,
             }, index=feature_df.index)
 
-        # Process sequences
+        # Process sequences in batches of 48 (matches training batch size)
+        # Uses forward_with_hidden() to get prediction + hidden in ONE forward pass
+        # instead of model() + extract_hidden() = two redundant LSTM passes
         self.model.eval()
+        batch_size = 48
         with torch.no_grad():
-            for i in range(window, n):
-                seq = torch.FloatTensor(X_arr[i - window:i]).unsqueeze(0).to(self.device)
-                prob = self.model(seq).item()
-                hidden = self.model.extract_hidden(seq)[0]
-                probs[i] = prob
-                hidden_means[i] = hidden.mean()
-                hidden_stds[i] = hidden.std()
+            # Pre-build all sequence indices
+            indices = list(range(window, n))
+            for batch_start in range(0, len(indices), batch_size):
+                batch_indices = indices[batch_start:batch_start + batch_size]
+                # Stack sequences into a single batch tensor
+                batch_seqs = np.stack([X_arr[i - window:i] for i in batch_indices])
+                batch_tensor = torch.FloatTensor(batch_seqs).to(self.device)
+                # Single forward pass: prediction + hidden state together
+                batch_probs, batch_hidden = self.model.forward_with_hidden(batch_tensor)
+                # Extract results from batch output
+                batch_probs_np = batch_probs.cpu().numpy()
+                batch_hidden_np = batch_hidden.cpu().numpy()
+                for j, idx in enumerate(batch_indices):
+                    probs[idx] = batch_probs_np[j]
+                    hidden_means[idx] = batch_hidden_np[j].mean()
+                    hidden_stds[idx] = batch_hidden_np[j].std()
 
         return pd.DataFrame({
             'lstm_prob': probs,

@@ -21,7 +21,7 @@ warnings.filterwarnings('ignore')
 import numpy as np
 import pandas as pd
 import sqlite3
-import lightgbm as lgb
+import xgboost as xgb
 from datetime import datetime, timedelta, timezone
 import urllib.request
 from feature_library import build_all_features
@@ -686,7 +686,7 @@ def run_trading_loop(mode='paper'):
     models = {}
     features_list = {}
     for tf in ALL_TFS:
-        # LightGBM model: .json is the standard format
+        # XGBoost model: .json is the standard format
         model_path = f'{DB_DIR}/model_{tf}.json'
         # CHANGE 4: Try features_{tf}_all.json first, fall back to pruned
         feat_path_all = f'{DB_DIR}/features_{tf}_all.json'
@@ -698,7 +698,7 @@ def run_trading_loop(mode='paper'):
         else:
             feat_path = None
         if os.path.exists(model_path) and feat_path:
-            m = lgb.Booster(model_file=model_path)
+            m = xgb.Booster(model_file=model_path)
             models[tf] = m
             with open(feat_path) as f:
                 features_list[tf] = json.load(f)
@@ -721,7 +721,7 @@ def run_trading_loop(mode='paper'):
                     meta_models[tf] = pickle.load(f)
                 print(f"  Loaded meta-model for {tf} (thresh={meta_models[tf].get('threshold', 0.5):.2f})")
     if not meta_models:
-        print("  No meta-models found — using raw LightGBM predictions")
+        print("  No meta-models found — using raw XGBoost predictions")
 
     # Load LSTM models (institutional upgrade)
     lstm_extractors = {}
@@ -795,15 +795,20 @@ def run_trading_loop(mode='paper'):
             profile = tf_ec.get('dd15_best') or tf_ec.get('dd10_best') or tf_ec.get('dd15_sortino')
             if profile:
                 ga_params[tf] = {
-                    'leverage': profile['leverage'],
-                    'risk_pct': profile['risk_pct'],
-                    'stop_atr': profile['stop_atr'],
-                    'rr': profile['rr'],
-                    'max_hold': profile['max_hold'],
+                    'leverage': profile.get('leverage', 10),
+                    'risk_pct': profile.get('risk_pct', 0.01),
+                    'stop_atr': profile.get('stop_atr', 1.0),
+                    'rr': profile.get('rr', 2.0),
+                    'max_hold': profile.get('max_hold', 4),
                     'exit_type': profile.get('exit_type', 0),
-                    'conf_thresh': profile['conf_thresh'],
+                    'conf_thresh': profile.get('conf_thresh', 0.80),
                 }
-                print(f"  {tf} config (exhaustive): {profile['leverage']:.0f}x lev, {profile['risk_pct']:.1f}% risk, {profile['stop_atr']:.1f}ATR, {profile['rr']:.1f}:1 RR, {profile['max_hold']}bar, conf>{profile['conf_thresh']:.2f}")
+                print(f"  {tf} config (exhaustive): {ga_params[tf]['leverage']:.0f}x lev, {ga_params[tf]['risk_pct']:.1f}% risk, {ga_params[tf]['stop_atr']:.1f}ATR, {ga_params[tf]['rr']:.1f}:1 RR, {ga_params[tf]['max_hold']}bar, conf>{ga_params[tf]['conf_thresh']:.2f}")
+                _model_mtime = os.path.getmtime(f'model_{tf}.json') if os.path.exists(f'model_{tf}.json') else 0
+                _opt_mtime = os.path.getmtime(optuna_path) if os.path.exists(optuna_path) else 0
+                _age_diff_days = abs(_model_mtime - _opt_mtime) / 86400
+                if _age_diff_days > 7:
+                    print(f"  WARNING: model and optimizer configs are {_age_diff_days:.0f} days apart — consider re-optimizing")
                 continue
 
         # Fall back to GA configs
@@ -1055,8 +1060,7 @@ def run_trading_loop(mode='paper'):
                         print(f"  Cross features: {_n_cross_total - _n_cross_nan:,}/{_n_cross_total:,} computed ({_pct:.0f}% NaN)")
 
                 # Predict (3-class softprob: SHORT=0, FLAT=1, LONG=2)
-                # LightGBM predicts directly on numpy arrays (no DMatrix needed)
-                raw_pred = models[tf].predict(X)
+                raw_pred = models[tf].predict(xgb.DMatrix(X, feature_names=feat_names))
                 if raw_pred.ndim == 2:
                     probs_3c = raw_pred[0]  # shape (3,)
                 elif len(raw_pred) >= 3:
@@ -1158,7 +1162,7 @@ def run_trading_loop(mode='paper'):
                         continue
 
                     # === SINGLE PROBABILITY PIPELINE ===
-                    # 1. Base LightGBM prob (already computed above as 'prob')
+                    # 1. Base XGBoost prob (already computed above as 'prob')
                     # prob is P(predicted_class): p_long for LONG, p_short for SHORT
 
                     # 2. LSTM blending (if model exists and feat_df available)
@@ -1169,7 +1173,7 @@ def run_trading_loop(mode='paper'):
                             if not np.isnan(lstm_p):
                                 if tf in platt_models:
                                     lstm_p = apply_platt_calibration(np.array([lstm_p]), platt_models[tf])[0]
-                                # Blend: 80% LightGBM + 20% LSTM
+                                # Blend: 80% XGBoost + 20% LSTM
                                 prob = 0.8 * prob + 0.2 * lstm_p
                                 print(f"  LSTM blend: lgbm={prob:.3f} lstm={lstm_p:.3f} → blended={prob:.3f}")
                         except Exception as e:
@@ -1311,7 +1315,7 @@ def run_trading_loop(mode='paper'):
                         log_trade_snapshot(
                             trade_id=trade_id, tf=tf, direction=direction,
                             entry_time=now.isoformat(), entry_price=entry_price,
-                            xgb_probs={'long': p_long, 'flat': p_flat, 'short': p_short},  # kwarg name kept for trade_journal compat (data is LightGBM)
+                            xgb_probs={'long': p_long, 'flat': p_flat, 'short': p_short},
                             lstm_prob=locals().get('lstm_p'),
                             meta_prob=locals().get('meta_probs', [None])[0] if locals().get('meta_probs') is not None else None,
                             blended_conf=confidence,
