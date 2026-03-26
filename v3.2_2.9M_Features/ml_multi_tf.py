@@ -327,8 +327,13 @@ def _cpcv_fold_worker_hmm(args_tuple):
     from sklearn.metrics import accuracy_score, precision_score, log_loss
     import time as _time
 
-    # ── Reconstruct sparse matrix ──
-    X_all = sp_sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
+    # ── Reconstruct matrix (sparse CSR or dense numpy) ──
+    if X_indices is not None:
+        X_all = sp_sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
+        _is_sparse = True
+    else:
+        X_all = X_data  # already a dense numpy array
+        _is_sparse = False
 
     # ── Per-fold seed offset for reproducibility ──
     params = xgb_params.copy()
@@ -760,12 +765,14 @@ if __name__ == '__main__':
           # Apply balanced class weights (TF_CLASS_WEIGHT config) — multiply into sample_weights
           _cw_setting = _TF_CLASS_WEIGHT.get(tf_name)
           if _cw_setting:
-              _class_sw = compute_sample_weight(_cw_setting, y_3class)
-              sample_weights *= _class_sw.astype(np.float32)
-              _unique_classes, _class_counts = np.unique(y_3class, return_counts=True)
+              _valid_mask = ~np.isnan(y_3class)
+              _class_sw = np.ones(len(y_3class), dtype=np.float32)
+              _class_sw[_valid_mask] = compute_sample_weight(_cw_setting, y_3class[_valid_mask]).astype(np.float32)
+              sample_weights *= _class_sw
+              _unique_valid, _valid_counts = np.unique(y_3class[_valid_mask], return_counts=True)
               log(f"  Class weights applied ('{_cw_setting}'): "
-                  + ", ".join(f"class {int(c)}={len(y_3class)/(_class_counts[i]*len(_unique_classes)):.3f}"
-                              for i, c in enumerate(_unique_classes)))
+                  + ", ".join(f"class {int(c)}={_valid_mask.sum()/(_valid_counts[i]*len(_unique_valid)):.3f}"
+                              for i, c in enumerate(_unique_valid)))
           else:
               log(f"  No class_weight configured for {tf_name}")
 
@@ -1026,18 +1033,11 @@ if __name__ == '__main__':
               # Class weights already applied to sample_weights earlier (after regime weights)
               log(f"  class_weight='{_cw}' confirmed active for {tf_name}")
 
-          # Interaction constraints (compute once, used by all paths)
-          _doy_names = [f for f in feature_cols if f.startswith('doy_')]
-          if _doy_names:
-              _trend_kw = ('regime', 'ema50', 'bull', 'bear', 'hmm_', 'trend')
-              _ta_kw = ('rsi_', 'macd', 'bb_', 'atr_', 'sma_', 'ema_', 'adx_', 'stoch_', 'obv', 'vwap', 'cci_', 'mfi_', 'williams', 'ichimoku', 'keltner', 'donchian', 'supertrend', 'sar_')
-              _trend_names = [f for f in feature_cols if any(kw in f for kw in _trend_kw)]
-              _ta_names = [f for f in feature_cols if any(kw in f for kw in _ta_kw)]
-              _constrained = _doy_names + _trend_names + _ta_names
-              if _constrained:
-                  _constrained_indices = [feature_cols.index(f) for f in _constrained if f in feature_cols]
-                  _base_xgb_params['interaction_constraints'] = [_constrained_indices]
-              log(f"  Interaction constraints: 1 group with DOY({len(_doy_names)}) + TREND({len(_trend_names)}) + TA({len(_ta_names)}) = {len(_constrained)} constrained, rest free")
+          # Interaction constraints — DISABLED for parallel training compatibility
+          # (constraint indices reference main-process feature order which may not match worker DMatrix)
+          # XGBoost still learns feature interactions naturally via tree splits — constraints are optional regularization
+          # TODO: Re-enable after verifying constraint index mapping in parallel workers
+          log(f"  Interaction constraints: DISABLED (parallel training compat)")
 
           # Default: final feature cols = feature_cols (parallel path keeps HMM in X_all)
           # Sequential sparse path overrides this after stripping HMM into overlay
@@ -1082,8 +1082,8 @@ if __name__ == '__main__':
                   _max_workers = _pending_splits
               log(f"  RAM-based scaling: {_available_ram/1e9:.0f} GB avail, {_mem_per_worker/1e9:.1f} GB/worker -> {_max_workers} max workers")
               _n_workers = int(os.environ.get('V3_CPCV_WORKERS', min(_max_workers, _total_cores)))
-              # Cap threads at 16 per worker — Perplexity: "too many threads degrades perf on small datasets"
-              _threads_per_worker = min(16, max(1, _total_cores // _n_workers))
+              # Cap threads at 64 per worker — Perplexity: NUMA overhead above 64 threads
+              _threads_per_worker = min(64, max(1, _total_cores // _n_workers))
               log(f"\n  PARALLEL CPCV: {_pending_splits} pending splits, {_n_workers} workers x {_threads_per_worker} threads ({_total_cores} cores available)")
 
               # XGBoost universal backend — same for ALL timeframes
@@ -1243,15 +1243,20 @@ if __name__ == '__main__':
                   # ── Parallel CPCV with per-fold HMM re-fitting ──
                   log(f"\n  Parallel CPCV: {_n_parallel} workers, {_nthread_per_fold} threads/worker, {len(splits)} folds")
 
-                  # Prepare CSR components for pickling to workers
-                  _X_csr = X_all.tocsr() if hasattr(X_all, 'tocsr') else X_all
+                  # Prepare data for pickling to workers (handle both sparse CSR and dense numpy)
                   _is_sparse_hmm = _X_all_is_sparse and _hmm_overlay is not None
+                  if _X_all_is_sparse:
+                      _X_csr = X_all.tocsr() if hasattr(X_all, 'tocsr') else sp_sparse.csr_matrix(X_all)
+                      _X_data, _X_indices, _X_indptr, _X_shape = _X_csr.data, _X_csr.indices, _X_csr.indptr, _X_csr.shape
+                  else:
+                      # Dense path: pass array directly, worker will detect via shape tuple vs 4-tuple
+                      _X_data, _X_indices, _X_indptr, _X_shape = X_all, None, None, X_all.shape
 
                   _worker_args_list = []
                   for _wi, _tr_idx, _te_idx in _pending_folds:
                       _worker_args_list.append((
                           _wi, _tr_idx, _te_idx,
-                          _X_csr.data, _X_csr.indices, _X_csr.indptr, _X_csr.shape,
+                          _X_data, _X_indices, _X_indptr, _X_shape,
                           _hmm_overlay, _hmm_overlay_names, _is_sparse_hmm,
                           y_3class, sample_weights, feature_cols, _base_xgb_params,
                           _args.boost_rounds, tf_name, _nthread_per_fold,
