@@ -1,81 +1,108 @@
-# V3.3 Session Resume — 2026-03-26 (Latest)
+# V3.3 Session Resume — 2026-03-27 11:30 UTC
 
-## STATUS: 1w training on vast.ai (512c Michigan, ID 33555611)
+## STATUS: TRAINING IN PROGRESS (1d + 4h active, 1w DONE)
 
-### Current Machine
-- **ID**: 33555611 (vast.ai)
-- **Specs**: 512 vCPUs, 515 GB RAM, 8x RTX 5090, Michigan
-- **Image**: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime (Docker-free, deps via pip)
-- **SSH**: `ssh -i ~/.ssh/vast_key -p 35610 root@ssh6.vast.ai`
-- **Cost**: $3.22/hr
+## ACTIVE MACHINES (vast.ai)
+| TF | Instance ID | Host | Port | $/hr | Status |
+|----|------------|------|------|------|--------|
+| **1d** | 33637153 | ssh7.vast.ai | 37152 | $1.35 | CPCV training (sparse+sequential, 6M features) |
+| **4h** | 33638560 | ssh8.vast.ai | 38560 | $1.16 | Cross gen step 5/13 (Esoteric×TA) |
 
-### Pipeline Progress (1w)
-- [x] Base features: 1,374 cols (8s)
-- [x] V2 feature layers: 3,331 cols
-- [x] Cross generation: 1,134,120 crosses in **~2 minutes** (was 75-90 min single-threaded!)
-- [x] NPZ + Parquet saved
-- [ ] XGBoost CPCV training (4 paths, 818 rows x 1.1M features) — IN PROGRESS
-- [ ] Feature stability
-- [ ] Optuna trade optimizer
-- [ ] Meta-labeling
-- [ ] LSTM
-- [ ] SHAP analysis
-- [ ] Download artifacts
+**Burn rate: $2.50/hr. Balance: ~$30.**
 
-## WHAT CHANGED THIS SESSION (MASSIVE)
+SSH: `ssh -o StrictHostKeyChecking=no -o IdentityFile=~/.ssh/vast_key -o IdentitiesOnly=yes -p PORT root@HOST`
 
-### 1. Docker-Free Cloud Deployment
-- **Ditched Docker entirely.** No more 12+ min image pulls.
-- Use any lightweight base image (pytorch, ubuntu, etc.) — usually cached on vast.ai
-- pip install all deps (~30s): `pip install xgboost lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml`
-- SCP code tar (~11MB) + btc_prices.db (1.3GB) + other DBs
-- Total setup: **2-3 min** vs 12+ min Docker pull
-- Works on ANY provider, ANY machine, no CUDA/driver lock-in
+## COMPLETED
+- **1w**: DONE. 71.9% accuracy (4 CPCV folds). 2.2M features. Model 113MB. All artifacts downloaded to v3.3/. Machine destroyed.
 
-### 2. Multi-Threaded Cross Generation (40x speedup!)
-- **Root cause found**: `v2_cross_generator.py` element-wise multiply (`left_cols * right_cols`) was single-threaded. Comment said "multi-core via BLAS" but element-wise `*` does NOT use BLAS.
-- **Fix**: ThreadPoolExecutor — numpy ufuncs release the GIL, so threads give true parallelism
-- **Dynamic batch sizing**: `BATCH = min(MAX_BATCH, max(500, n_pairs // n_threads))` — ensures enough batches to saturate all threads
-- **Result**: Astro × TA (131K pairs) went from 12+ min → 4 seconds. Total cross gen from 75-90 min → 2 min.
-- **RAM reduction**: 375GB → 62GB (threaded COO assembly vs dense array accumulation)
+## CANCELLED (too expensive at current speeds)
+- **1h**: Cancelled. Only parquet downloaded (no crosses completed). Cross gen RC=500 peaked 1871G/2003G near OOM. Would need RC=300 + sparse+sequential fix.
+- **15m**: Cancelled. Cross gen RC=500 OOM'd at 1892G. RC=200 stable but total pipeline estimated 120-300h ($146-366). Not viable without code optimization.
 
-### 3. Missing Module Fix
-- `astrology_engine.py` was in project root, not v3.2_2.9M_Features/. Now copied in.
+## CODE FIXES APPLIED THIS SESSION (all pushed to git, branch v3.3)
 
-### 4. Pip Dependency Checklist
-- Missing `pandas`, `pyarrow`, `numba` caused 3 separate crashes before caught
-- Full dep list now documented. MANDATORY import test before running.
+### Fix 1: Int64 indptr for NNZ > 2^31 (Perplexity-validated)
+- `_ensure_lgbm_sparse_dtypes()`: indptr=int64, indices=int32 on ALL TFs
+- Replaces ValueError with logging + sequential CPCV force
+- `_predict_chunked()` for IS predictions on large train sets
+- Row-partitioned boosting **REJECTED** (Perplexity: kills rare signals)
+- Files: ml_multi_tf.py, run_optuna_local.py, config.py
 
-## FILES MODIFIED
-- `v3.2_2.9M_Features/v2_cross_generator.py` — ThreadPoolExecutor parallel cross gen + dynamic batch sizing
-- `v3.2_2.9M_Features/gpu_cross_builder.py` — ThreadPoolExecutor for DOY CPU fallback
-- `v3.2_2.9M_Features/astrology_engine.py` — copied from root (was missing)
-- `v3.2_2.9M_Features/CLAUDE.md` — updated with all new lessons, deployment protocol, batch sizing rule
-- `v3.3/CLOUD_TRAINING_PROTOCOL.md` — Docker-free deployment, parallelism docs
-- `v3.3/setup.sh` — new (lightweight setup script for Docker-free deploy)
+### Fix 2: RIGHT_CHUNK OOM prevention
+- Auto RIGHT_CHUNK=2000 OOMs on ALL TFs except 1w
+- Per-TF settings: 1w=auto, 1d=200, 4h=500, 1h=300, 15m=200(optimal 300)
+- Set via `export V2_RIGHT_CHUNK=N` before launch
 
-## EXPECTED TIMES (REVISED with parallel cross gen)
+### Fix 3: Sparse+Sequential CPCV for 1M+ features (Perplexity-validated, 6-12x speedup)
+- Skip dense conversion when features > 1M (pickle serialization bottleneck)
+- Force sequential CPCV (no ProcessPoolExecutor) for 1M+ features
+- Cap num_threads to 32 for <10K rows
+- Add deterministic=True to V3_LGBM_PARAMS
+- **Root cause**: dense+parallel pickles ~400GB to workers = 8h+ stuck at load 1.04
+- **Fix**: sparse sequential = 2-3h for 1d (vs 12-30h before)
+- Files: ml_multi_tf.py, config.py
 
-| TF | Cross Gen | Training | Total | Cost (@$3.22/hr) |
-|----|-----------|----------|-------|-------------------|
-| 1w | ~2 min | ~5-10 min | ~15 min | $0.80 |
-| 1d | ~5 min | ~15 min | ~25 min | $1.34 |
-| 4h | ~4 min | ~10 min | ~20 min | $1.07 |
-| 1h | ~15 min | ~30 min | ~50 min | $2.68 |
-| 15m | ~30 min | ~2 hrs | ~3 hrs | $9.66 |
+### Fix 4: 15m RAM threshold 2048→1500 (cgroup reports less than host)
+- File: cloud_run_tf.py
 
-## NEXT STEPS
-1. Wait for 1w training to complete
-2. Download all 1w artifacts
-3. Run 1d on same machine (or bigger if needed)
-4. Commit all changes to git (branch v3.3)
-5. After all TFs: paper trading validation
+## OBSERVED RAM PEAKS (cross gen, per TF)
+| TF | Rows | RC | Peak RAM | Machine | Result |
+|----|------|----|----------|---------|--------|
+| 1w | 818 | auto(2000) | 11G | 377GB | OK |
+| 1d | 5,727 | 200 | 313G | 944GB | OK (OOM'd at 377GB RC=2000, 503GB RC=500) |
+| 4h | 17,520 | 500 | 1213G | 2TB | OK (OOM'd at 1007GB RC=2000, 1007GB RC=500) |
+| 1h | 75,405 | 300 | 1871G | 2TB | Near-OOM (RC=500 peaked 1871G/2003G) |
+| 15m | 293,980 | 200 | 574G | 2TB | OK (OOM'd at 1892G RC=500) |
 
-## KEY LESSONS (NEW)
-1. Docker is unnecessary for CPU-bound pipelines. pip + SCP is 5x faster setup.
-2. numpy element-wise `*` is NOT BLAS — single-threaded. Use ThreadPoolExecutor for parallel column blocks.
-3. Batch size must match thread count, not just RAM. `n_pairs / 50000 = 3 batches` wastes 509 of 512 cores.
-4. Always test ALL pip imports before launching pipeline. One missing module = wasted run.
-5. `kill -9` on vast.ai containers kills the init process — use `kill PID` not `killall`.
+## CROSS FEATURE COUNTS (observed)
+| TF | Base | Crosses | Total | NNZ | Density | Training Mode |
+|----|------|---------|-------|-----|---------|---------------|
+| 1w | 3,331 | 2,195,129 | **2.2M** | 46M | 2.6% | Dense (7GB) |
+| 1d | 3,796 | 6,039,797 | **6.0M** | 498M | 1.4% | Sparse (fix applied) |
+| 4h | TBD | TBD | TBD | TBD | TBD | Sparse (fix pre-deployed) |
 
-## GIT: Branch v3.3, uncommitted changes — commit after 1w completes
+## 1w RESULTS (first-ever completed model)
+- **CPCV Accuracy**: 71.9% mean (73.3%, 66.7%, 73.0%, 74.6%)
+- **PrecL**: 92.0%, 61.9%, 62.5%, 0.0% (varies by fold)
+- **PrecS**: 0.0% all folds (only 56 shorts in 818 rows)
+- **Trees**: 96, 385, 446, 52 (final model: 1041 trees, 347 per class)
+- **Model**: 113MB, 2,198,427 features
+- **Meta-labeling**: AUC=0.250, acc=0.643 (tiny test set: 28 trades)
+- **PBO**: FAILED (is_metrics not passed — code bug, non-fatal)
+- **No v3.2 baseline exists** — 1w never completed training before
+
+## WHAT TO DO NEXT
+1. **Monitor 1d**: CPCV training with sparse+sequential fix. Should complete in ~3-4h. Download artifacts + evaluate before destroying.
+2. **Monitor 4h**: Still in cross gen step 5. Fix already uploaded. When CPCV starts, it will use sparse+sequential. ~8-12h total.
+3. **After 1d/4h complete**: Evaluate results, compare accuracy, download everything.
+4. **1h/15m**: Need code optimization before attempting again. Key issues:
+   - Cross gen too slow (single-threaded element-wise multiply)
+   - 15m CPCV would take 120-300h with current code
+   - Need parallel cross gen fix (Numba prange or ThreadPoolExecutor)
+   - Or bigger/faster machines
+5. **PBO bug**: Fix is_metrics passing in ml_multi_tf.py → backtesting_audit.py
+
+## KEY PERPLEXITY FINDINGS (this session)
+- Row-partitioned boosting KILLS rare signals (features firing 15 times → ~1 per chunk → below min_data_in_leaf)
+- LightGBM PR #1719 (2018) fixed int64 sparse support — no need for row partitioning
+- Dense+parallel CPCV is SLOWER than sparse+sequential for 1M+ features (pickle bottleneck)
+- Sparse histogram O(2×NNZ) is faster than dense O(rows×features) at <5% density
+- "Sparse CSR serializes OpenMP" claim is OUTDATED — not true in LightGBM 4.x
+- EFB works identically in sparse and dense modes
+- Chunked cross gen (column chunks + hstack) preserves matrix exactly — lossless
+
+## MACHINES DESTROYED THIS SESSION
+- 33634628 (1w RTX 5060 Ti) — done, artifacts downloaded
+- 33634629 (1d RTX 4060 Ti) — OOM'd at 377GB
+- 33635568 (1d RTX 5080 504GB) — OOM'd at 503GB
+- 33634631 (4h RTX 5080 1TB) — OOM'd at 1007GB
+- 33634634 (15m A40 2TB) — SSH key issue, re-rented
+- 33634957 (15m A40 2TB) — cancelled, too expensive
+- 33634633 (1h A40 2TB) — cancelled, too expensive
+
+## GIT STATUS (branch v3.3, all pushed)
+Latest commit: `59f5ff2` — sparse+sequential CPCV fix
+All training docs updated with RIGHT_CHUNK per TF and OOM history.
+
+## MATRIX THESIS (include in ALL agent contexts)
+This is NOT a conventional trading bot. The edge is 2.9 MILLION sparse binary cross features generated by cross-multiplying esoteric signals (gematria, astrology, numerology, space weather, tweet decodes) with technical analysis indicators. LightGBM's EFB (Exclusive Feature Bundling) bundles mutually exclusive binary features — architecturally why LightGBM is used, never XGBoost. NaN = "missing signal" (LightGBM learns optimal split direction). 0 = "value is zero" (DIFFERENT meaning). NO feature can EVER be filtered, subsampled, or removed. The model decides via tree splits. feature_pre_filter=False is CRITICAL. Esoteric features ARE the edge.
