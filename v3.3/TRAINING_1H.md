@@ -5,7 +5,7 @@
 - **Cores:** 256+ (parallel CPCV + cross gen)
 - **CPU Score:** 500+
 - **Disk:** 80GB+
-- **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=500` (MANDATORY — auto=2000 OOMs)
+- **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=300` (MANDATORY — RC=500 peaked at 1871G/2003G and was about to OOM. RC=300 is safe.)
 - **Training stays sparse** — dense would be ~2.3TB, won't fit. int64 indptr handles NNZ > 2^31.
 
 ## CRITICAL: OLD MACHINE DESTROYED — DO NOT USE 33598910

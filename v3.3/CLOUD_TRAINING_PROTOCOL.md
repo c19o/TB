@@ -55,7 +55,7 @@ CPU Score = Cores × GHz.
 | 1w | 818 | 64 GB | 64 | auto (2000) | Peak 11G. Small enough for auto. Converts to dense for training. |
 | 1d | 5,727 | 1 TB | 128 | **200** | Peak 313G on 944GB. OOM'd at 377GB(RC=2000) and 503GB(RC=500). |
 | 4h | 17,520 | 2 TB | 128 | **500** | Peak 1213G on 2TB. OOM'd at 1007GB(RC=2000 and RC=500). |
-| 1h | 75,405 | 2 TB | 256 | **500** | Peak 1525G on 2TB. Safe (76% usage). |
+| 1h | 75,405 | 2 TB | 256 | **300** | RC=500 peaked 1871G (93%), near OOM. RC=300 safe (~1200G est). |
 | 15m | 293,980 | 2 TB | 256 | **300** | RC=500: OOM at 1892G. RC=200: peak 574G (over-safe). RC=300 optimal (~1200G). |
 
 **CRITICAL: Cross gen RAM is the bottleneck, NOT training.** Training only needs ~67GB (sparse CSR).
@@ -70,7 +70,7 @@ Auto RIGHT_CHUNK=2000 OOMs on ALL TFs except 1w. Set `export V2_RIGHT_CHUNK=N` b
   - **1w:** auto (2000) — 818 rows, tiny
   - **1d:** 200 — OOM'd at 503GB with RC=500
   - **4h:** 500 — stable on 2TB, peaks ~1200G
-  - **1h:** 500 — stable on 2TB, peaks ~1500G
+  - **1h:** 300 — RC=500 peaked 1871G (near OOM). RC=300 safe.
   - **15m:** 300 (optimal) — RC=500 OOMs, RC=200 over-safe
 
 ### vast.ai Search Filter
