@@ -59,6 +59,15 @@ CPU Score = Cores × GHz.
 | 15m | 293,980 | 2 TB | 256 | **300** | RC=500: OOM at 1892G. RC=200: peak 574G (over-safe). RC=300 optimal (~1200G). |
 
 **CRITICAL: Cross gen RAM is the bottleneck, NOT training.** Training only needs ~67GB (sparse CSR).
+
+### KNOWN BOTTLENECK: Parallel CPCV + Dense on 1M+ Features (Perplexity-confirmed)
+For 1M+ features, parallel CPCV via ProcessPoolExecutor is slower than sequential:
+- Dense conversion fits in RAM → code converts sparse→dense for multi-core LightGBM
+- BUT parallel path pickles ~100GB per worker through Python IPC = hours of serialization
+- Observed on 1d (6M features, 192 cores): load 1.04, 8+ hours, no fold results
+- **FIX:** Stay sparse for 1M+ features, or train CPCV folds sequentially
+- Sparse LightGBM histogram building is O(2 × NNZ) — efficient for binary crosses
+- num_threads ≤ 32 for < 10K rows (LightGBM docs)
 Cross gen materializes dense intermediate arrays: rows × RIGHT_CHUNK × n_left_pairs × 4 bytes × n_threads.
 Auto RIGHT_CHUNK=2000 OOMs on ALL TFs except 1w. Set `export V2_RIGHT_CHUNK=N` before launch.
 

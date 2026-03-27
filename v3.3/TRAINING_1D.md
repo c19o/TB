@@ -9,6 +9,16 @@
 - **CPU Score:** 400+ (cores x GHz). Cross gen + training both CPU-bound.
 - **Disk:** 50GB+
 - **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=200` (MANDATORY — auto=2000 OOMs, 500 OOMs on 503GB)
+
+### KNOWN BOTTLENECK: Parallel CPCV Pickle Serialization
+With 6M features, parallel CPCV via ProcessPoolExecutor is a TRAP:
+- Dense conversion (138GB) fits in RAM → code converts sparse→dense
+- Parallel path converts dense→sparse for pickle transport → each worker converts sparse→dense again
+- 4 workers × ~100GB pickle data = ~400GB through one IPC pipe = **hours wasted**
+- Observed: load 1.04 on 192 cores, 8+ hours with no fold results
+- **FIX NEEDED:** For 1M+ features, stay sparse OR train CPCV sequentially (no ProcessPoolExecutor)
+- Perplexity confirmed: sparse histogram is O(2 × NNZ), efficient for 99% sparse binary crosses
+- LightGBM docs warn: num_threads > 64 on < 10K rows causes poor scaling
 - **GPU:** Not needed (LightGBM CPU-only for sparse/dense training)
 
 ---
