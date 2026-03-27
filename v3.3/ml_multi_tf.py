@@ -647,6 +647,7 @@ if __name__ == '__main__':
           # Combine base + crosses into X_all
           _X_all_is_sparse = False
           _nnz_exceeds_int32 = False   # set True if NNZ > int32 max (15m with large cross matrix)
+          _n_total_features = 0        # set after cross loading, used for sequential CPCV decision
           _converted_to_dense = False  # tracks if sparse→dense conversion happened
           # (subsampling removed — matrix = ALL data, no data loss)
           if cross_matrix is not None and cross_matrix.shape[0] == X_base.shape[0]:
@@ -658,21 +659,24 @@ if __name__ == '__main__':
               X_all = sp_sparse.hstack([X_base_sparse, cross_matrix], format='csr')
               X_all = _ensure_lgbm_sparse_dtypes(X_all, "X_all")
               log(f"  Sparse dtypes: indices={X_all.indices.dtype}, indptr={X_all.indptr.dtype}")
-              # Convert sparse→dense for multi-core LightGBM (sparse serializes OpenMP)
-              # But only if the dense matrix fits in available RAM
+              # Dense conversion decision:
+              # - 1M+ features: NEVER convert (pickle serialization bottleneck kills parallel CPCV)
+              #   Sparse LightGBM histogram = O(2×NNZ), faster than dense O(rows×features) at low density
+              #   Perplexity-confirmed: dense+parallel on 6M features = 12-30h, sparse+sequential = 2-3h
+              # - <1M features: convert if fits in 70% of RAM (multi-core dense histogram)
               import psutil
-              _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32
+              _n_total_features = X_all.shape[1]
+              _dense_bytes = X_all.shape[0] * _n_total_features * 4  # float32
               _avail_ram = psutil.virtual_memory().available
-              if _dense_bytes < _avail_ram * 0.7:  # 70% of available RAM
+              if _n_total_features > 1_000_000:
+                  log(f"  Keeping SPARSE ({_n_total_features:,} features > 1M — dense+parallel is slower)")
+                  log(f"  Sparse histogram O(2×NNZ) faster than dense O(rows×features) for binary crosses")
+              elif _dense_bytes < _avail_ram * 0.7:
                   log(f"  Converting sparse to dense ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
                   X_all = X_all.toarray()
                   _converted_to_dense = True  # disable is_enable_sparse in LightGBM params
               else:
-                  # Dense doesn't fit — keep SPARSE. NEVER subsample rows (matrix = all data).
-                  # Parallel CPCV works on sparse via ProcessPoolExecutor (CSR pickling).
-                  # Rent a bigger machine if dense speed is needed.
                   log(f"  Keeping SPARSE (dense would need {_dense_bytes/1e9:.1f} GB, only {_avail_ram/1e9:.0f} GB avail)")
-                  log(f"  Parallel CPCV will use sparse CSR (no data loss)")
               feature_cols = feature_cols + cross_cols
               _X_all_is_sparse = not _converted_to_dense  # True if still sparse CSR, False if converted to dense
               nnz = X_all.nnz if hasattr(X_all, 'nnz') else int((X_all != 0).sum())
@@ -837,6 +841,12 @@ if __name__ == '__main__':
           if _converted_to_dense:
               _base_lgb_params['is_enable_sparse'] = False  # dense data → use multi-threaded dense histogram
               log(f"  is_enable_sparse=False (data converted to dense — enables multi-core LightGBM)")
+          # Cap num_threads for small datasets (LightGBM docs: >64 threads on <10K rows = poor scaling)
+          _n_rows = X_all.shape[0] if not hasattr(X_all, 'nnz') else X_all.shape[0]
+          if _n_rows < 10_000 and _base_lgb_params.get('num_threads', 0) == 0:
+              _capped_threads = min(_total_cores, 32)
+              _base_lgb_params['num_threads'] = _capped_threads
+              log(f"  num_threads capped to {_capped_threads} (< 10K rows, LightGBM docs)")
 
           # Interaction constraints (compute once, used by all paths)
           _doy_names = [f for f in feature_cols if f.startswith('doy_')]
@@ -860,6 +870,10 @@ if __name__ == '__main__':
           if _nnz_exceeds_int32 and _use_parallel_splits:
               _use_parallel_splits = False
               log(f"  Forcing sequential CPCV (CSR arrays too large for multiprocess pickle)")
+
+          if _n_total_features > 1_000_000 and _use_parallel_splits:
+              _use_parallel_splits = False
+              log(f"  Forcing sequential CPCV ({_n_total_features:,} features — pickle overhead > training time)")
 
           if _use_parallel_splits:
               # ── Parallel CPCV path (CPU workers) ──

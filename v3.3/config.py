@@ -237,6 +237,7 @@ V3_LGBM_PARAMS = {
     "max_bin": 15,
     "max_depth": -1,                  # -1 = no limit; Optuna searches [4, 12]
     "num_threads": 0,                 # 0 = auto-detect via OpenMP (not -1 which is undocumented)
+    "deterministic": True,            # Perplexity: required for reproducible sparse training
     "feature_pre_filter": False,      # CRITICAL: True silently kills rare esoteric features at Dataset construction
     "is_enable_sparse": True,
     "max_conflict_rate": 0.0,          # CRITICAL: protect cross feature co-occurrence from EFB bundling
