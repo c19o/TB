@@ -208,8 +208,9 @@ export V2_BATCH_MAX=500       # Cap dense intermediate arrays in cross gen
 ## OMP_NUM_THREADS / NUMBA_NUM_THREADS — set dynamically by cloud_run_tf.py per phase
 ```
 
-### Why V2_RIGHT_CHUNK=500:
-The cross generator processes right-side contexts in chunks of RIGHT_CHUNK. Each chunk materializes dense arrays of shape (227K, RIGHT_CHUNK). At RIGHT_CHUNK=500: 227K x 500 x 4 bytes = ~430MB per chunk. With 128 threads, peak = ~55GB per batch window. Safe for 1.5TB.
+### Why V2_RIGHT_CHUNK=300:
+RC=500 OOM'd at 1892G on 2TB machine (294K rows). RC=200 is over-safe (574G peak, 29% usage).
+**RC=300 is the sweet spot** — estimated peak ~1100-1300G, 35%+ headroom on 2TB, ~40% faster than RC=200.
 
 ### Why V2_BATCH_MAX=500:
 Caps the number of feature pairs processed per batch in the parallel cross multiply. Each worker holds arrays of (N x BATCH x 4 bytes). At 227K rows x 500 pairs x 4 bytes = ~430MB per worker.

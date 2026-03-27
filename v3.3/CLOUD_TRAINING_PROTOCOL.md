@@ -52,11 +52,11 @@ CPU Score = Cores × GHz.
 
 | TF | Rows | Min RAM | Min Cores | RIGHT_CHUNK | Notes |
 |----|------|---------|-----------|-------------|-------|
-| 1w | 818 | 64 GB | 64 | auto (2000) | Small enough for auto. Converts to dense for training. |
-| 1d | 5,727 | 1 TB | 128 | **200** | OOM'd at 377GB and 503GB with RC=500. Needs 1TB+. |
-| 4h | 17,520 | 2 TB | 128 | **500** | OOM'd at 1007GB with RC=500. Needs 2TB. |
-| 1h | 75,405 | 2 TB | 256 | **500** | Pre-emptively set RC=500. 2TB safe. |
-| 15m | 293,980 | 2 TB | 256 | **200** | OOM'd at 1920GB with RC=500. RC=200 stable at <50% RAM. |
+| 1w | 818 | 64 GB | 64 | auto (2000) | Peak 11G. Small enough for auto. Converts to dense for training. |
+| 1d | 5,727 | 1 TB | 128 | **200** | Peak 313G on 944GB. OOM'd at 377GB(RC=2000) and 503GB(RC=500). |
+| 4h | 17,520 | 2 TB | 128 | **500** | Peak 1213G on 2TB. OOM'd at 1007GB(RC=2000 and RC=500). |
+| 1h | 75,405 | 2 TB | 256 | **500** | Peak 1525G on 2TB. Safe (76% usage). |
+| 15m | 293,980 | 2 TB | 256 | **300** | RC=500: OOM at 1892G. RC=200: peak 574G (over-safe). RC=300 optimal (~1200G). |
 
 **CRITICAL: Cross gen RAM is the bottleneck, NOT training.** Training only needs ~67GB (sparse CSR).
 Cross gen materializes dense intermediate arrays: rows × RIGHT_CHUNK × n_left_pairs × 4 bytes × n_threads.
@@ -65,8 +65,13 @@ Auto RIGHT_CHUNK=2000 OOMs on ALL TFs except 1w. Set `export V2_RIGHT_CHUNK=N` b
 ### Lesson: RIGHT_CHUNK OOM History (2026-03-27)
 - 1d OOM'd at 377GB (RC=auto=2000), OOM'd at 503GB (RC=500), stable at 945GB (RC=200)
 - 4h OOM'd at 1007GB (RC=auto=2000), OOM'd at 1007GB (RC=500), stable at 2TB (RC=500)
-- 15m OOM'd at 1920GB (RC=500), stable at 1920GB (RC=200)
-- **Rule: 2TB machines for everything except 1w. RIGHT_CHUNK=200 for 1d/15m, 500 for 4h/1h.**
+- 15m OOM'd at 1920GB (RC=500, peaked 1892G), stable at 1920GB (RC=200, peaked 574G). RC=300 is the sweet spot (~1200G peak).
+- **Rule: 2TB machines for everything except 1w. RIGHT_CHUNK per TF:**
+  - **1w:** auto (2000) — 818 rows, tiny
+  - **1d:** 200 — OOM'd at 503GB with RC=500
+  - **4h:** 500 — stable on 2TB, peaks ~1200G
+  - **1h:** 500 — stable on 2TB, peaks ~1500G
+  - **15m:** 300 (optimal) — RC=500 OOMs, RC=200 over-safe
 
 ### vast.ai Search Filter
 
