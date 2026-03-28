@@ -1552,6 +1552,9 @@ if __name__ == '__main__':
                   # (best_model_obj holds its own reference if this was the best fold)
                   del model
                   gc.collect()
+                  if _use_gpu_sparse():
+                      gc.collect()
+                      log(f"    GPU memory cleanup between folds")
 
           if not window_results:
               log(f"  SKIP -- no valid CPCV paths")

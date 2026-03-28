@@ -263,11 +263,13 @@ def load_tf_data(tf_name):
                 f"FATAL: X_all column index > int32 max")
             X_all.indices = X_all.indices.astype(np.int32)
         feature_cols = feature_cols + cross_cols
-        # RAM check before dense conversion — avoid OOM
-        if _HAS_GPU_FORK and should_use_gpu(tf_name, X_all):
-            is_sparse = True  # Keep sparse for GPU path
-            log.info("  Keeping sparse for GPU fork")
+        # Check if GPU fork will be used — keep sparse for GPU
+        if _HAS_GPU_FORK:
+            log.info("  GPU fork detected — keeping data sparse for GPU histograms")
+            is_sparse = True
+            # Skip dense conversion entirely
         else:
+            # CPU path: convert to dense for multi-core Optuna if RAM allows
             try:
                 import psutil
                 _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32 (data is downcast)
