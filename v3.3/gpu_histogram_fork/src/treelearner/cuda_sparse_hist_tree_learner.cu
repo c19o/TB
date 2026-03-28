@@ -117,6 +117,10 @@
  * Each thread processes one leaf row. Walks its CSR nonzeros and
  * atomicAdd grad/hess into the histogram bin for that column.
  *
+ * Gradients are RAW (indexed by original row ID), NOT ordered.
+ * GBDT pre-slices the gradient array per class, so grad[row] gives
+ * the correct gradient without num_classes stride.
+ *
  * For raw binary features (data == NULL): every stored nonzero is bin 1.
  * For EFB-encoded features (data != NULL): data[j] is the bundle-bin.
  *   bin 0 means all features in this bundle are OFF — skip it.
@@ -132,20 +136,24 @@ __global__ void atomic_scatter_hist_kernel(
     const int64_t* __restrict__ indptr,
     const int32_t* __restrict__ indices,
     const uint8_t* __restrict__ data,          /* NULL for raw binary */
-    const double*  __restrict__ gradients,     /* [n_rows * num_classes] */
+    const double*  __restrict__ gradients,     /* [n_rows] — single class, RAW */
     const double*  __restrict__ hessians,
     const int32_t* __restrict__ leaf_rows,     /* [n_leaf_rows] sorted */
     int32_t                     n_leaf_rows,
-    int32_t                     class_id,
-    int32_t                     num_classes,
+    int32_t                     class_id,      /* unused — GBDT pre-slices */
+    int32_t                     num_classes,   /* unused — GBDT pre-slices */
     double*        __restrict__ hist            /* [total_bins * 2] */
 ) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n_leaf_rows) return;
 
     int32_t row = leaf_rows[tid];
-    double g = gradients[static_cast<int64_t>(row) * num_classes + class_id];
-    double h = hessians[static_cast<int64_t>(row) * num_classes + class_id];
+    /* gradients_/hessians_ are RAW arrays indexed by original row ID.
+     * GBDT::TrainOneIter() already offsets the pointer by
+     * (cur_tree_id * num_data_), so grad[row] is this class's gradient.
+     * No num_classes stride needed. */
+    double g = gradients[row];
+    double h = hessians[row];
 
     int64_t start = indptr[row];
     int64_t end   = indptr[row + 1];
@@ -217,12 +225,13 @@ static inline int grid_blocks(int64_t n_elements) {
  * Helper kernels for cuSPARSE mode (forward-declared, defined below class)
  * ========================================================================= */
 
-/* Scatter ordered leaf gradients into full-size vectors at original row
- * positions. Required for cuSPARSE SpMV which operates on full n_rows. */
+/* Scatter RAW leaf gradients into full-size vectors at original row
+ * positions. Required for cuSPARSE SpMV which operates on full n_rows.
+ * raw_grad is indexed by original row ID (NOT ordered). */
 __global__ void scatter_grad_kernel(
     const int32_t* __restrict__ leaf_rows,
-    const double*  __restrict__ ordered_grad,
-    const double*  __restrict__ ordered_hess,
+    const double*  __restrict__ raw_grad,
+    const double*  __restrict__ raw_hess,
     double*        __restrict__ full_grad,
     double*        __restrict__ full_hess,
     int32_t                     n_leaf_rows,
@@ -240,8 +249,8 @@ __global__ void interleave_grad_kernel(
 
 /* Host-side launch wrappers */
 static void launch_scatter_kernel(
-    const int32_t* d_leaf_rows, const double* d_ordered_grad,
-    const double* d_ordered_hess, double* d_full_grad, double* d_full_hess,
+    const int32_t* d_leaf_rows, const double* d_raw_grad,
+    const double* d_raw_hess, double* d_full_grad, double* d_full_hess,
     int32_t n_leaf_rows, int32_t num_classes, int32_t class_id,
     cudaStream_t stream);
 
@@ -299,7 +308,7 @@ CUDASparseHistTreeLearner::~CUDASparseHistTreeLearner() {
 void CUDASparseHistTreeLearner::Init(const Dataset* train_data,
                                       bool is_constant_hessian) {
     /* Base class Init sets up all CPU structures:
-     * - share_state_ (gradient/hessian arrays, ordered indices)
+     * - share_state_ (histogram layout, feature offsets)
      * - smaller_leaf_histogram_array_
      * - larger_leaf_histogram_array_
      * - feature_hist_offsets()
@@ -817,11 +826,13 @@ void CUDASparseHistTreeLearner::AllocateBuffers() {
  * histograms for the smaller leaf (and optionally the larger leaf
  * via subtraction trick or direct build).
  *
- * share_state_ contains:
- *   - ordered_gradients: reordered so [0..n_smaller_leaf) are the smaller
- *     leaf's rows (already in leaf order by LightGBM's CPU partitioner)
- *   - ordered_hessians: same reordering
- *   - data_indices: mapping from ordered position to original row index
+ * We use gradients_ and hessians_ (inherited from SerialTreeLearner),
+ * which are RAW per-sample gradients indexed by original row ID.
+ * GBDT::TrainOneIter() pre-slices the pointer per class, so these
+ * are single-class arrays of length num_data_.
+ *
+ * data_indices (from leaf_splits): original row indices for the leaf.
+ * We do NOT use ordered_gradients_ (the CPU reordering buffer).
  *
  * Histogram output goes into smaller_leaf_histogram_array_ which the
  * base class's FindBestSplits() reads.
@@ -957,11 +968,12 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
     }
 
     /* ---- Step 3: Build histogram for smaller leaf ---- */
-    /* For multiclass, LightGBM trains one class per tree within a round.
-     * The gradients are already class-specific (interleaved layout). We
-     * pass class_id=0 since the ordered gradients are for the current
-     * class being trained. */
-    int class_id = 0;  /* ordered gradients are already class-specific */
+    /* For multiclass, GBDT::TrainOneIter() offsets the gradient pointer
+     * by (cur_tree_id * num_data_) before calling Train(), so gradients_
+     * already points to the current class's RAW gradient slice.
+     * class_id=0 because there's no interleaving — the pointer is
+     * pre-sliced. */
+    int class_id = 0;  /* gradients_ already points to correct class slice */
 
     if (gpu_hist_mode_ == GPU_HIST_MODE_CUSPARSE) {
         BuildHistogramCuSPARSE(data_indices, n_smaller_rows, class_id);
@@ -1141,8 +1153,8 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
  * zero contributions from non-leaf rows because their gradient = 0.
  *
  * This approach is correct because:
- * 1. grad_full[row] = ordered_grad[i] for leaf rows (via data_indices)
- * 2. grad_full[row] = 0.0 for non-leaf rows
+ * 1. grad_full[row] = raw_grad[row] for leaf rows (scatter kernel)
+ * 2. grad_full[row] = 0.0 for non-leaf rows (memset)
  * 3. SpMV: hist[f] = sum over rows of (csr_AT[f,row] * grad_full[row])
  *    = sum over leaf rows of (csr_AT[f,row] * grad[row])  (non-leaf = 0)
  *
@@ -1165,24 +1177,16 @@ void CUDASparseHistTreeLearner::BuildHistogramCuSPARSE(
                      stream_compute_));
 
     /* Scatter the leaf gradients into the full-size vectors.
-     * d_gradients_ has ordered gradients (leaf rows first).
-     * d_leaf_rows_ has the original row indices.
-     * We need: d_full_grad_[original_row] = d_gradients_[ordered_pos]
+     * d_gradients_ has RAW (unordered) gradients for ALL n_rows_ rows,
+     * indexed by original row ID. gradients_ is set directly from
+     * GBDT::TrainOneIter() which offsets by (cur_tree_id * num_data_).
+     * It is NOT the ordered_gradients_ array (which is a separate
+     * buffer filled by Dataset::ConstructHistograms on the CPU path).
      *
-     * For single-class (num_classes=1), ordered_pos == leaf position.
-     * The ordered gradients are contiguous for the leaf. */
-
-    /* We need a scatter kernel here. cuSPARSE does not provide one,
-     * so we launch a simple scatter kernel. */
-
-    /* Note: This is a device-side scatter. d_leaf_rows_ contains the
-     * original row indices for the leaf. d_gradients_ has the gradients
-     * in ordered position [0, 1, ..., n_leaf_rows-1]. We scatter:
-     *   d_full_grad_[d_leaf_rows_[i]] = d_gradients_[i * num_classes + class_id]
-     */
-
-    /* Scatter ordered gradients into full-size vectors using the
-     * leaf row index mapping (defined above as forward-declared kernel). */
+     * d_leaf_rows_ has the original row indices for this leaf.
+     * We scatter:  d_full_grad_[row] = d_gradients_[row]
+     * for each row in d_leaf_rows_. Non-leaf rows stay zero (from memset).
+     * The SpMV then sums only leaf rows' gradients correctly. */
     launch_scatter_kernel(d_leaf_rows_, d_gradients_, d_hessians_,
                           d_full_grad_, d_full_hess_,
                           n_leaf_rows, num_classes_, class_id,
@@ -1273,8 +1277,10 @@ void CUDASparseHistTreeLearner::BuildHistogramAtomicScatter(
 
     /* Launch atomic scatter kernel.
      * d_leaf_rows_ already contains the original row indices for this leaf.
-     * d_gradients_ has the full gradient array (all rows, all classes).
-     * The kernel indexes: grad[row * num_classes + class_id]. */
+     * d_gradients_ has RAW gradients for n_rows_ rows (single class slice —
+     * GBDT already offsets by cur_tree_id * num_data_).
+     * The kernel indexes: grad[row] (num_classes passed for ABI compat but
+     * should always be 1 since GBDT pre-slices the gradient array). */
     int n_blocks = grid_blocks(n_leaf_rows);
     atomic_scatter_hist_kernel<<<n_blocks, BLOCK_SIZE, 0, stream_compute_>>>(
         d_csr_indptr_, d_csr_indices_, d_csr_data_,
@@ -1294,13 +1300,19 @@ void CUDASparseHistTreeLearner::BuildHistogramAtomicScatter(
  * Defined at file scope to match forward declarations above.
  * ========================================================================= */
 
-/* Scatter kernel: copy class-specific gradients into full-size vectors
- * at original row positions for leaf rows.
- *   d_full_grad[leaf_rows[i]] = d_grad[leaf_rows[i]]
+/* Scatter kernel: copy RAW gradients into full-size vectors at original
+ * row positions, but ONLY for leaf rows (non-leaf rows stay zero).
  *
- * For multiclass, GBDT::TrainOneIter() already offsets gradients_ by
- * (cur_tree_id * num_data_), so gradients_[row] is the current class's
- * gradient for that row. No interleaving, no class_id indexing needed. */
+ * d_gradients_ (aliased as raw_grad here) contains RAW per-sample
+ * gradients indexed by original row ID — NOT ordered/reordered.
+ * GBDT::TrainOneIter() already offsets the pointer by
+ * (cur_tree_id * num_data_), so raw_grad[row] is the current class's
+ * gradient for original row `row`.
+ *
+ * The scatter does: full_grad[row] = raw_grad[row]
+ * where row = leaf_rows[tid]. This places the gradient at the correct
+ * position in the full-size vector for subsequent SpMV multiplication
+ * against the CSR matrix (which is also in original row order). */
 __global__ void scatter_grad_kernel(
     const int32_t* __restrict__ leaf_rows,
     const double*  __restrict__ raw_grad,
@@ -1345,14 +1357,14 @@ __global__ void interleave_grad_kernel(
 /* Launch wrappers (called from BuildHistogramCuSPARSE) */
 
 static void launch_scatter_kernel(
-    const int32_t* d_leaf_rows, const double* d_ordered_grad,
-    const double* d_ordered_hess, double* d_full_grad, double* d_full_hess,
+    const int32_t* d_leaf_rows, const double* d_raw_grad,
+    const double* d_raw_hess, double* d_full_grad, double* d_full_hess,
     int32_t n_leaf_rows, int32_t num_classes, int32_t class_id,
     cudaStream_t stream) {
 
     int n_blocks = grid_blocks(n_leaf_rows);
     scatter_grad_kernel<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
-        d_leaf_rows, d_ordered_grad, d_ordered_hess,
+        d_leaf_rows, d_raw_grad, d_raw_hess,
         d_full_grad, d_full_hess,
         n_leaf_rows, num_classes, class_id);
     /* Caller checks cudaGetLastError */

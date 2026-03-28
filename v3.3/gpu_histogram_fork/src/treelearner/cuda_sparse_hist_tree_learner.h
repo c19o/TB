@@ -142,9 +142,9 @@ class CUDASparseHistTreeLearner : public SerialTreeLearner {
   /* ---- Per-feature histogram bin offsets on GPU ---- */
   uint32_t* d_feature_hist_offsets_ = nullptr;  // GPU copy of per-feature histogram bin offsets
 
-  /* ---- Gradient/Hessian buffers on GPU ---- */
-  double*   d_gradients_    = nullptr;
-  double*   d_hessians_     = nullptr;
+  /* ---- Gradient/Hessian buffers on GPU (RAW, indexed by original row) ---- */
+  double*   d_gradients_    = nullptr;  /* n_rows_ doubles, single class slice */
+  double*   d_hessians_     = nullptr;  /* n_rows_ doubles, single class slice */
 
   /* ---- Leaf row indices on GPU ---- */
   int32_t*  d_leaf_rows_    = nullptr;

@@ -40,23 +40,24 @@ The C API stored CSR in a global struct (`g_external_csr`) but the tree learner 
 **3. enable_bundle=False (APPLIED but INSUFFICIENT):**
 Disabling EFB bundling was attempted to make feature IDs map 1:1 to histogram bins. However, LightGBM still has a feature-to-bin offset mapping even with `enable_bundle=False` — constant/unused features get 0 bins, others get 2 (for binary features). The SpMV output is indexed by raw feature ID, but the histogram buffer is indexed by cumulative bin offsets.
 
-**4. EFB Histogram Offset Mismatch (BLOCKED):**
-This is DEEPER than expected. Even without bundling, LightGBM's histogram buffer layout uses cumulative bin offsets, not raw feature indices. The mapping works as follows:
-- Feature 0 (constant, 0 bins) → offset 0
-- Feature 1 (binary, 2 bins) → offset 0
-- Feature 2 (constant, 0 bins) → offset 2
-- Feature 3 (binary, 2 bins) → offset 2
-- ...and so on for 2.2M features
+**4. Gradient Ordering Bug (FIXED):**
+Investigation revealed the scatter kernel and atomic kernel had dangerously wrong comments claiming `d_gradients_` contained "ordered" gradients when it actually contains RAW per-sample gradients indexed by original row ID. `gradients_` (from `SerialTreeLearner`) is set directly from GBDT::TrainOneIter() which pre-slices per class — it is NOT `ordered_gradients_` (which is a separate CPU reordering buffer used by `Dataset::ConstructHistograms`).
 
-The SpMV kernel writes gradients to `histogram[feature_id]`, but LightGBM expects them at `histogram[cumulative_bin_offset[feature_id]]`. Without this remapping, gradient/hessian values land in the wrong histogram bins, producing garbage splits.
+The scatter kernel code was actually correct (`full_grad[row] = raw_grad[row]`), but:
+- All comments said "ordered" creating high risk of future bugs if anyone trusted them
+- The atomic kernel used `gradients[row * num_classes + class_id]` indexing which would be an out-of-bounds read for multiclass (works by accident when num_classes=1)
+- Forward declarations and launch wrapper parameter names said `d_ordered_grad`
 
-**The fix would require:**
-1. Extracting the `feature_hist_offsets` array from LightGBM's `share_state_` (the cumulative bin offset table)
-2. Uploading it to GPU memory
-3. Using it in the CUDA kernel to remap the SpMV output index before writing to the histogram buffer
-4. Keeping this array synchronized across boosting iterations (features may be dropped/rebinned)
+**Fixes applied:**
+1. All comments corrected: "ordered" → "RAW" throughout both .cu and .h files
+2. Atomic kernel indexing fixed: `gradients[row * num_classes + class_id]` → `gradients[row]` (GBDT pre-slices, no stride needed)
+3. Parameter names corrected: `ordered_grad` → `raw_grad` / `d_raw_grad` in all forward declarations, definitions, and launch wrappers
+4. Overview comment block updated to document that we use `gradients_` (raw) not `ordered_gradients_` (CPU reorder buffer)
 
-This is a significant kernel rewrite, not a simple patch.
+**4b. EFB Histogram Offset Mismatch (FIXED — `feature_hist_offsets` remapping):**
+The `interleave_grad_kernel` now uses `d_feature_hist_offsets_` to map SpMV feature indices to cumulative bin offsets. Unused features have offset `UINT32_MAX` and are skipped.
+
+**NOTE: Remaining sub-issue — bin 1 vs bin 0 offset:** The SpMV result for feature `f` is the sum for rows where `feature=1` (bin 1). The `interleave_grad_kernel` currently writes to `hist[offset * 2 + component]` which is bin 0. For binary features with 2 bins, the SpMV result should go to `hist[(offset + 1) * 2 + component]` (bin 1), and bin 0 should get `leaf_total - spmv_result` (complement). This is tracked as a separate fix.
 
 **5. Build Note:** `lightgbm.exe` target doesn't link `c_api` symbols — must build `_lightgbm` target (DLL) only.
 
