@@ -413,9 +413,9 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
     Args:
         narrow_ranges: dict of param -> (low, high) for stage 2 narrowing
         use_gpu: bool -- if True, use GPU fork (cuda_sparse + set_external_csr)
-        parent_ds: lgb.Dataset -- pre-constructed parent Dataset for EFB reuse
-                   (reference= shares EFB bins across all trials, eliminating
-                   redundant bin construction)
+        parent_ds: lgb.Dataset -- pre-constructed parent Dataset for EFB reuse.
+                   Folds use parent_ds.subset(indices) which reuses pre-computed
+                   bin boundaries from the parent -- no re-scanning raw data per fold.
     """
 
     # ── Pre-compute CPCV fold data ONCE (identical across all trials) ──
@@ -432,38 +432,42 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
         max_hold_bars=max_hold, embargo_pct=0.01,
     )
 
-    # Pre-slice data for each fold -- avoids redundant indexing every trial
+    # Pre-compute fold INDICES into parent Dataset for subset() pattern.
+    # parent_ds was built from X_all[valid_mask], so parent row i = valid_indices[i].
+    # We map absolute indices back to parent row positions via searchsorted.
+    valid_indices_sorted = np.where(valid_mask)[0]  # sorted by construction
+
     fold_data = []
     for _fi, (train_rel, test_rel) in enumerate(splits):
         abs_train = subsample_idx[train_rel]
         abs_test = subsample_idx[test_rel]
 
-        y_train = y[abs_train].astype(int)
-        y_test = y[abs_test].astype(int)
-        w_train = sample_weights[abs_train]
-
-        X_train = X_all[abs_train]
-        X_test = X_all[abs_test]
-
-        if len(y_train) < 50 or len(y_test) < 20:
+        if len(abs_train) < 50 or len(abs_test) < 20:
             continue
 
-        # 85/15 train/val for early stopping
-        val_size = max(int(len(y_train) * 0.15), 50)
-        if val_size >= len(y_train):
-            val_size = max(len(y_train) // 5, 20)
+        # Map absolute indices -> parent Dataset row indices
+        parent_train_idx = np.searchsorted(valid_indices_sorted, abs_train)
 
-        X_train_es = X_train[:-val_size]
-        X_val_es = X_train[-val_size:]
-        y_train_es = y_train[:-val_size]
-        y_val_es = y_train[-val_size:]
-        w_train_es = w_train[:-val_size]
-        w_val_es = w_train[-val_size:]
+        # 85/15 train/val split for early stopping
+        val_size = max(int(len(parent_train_idx) * 0.15), 50)
+        if val_size >= len(parent_train_idx):
+            val_size = max(len(parent_train_idx) // 5, 20)
 
-        fold_data.append((X_train_es, X_val_es, y_train_es, y_val_es, w_train_es,
-                          w_val_es, X_test, y_test))
+        train_indices = parent_train_idx[:-val_size]
+        val_indices = parent_train_idx[-val_size:]
 
-    log.info(f"  Pre-computed {len(fold_data)} CPCV folds (from {len(splits)} splits)")
+        # Test data still needs raw arrays for OOS evaluation
+        X_test = X_all[abs_test]
+        y_test = y[abs_test].astype(int)
+
+        fold_data.append({
+            'train_indices': train_indices.tolist(),
+            'val_indices': val_indices.tolist(),
+            'X_test': X_test,
+            'y_test': y_test,
+        })
+
+    log.info(f"  Pre-computed {len(fold_data)} CPCV folds (from {len(splits)} splits) [subset() pattern]")
 
     def objective(trial):
         # ── Suggest hyperparameters ──
@@ -524,13 +528,13 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
         fold_scores = []
         fold_sortinos = []
 
-        for fold_i, (X_train_es, X_val_es, y_train_es, y_val_es, w_train_es,
-                      w_val_es, X_test, y_test) in enumerate(fold_data):
+        for fold_i, fold in enumerate(fold_data):
+            X_test = fold['X_test']
+            y_test = fold['y_test']
 
-            dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
-                                 reference=parent_ds, free_raw_data=False)
-            dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
-                               reference=parent_ds, free_raw_data=False)
+            # subset() reuses parent's pre-computed EFB bins -- no re-scanning raw data
+            dtrain = parent_ds.subset(fold['train_indices'])
+            dval = parent_ds.subset(fold['val_indices'])
 
             # MC-4: search trials use fast ES patience (OPTUNA_SEARCH_ES_PATIENCE=30);
             # final retrain uses LR-scaled patience for esoteric signals needing 800+ trees
@@ -539,8 +543,10 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             else:
                 _es_patience = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
 
-            if use_gpu and sp_sparse.issparse(X_train_es):
+            if use_gpu and is_sparse:
                 # GPU fork path: manual Booster loop with set_external_csr
+                # Extract train data from parent for set_external_csr
+                _gpu_train_data = X_all[np.where(valid_mask)[0][fold['train_indices']]]
                 gpu_params = params.copy()
                 gpu_params['device_type'] = 'cuda_sparse'
                 gpu_params.pop('force_col_wise', None)
@@ -552,7 +558,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                 dval.construct()
                 booster = lgb.Booster(gpu_params, dtrain)
                 booster.add_valid(dval, 'val')
-                booster.set_external_csr(X_train_es)
+                booster.set_external_csr(_gpu_train_data)
 
                 best_score = float('inf')
                 best_iter = 0
@@ -868,36 +874,33 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
     best_acc = 0
 
     for fold_i, (train_rel, test_rel) in enumerate(splits):
-        train_idx = valid_indices[train_rel]
         test_idx = valid_indices[test_rel]
 
-        y_train = y[train_idx].astype(int)
         y_test = y[test_idx].astype(int)
-        w_train = sample_weights[train_idx]
-
-        X_train = X_all[train_idx]
         X_test = X_all[test_idx]
 
-        if len(y_train) < 50 or len(y_test) < 20:
+        if len(train_rel) < 50 or len(test_rel) < 20:
             continue
 
-        val_size = max(int(len(y_train) * 0.15), 50)
-        if val_size >= len(y_train):
-            val_size = max(len(y_train) // 5, 20)
+        # Map to parent Dataset row indices (splits on range(n_valid), parent rows = 0..n_valid-1)
+        parent_train_idx = train_rel
 
-        X_train_fold = X_train[:-val_size]
-        dtrain = lgb.Dataset(X_train_fold, label=y_train[:-val_size],
-                             weight=w_train[:-val_size], feature_name=feature_cols,
-                             reference=parent_ds, free_raw_data=False)
-        dval = lgb.Dataset(X_train[-val_size:], label=y_train[-val_size:],
-                           weight=w_train[-val_size:],
-                           feature_name=feature_cols, reference=parent_ds,
-                           free_raw_data=False)
+        val_size = max(int(len(parent_train_idx) * 0.15), 50)
+        if val_size >= len(parent_train_idx):
+            val_size = max(len(parent_train_idx) // 5, 20)
+
+        train_subset_idx = parent_train_idx[:-val_size].tolist()
+        val_subset_idx = parent_train_idx[-val_size:].tolist()
+
+        # subset() reuses parent's pre-computed EFB bins
+        dtrain = parent_ds.subset(train_subset_idx)
+        dval = parent_ds.subset(val_subset_idx)
 
         _es_patience_final = max(50, int(100 * (0.1 / params.get('learning_rate', OPTUNA_FINAL_LR))))
 
-        if use_gpu and sp_sparse.issparse(X_train_fold):
-            # GPU fork path
+        if use_gpu and is_sparse:
+            # GPU fork path -- extract train data for set_external_csr
+            _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
             gpu_params = params.copy()
             gpu_params['device_type'] = 'cuda_sparse'
             gpu_params.pop('force_col_wise', None)
@@ -909,7 +912,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
             dval.construct()
             booster = lgb.Booster(gpu_params, dtrain)
             booster.add_valid(dval, 'val')
-            booster.set_external_csr(X_train_fold)
+            booster.set_external_csr(_gpu_train_data)
 
             best_score = float('inf')
             best_iter = 0
@@ -1054,12 +1057,12 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
         X_all[valid_mask], label=y[valid_mask].astype(int),
         weight=sample_weights[valid_mask] if sample_weights is not None else None,
         params={'feature_pre_filter': False, 'max_bin': 255, 'min_data_in_bin': 1},
-        free_raw_data=False,
+        free_raw_data=True,  # free raw data after construct -- subset() works on binned C++ data only
     )
     _parent_ds.construct()
     log.info(f"  Parent Dataset built in {time.time()-t0_ds:.1f}s: "
              f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features "
-             f"(EFB cached for all trials)")
+             f"(EFB cached, raw data freed -- folds use subset())")
 
     # Determine trial counts: per-TF override > warm-start override > global default
     if is_warmstarted:
