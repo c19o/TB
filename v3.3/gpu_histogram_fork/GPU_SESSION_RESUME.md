@@ -154,7 +154,17 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 7. [DONE] Atomic kernel multiclass stride fix (THE Bug 4 root cause) — `gradients[row * num_classes]` → `gradients[row]` (GBDT pre-slices per class)
 8. [DONE] Integrate GPU path into ml_multi_tf.py for CPCV training
 9. [DONE] Integrate into run_optuna_local.py for GPU Optuna
-10. [NEXT] Deploy to cloud, verify on 1d/4h/1h/15m
+10. [DONE] Optuna optimizations: Dataset reuse, round-level pruning, CPU parallel search, warm-start cascade, ES patience fix
+11. [NEXT] Deploy to cloud, verify GPU fork on 1d/4h/1h/15m (larger datasets where GPU benefit grows)
+
+## OPTUNA INTEGRATION STATUS (2026-03-28)
+GPU fork is fully integrated into `run_optuna_local.py`:
+- **Search stages**: CPU parallel (n_jobs) — GPU not used during search to enable trial parallelism
+- **Final retrain**: GPU (cuda_sparse + set_external_csr) — single trial, maximum speed
+- **Dataset reuse**: Parent lgb.Dataset built once, EFB bins shared across all trials
+- **Round-level pruning**: Both CPU and GPU paths report val loss every 10 rounds to Optuna
+- **Warm-start cascade**: 1w->1d->4h->1h->15m, parent params narrow search by +/-20%
+- **ES patience fix**: OPTUNA_SEARCH_ES_PATIENCE=30 (decoupled from LR-scaled formula)
 
 ## KEY FILES
 - Binary cache: `v3.3/lgbm_dataset_1w.bin` (252MB, skips 4.5min EFB)
@@ -163,3 +173,4 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 - Must go to BOTH: `site-packages/lightgbm/bin/` AND `site-packages/lightgbm/lib/`
 - Training script: `gpu_histogram_fork/train_1w_cached.py`
 - CPU training script: `v3.3/cloud_run_tf.py` (production pipeline)
+- Optuna script: `v3.3/run_optuna_local.py` (GPU final retrain integrated)
