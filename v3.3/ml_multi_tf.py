@@ -917,6 +917,7 @@ if __name__ == '__main__':
           _final_feature_cols = feature_cols
           _hmm_overlay = None  # Will be set by sequential sparse path if needed
           _hmm_overlay_names = []
+          _parent_ds = None  # Set by sequential path for EFB reuse; parallel path doesn't use it
 
           if _nnz_exceeds_int32 and _use_parallel_splits:
               _use_parallel_splits = False
