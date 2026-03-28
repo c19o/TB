@@ -62,14 +62,17 @@ except Exception:
 # ── GPU setup (guarded by CUDA version) ──
 if _CUDA_MAJOR >= 13:
     cp = None
+    cusp = None
     GPU = False
     print(f"[v2_cross_generator] GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy would SEGFAULT. Using CPU mode.")
 else:
     try:
         import cupy as cp
+        import cupyx.scipy.sparse as cusp
         GPU = True
     except ImportError:
         cp = None
+        cusp = None
         GPU = False
 
 
@@ -202,6 +205,171 @@ def _get_optimal_batch(n_bars, n_right, gpu_vram_gb=None, gpu_id=0):
 # BINARIZATION
 # ============================================================
 
+@njit(parallel=True, cache=True)
+def _binarize_batch_4tier(values, n_cols):
+    """Compute 4-tier binarization (XH/H/L/XL) for all columns in parallel.
+
+    Parameters
+    ----------
+    values : float32 array (n_rows, n_cols) — contiguous, NaN-preserving
+    n_cols : int
+
+    Returns
+    -------
+    masks : float32 array (n_cols * 4, n_rows) — row-major per mask
+        Layout: [col0_XH, col0_H, col0_L, col0_XL, col1_XH, ...]
+    thresholds : float32 array (n_cols, 4) — [q95, q75, q25, q5]
+    mask_sums : float32 array (n_cols * 4) — nansum of each mask (for filtering)
+    """
+    n_rows = values.shape[0]
+    masks = np.zeros((n_cols * 4, n_rows), dtype=np.float32)
+    thresholds = np.zeros((n_cols, 4), dtype=np.float32)
+    mask_sums = np.zeros(n_cols * 4, dtype=np.float32)
+
+    for col_idx in prange(n_cols):
+        col = values[:, col_idx]
+
+        # Gather non-NaN values
+        valid_count = 0
+        for i in range(n_rows):
+            if not np.isnan(col[i]):
+                valid_count += 1
+        if valid_count < 10:
+            # Near-empty — masks stay zero, thresholds stay zero
+            continue
+
+        valid = np.empty(valid_count, dtype=np.float32)
+        vi = 0
+        for i in range(n_rows):
+            if not np.isnan(col[i]):
+                valid[vi] = col[i]
+                vi += 1
+
+        # Count non-zero valid entries
+        nz_count = 0
+        for i in range(valid_count):
+            if valid[i] != 0.0:
+                nz_count += 1
+
+        # Use non-zero subset if >100 non-zero values, else use all valid
+        if nz_count > 100:
+            nz = np.empty(nz_count, dtype=np.float32)
+            ni = 0
+            for i in range(valid_count):
+                if valid[i] != 0.0:
+                    nz[ni] = valid[i]
+                    ni += 1
+        else:
+            nz = valid
+
+        # Sort for percentile computation
+        sorted_vals = np.sort(nz)
+        n = len(sorted_vals)
+        # Compute percentiles via index (matches numpy nearest-rank behavior)
+        q95 = sorted_vals[min(int(n * 0.95), n - 1)]
+        q75 = sorted_vals[min(int(n * 0.75), n - 1)]
+        q25 = sorted_vals[min(int(n * 0.25), n - 1)]
+        q5 = sorted_vals[min(int(n * 0.05), n - 1)]
+        thresholds[col_idx, 0] = q95
+        thresholds[col_idx, 1] = q75
+        thresholds[col_idx, 2] = q25
+        thresholds[col_idx, 3] = q5
+
+        base = col_idx * 4
+        s_xh = np.float32(0.0)
+        s_h = np.float32(0.0)
+        s_l = np.float32(0.0)
+        s_xl = np.float32(0.0)
+        for i in range(n_rows):
+            v = col[i]
+            # NaN comparisons yield False — masks stay 0.0 for NaN rows
+            if v > q95:
+                masks[base, i] = 1.0
+                s_xh += 1.0
+            if v > q75:
+                masks[base + 1, i] = 1.0
+                s_h += 1.0
+            if v < q25:
+                masks[base + 2, i] = 1.0
+                s_l += 1.0
+            if v < q5:
+                masks[base + 3, i] = 1.0
+                s_xl += 1.0
+        mask_sums[base] = s_xh
+        mask_sums[base + 1] = s_h
+        mask_sums[base + 2] = s_l
+        mask_sums[base + 3] = s_xl
+
+    return masks, thresholds, mask_sums
+
+
+@njit(parallel=True, cache=True)
+def _binarize_batch_2tier(values, n_cols):
+    """Compute 2-tier binarization (H/L) for all columns in parallel.
+
+    Same structure as 4-tier but with q80/q20 thresholds.
+    """
+    n_rows = values.shape[0]
+    masks = np.zeros((n_cols * 2, n_rows), dtype=np.float32)
+    thresholds = np.zeros((n_cols, 2), dtype=np.float32)
+    mask_sums = np.zeros(n_cols * 2, dtype=np.float32)
+
+    for col_idx in prange(n_cols):
+        col = values[:, col_idx]
+
+        valid_count = 0
+        for i in range(n_rows):
+            if not np.isnan(col[i]):
+                valid_count += 1
+        if valid_count < 10:
+            continue
+
+        valid = np.empty(valid_count, dtype=np.float32)
+        vi = 0
+        for i in range(n_rows):
+            if not np.isnan(col[i]):
+                valid[vi] = col[i]
+                vi += 1
+
+        nz_count = 0
+        for i in range(valid_count):
+            if valid[i] != 0.0:
+                nz_count += 1
+
+        if nz_count > 100:
+            nz = np.empty(nz_count, dtype=np.float32)
+            ni = 0
+            for i in range(valid_count):
+                if valid[i] != 0.0:
+                    nz[ni] = valid[i]
+                    ni += 1
+        else:
+            nz = valid
+
+        sorted_vals = np.sort(nz)
+        n = len(sorted_vals)
+        q80 = sorted_vals[min(int(n * 0.80), n - 1)]
+        q20 = sorted_vals[min(int(n * 0.20), n - 1)]
+        thresholds[col_idx, 0] = q80
+        thresholds[col_idx, 1] = q20
+
+        base = col_idx * 2
+        s_h = np.float32(0.0)
+        s_l = np.float32(0.0)
+        for i in range(n_rows):
+            v = col[i]
+            if v > q80:
+                masks[base, i] = 1.0
+                s_h += 1.0
+            if v < q20:
+                masks[base + 1, i] = 1.0
+                s_l += 1.0
+        mask_sums[base] = s_h
+        mask_sums[base + 1] = s_l
+
+    return masks, thresholds, mask_sums
+
+
 def binarize_contexts(df, four_tier=True):
     """
     Binarize all suitable columns into binary context arrays.
@@ -209,6 +377,9 @@ def binarize_contexts(df, four_tier=True):
 
     With four_tier=True:
       EXTREME_HIGH (>95th), HIGH (>75th), LOW (<25th), EXTREME_LOW (<5th)
+
+    Uses Numba @njit(parallel=True) to compute all percentiles + masks in one
+    parallel kernel instead of 3000+ sequential np.percentile() calls.
     """
     skip_pre = ('tx_', 'px_', 'ex_', 'dx_', 'cross_', 'next_', 'target_',
                 'doy_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_',
@@ -221,51 +392,66 @@ def binarize_contexts(df, four_tier=True):
     ctx_names = []
     ctx_arrays = []
 
+    # ── Pass 1: classify columns (Python — handles strings, dedup, filtering) ──
+    binary_cols = []     # (col_name, vals_array) for <=3 unique values
+    multi_cols = []      # (col_name, col_index_in_batch) for >3 unique values
+    multi_vals_list = [] # corresponding float32 arrays to stack
+
     seen_cols = set()
     for col in df.columns:
         if col in seen_cols:
-            continue  # skip duplicate column names
+            continue
         seen_cols.add(col)
         if col.startswith(skip_pre) or col in skip_ex:
             continue
 
         raw = df[col]
         if isinstance(raw, pd.DataFrame):
-            raw = raw.iloc[:, 0]  # handle duplicate column names
+            raw = raw.iloc[:, 0]
         vals = pd.to_numeric(raw, errors='coerce').values.astype(np.float32)
-        # NaN preserved — LightGBM treats missing as unknown split direction
         uniq = np.unique(vals[~np.isnan(vals)])
         if len(uniq) <= 1:
             continue
 
         if len(uniq) <= 3:
-            # Already binary — use directly
+            # Binary/ternary — handle directly (no percentile needed)
             b = (vals > 0).astype(np.float32)
             if 5 < np.nansum(b) < N * 0.98:
-                ctx_names.append(col)
-                ctx_arrays.append(b)
+                binary_cols.append((col, b))
         else:
-            try:
-                nz = vals[vals != 0] if np.nansum(vals != 0) > 100 else vals
-                nz = nz[~np.isnan(nz)]  # percentile cannot handle NaN
-                if four_tier:
-                    # 4-tier: EXTREME_HIGH, HIGH, LOW, EXTREME_LOW
-                    q95, q75, q25, q5 = np.percentile(nz, [95, 75, 25, 5])
-                    for tag, mask in [('XH', vals > q95), ('H', vals > q75),
-                                      ('L', vals < q25), ('XL', vals < q5)]:
-                        m = mask.astype(np.float32)
-                        if np.nansum(m) > 5:
-                            ctx_names.append(f'{col}_{tag}')
-                            ctx_arrays.append(m)
-                else:
-                    q80, q20 = np.percentile(nz, [80, 20])
-                    for tag, mask in [('H', vals > q80), ('L', vals < q20)]:
-                        m = mask.astype(np.float32)
-                        if np.nansum(m) > 5:
-                            ctx_names.append(f'{col}_{tag}')
-                            ctx_arrays.append(m)
-            except Exception as e:
-                print(f"  WARNING: Context array '{col}' failed: {e}")
+            multi_cols.append((col, len(multi_vals_list)))
+            multi_vals_list.append(vals)
+
+    # ── Add binary columns directly ──
+    for col_name, b in binary_cols:
+        ctx_names.append(col_name)
+        ctx_arrays.append(b)
+
+    # ── Pass 2: Numba parallel kernel for all multi-valued columns ──
+    if multi_vals_list:
+        # Stack into contiguous (n_rows, n_multi_cols) array
+        batch = np.column_stack(multi_vals_list)  # (N, n_multi_cols) float32
+        n_multi = len(multi_vals_list)
+
+        if four_tier:
+            masks, _thresholds, mask_sums = _binarize_batch_4tier(batch, n_multi)
+            tags = ('XH', 'H', 'L', 'XL')
+            n_tiers = 4
+        else:
+            masks, _thresholds, mask_sums = _binarize_batch_2tier(batch, n_multi)
+            tags = ('H', 'L')
+            n_tiers = 2
+
+        # ── Pass 3: construct output from kernel results (Python — string ops) ──
+        for col_name, batch_idx in multi_cols:
+            base = batch_idx * n_tiers
+            for t, tag in enumerate(tags):
+                if mask_sums[base + t] > 5:
+                    ctx_names.append(f'{col_name}_{tag}')
+                    ctx_arrays.append(masks[base + t].copy())
+
+        del batch, masks, mask_sums
+        gc.collect()
 
     return ctx_names, ctx_arrays
 
@@ -431,16 +617,53 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
 
         if c_names:
             # FLUSH per RIGHT_CHUNK: convert COO to CSR immediately
+            # Memory-safe: build CSR in sub-batches to avoid giant concatenation OOM.
+            # Each entry in c_rows[i] is one column's nonzero row indices.
             all_names.extend(c_names)
             if c_rows:
-                _flush_r = np.concatenate(c_rows)
-                _flush_c = np.concatenate(c_cols)
-                _flush_d = np.concatenate(c_data)
-                _flush_c_local = _flush_c - current_offset
-                _flush_ncols = int(_flush_c_local.max()) + 1 if len(_flush_c_local) > 0 else c_ncols
-                _flush_csr = sparse.coo_matrix((_flush_d, (_flush_r, _flush_c_local)), shape=(N, _flush_ncols)).tocsr()
-                _local_csr_chunks.append(_flush_csr)
-                del _flush_r, _flush_c, _flush_d, _flush_c_local, _flush_csr
+                # Estimate total NNZ to pick safe sub-batch size
+                # Target: sub-batch concat peak under 500MB (~125M int32 entries)
+                _total_nnz = sum(len(r) for r in c_rows)
+                _avg_nnz = _total_nnz / max(1, len(c_rows))
+                # Max entries per sub-batch concat = 125M (500MB / 4 bytes)
+                _max_entries = 125_000_000
+                SUB_FLUSH = max(100, min(5000, int(_max_entries / max(1, _avg_nnz))))
+
+                n_cols_total = len(c_rows)
+                for sf_start in range(0, n_cols_total, SUB_FLUSH):
+                    sf_end = min(sf_start + SUB_FLUSH, n_cols_total)
+                    sf_n_cols = sf_end - sf_start
+                    # Build local COO with column indices 0..sf_n_cols-1
+                    sf_r_parts = []
+                    sf_c_parts = []
+                    sf_d_parts = []
+                    for local_col, global_col in enumerate(range(sf_start, sf_end)):
+                        r_arr = c_rows[global_col]
+                        if len(r_arr) > 0:
+                            sf_r_parts.append(r_arr)
+                            sf_c_parts.append(np.full(len(r_arr), local_col, dtype=np.int32))
+                            sf_d_parts.append(c_data[global_col])
+                    if sf_r_parts:
+                        _sf_r = np.concatenate(sf_r_parts)
+                        _sf_c = np.concatenate(sf_c_parts)
+                        _sf_d = np.concatenate(sf_d_parts)
+                        if cp is not None and cusp is not None:
+                            try:
+                                _sf_d_gpu = cp.asarray(_sf_d)
+                                _sf_r_gpu = cp.asarray(_sf_r)
+                                _sf_c_gpu = cp.asarray(_sf_c)
+                                _sf_csr = cusp.coo_matrix((_sf_d_gpu, (_sf_r_gpu, _sf_c_gpu)), shape=(N, sf_n_cols)).tocsr()
+                                _sf_csr = _sf_csr.get()  # Transfer back to scipy CSR on CPU
+                                del _sf_d_gpu, _sf_r_gpu, _sf_c_gpu
+                                cp.get_default_memory_pool().free_all_blocks()
+                            except Exception:
+                                _sf_csr = sparse.coo_matrix((_sf_d, (_sf_r, _sf_c)), shape=(N, sf_n_cols)).tocsr()
+                        else:
+                            _sf_csr = sparse.coo_matrix((_sf_d, (_sf_r, _sf_c)), shape=(N, sf_n_cols)).tocsr()
+                        _local_csr_chunks.append(_sf_csr)
+                        del _sf_r, _sf_c, _sf_d, _sf_csr
+                    del sf_r_parts, sf_c_parts, sf_d_parts
+                    gc.collect()
             current_offset += c_ncols
             total_feats += len(c_names)
             del c_rows, c_cols, c_data, c_names
@@ -475,16 +698,35 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     data_list = []
     col_idx = 0
 
-    # ── Step 1: Sparse matmul pre-filter (CPU — instant, output is tiny) ──
-    left_sp = sparse.csc_matrix(left_mat)
-    if left_sp.indices.dtype != np.int64:
-        left_sp.indices = left_sp.indices.astype(np.int64)
-        left_sp.indptr = left_sp.indptr.astype(np.int64)
-    right_sp = sparse.csc_matrix(right_mat)
-    if right_sp.indices.dtype != np.int64:
-        right_sp.indices = right_sp.indices.astype(np.int64)
-        right_sp.indptr = right_sp.indptr.astype(np.int64)
-    co_occur = (left_sp.T @ right_sp).toarray()  # (n_left, n_right) — small
+    # ── Step 1: Sparse matmul pre-filter (cuSPARSE on GPU, scipy fallback) ──
+    if cp is not None and cusp is not None:
+        try:
+            left_gpu_sp = cusp.csc_matrix(cp.asarray(left_mat.astype(np.float32)))
+            right_gpu_sp = cusp.csc_matrix(cp.asarray(right_mat.astype(np.float32)))
+            co_occur = cp.asnumpy((left_gpu_sp.T @ right_gpu_sp).toarray())
+            del left_gpu_sp, right_gpu_sp
+            cp.get_default_memory_pool().free_all_blocks()
+        except Exception as e:
+            log(f"  cuSPARSE SpGEMM failed ({e}), falling back to scipy")
+            left_sp = sparse.csc_matrix(left_mat)
+            if left_sp.indices.dtype != np.int64:
+                left_sp.indices = left_sp.indices.astype(np.int64)
+                left_sp.indptr = left_sp.indptr.astype(np.int64)
+            right_sp = sparse.csc_matrix(right_mat)
+            if right_sp.indices.dtype != np.int64:
+                right_sp.indices = right_sp.indices.astype(np.int64)
+                right_sp.indptr = right_sp.indptr.astype(np.int64)
+            co_occur = (left_sp.T @ right_sp).toarray()
+    else:
+        left_sp = sparse.csc_matrix(left_mat)
+        if left_sp.indices.dtype != np.int64:
+            left_sp.indices = left_sp.indices.astype(np.int64)
+            left_sp.indptr = left_sp.indptr.astype(np.int64)
+        right_sp = sparse.csc_matrix(right_mat)
+        if right_sp.indices.dtype != np.int64:
+            right_sp.indices = right_sp.indices.astype(np.int64)
+            right_sp.indptr = right_sp.indptr.astype(np.int64)
+        co_occur = (left_sp.T @ right_sp).toarray()  # (n_left, n_right) — small
     valid_pairs = np.argwhere(co_occur >= min_nonzero)
     n_valid = len(valid_pairs)
 
@@ -517,13 +759,18 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
         left_cols = left_gpu[:, chunk[:, 0]]
         right_cols = right_gpu[:, chunk[:, 1]]
         crosses_gpu = left_cols * right_cols
+        del left_cols, right_cols
 
-        # Transfer to CPU for nonzero extraction
+        # GPU nonzero extraction (Phase 1B — avoids full CPU scan)
+        nz_rows_gpu, nz_cols_gpu = cp.nonzero(crosses_gpu)
+        nz_rows_all = cp.asnumpy(nz_rows_gpu)
+        nz_cols_all = cp.asnumpy(nz_cols_gpu)
+        del nz_rows_gpu, nz_cols_gpu
+
+        # Transfer crosses to CPU for data value extraction
         crosses = cp.asnumpy(crosses_gpu)
-        del crosses_gpu, left_cols, right_cols
+        del crosses_gpu
         cp.get_default_memory_pool().free_all_blocks()
-
-        nz_rows_all, nz_cols_all = np.nonzero(crosses)
 
         if len(nz_rows_all) > 0:
             unique_cols, col_starts = np.unique(nz_cols_all, return_index=True)
@@ -606,15 +853,34 @@ def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     col_idx = 0
 
     # ── Sparse matmul pre-filter: compute ALL co-occurrence counts at once ──
-    left_sp = sparse.csc_matrix(left_mat)
-    if left_sp.indices.dtype != np.int64:
-        left_sp.indices = left_sp.indices.astype(np.int64)
-        left_sp.indptr = left_sp.indptr.astype(np.int64)
-    right_sp = sparse.csc_matrix(right_mat)
-    if right_sp.indices.dtype != np.int64:
-        right_sp.indices = right_sp.indices.astype(np.int64)
-        right_sp.indptr = right_sp.indptr.astype(np.int64)
-    co_occur = (left_sp.T @ right_sp).toarray()  # small: (n_left, n_right)
+    # GPU path (cuSPARSE SpGEMM) with CPU fallback
+    if cp is not None:
+        try:
+            left_gpu_sp = cusp.csc_matrix(cp.asarray(left_mat.astype(np.float32)))
+            right_gpu_sp = cusp.csc_matrix(cp.asarray(right_mat.astype(np.float32)))
+            co_occur = cp.asnumpy((left_gpu_sp.T @ right_gpu_sp).toarray())
+            del left_gpu_sp, right_gpu_sp
+            cp.get_default_memory_pool().free_all_blocks()
+        except Exception as e:
+            left_sp = sparse.csc_matrix(left_mat)
+            if left_sp.indices.dtype != np.int64:
+                left_sp.indices = left_sp.indices.astype(np.int64)
+                left_sp.indptr = left_sp.indptr.astype(np.int64)
+            right_sp = sparse.csc_matrix(right_mat)
+            if right_sp.indices.dtype != np.int64:
+                right_sp.indices = right_sp.indices.astype(np.int64)
+                right_sp.indptr = right_sp.indptr.astype(np.int64)
+            co_occur = (left_sp.T @ right_sp).toarray()
+    else:
+        left_sp = sparse.csc_matrix(left_mat)
+        if left_sp.indices.dtype != np.int64:
+            left_sp.indices = left_sp.indices.astype(np.int64)
+            left_sp.indptr = left_sp.indptr.astype(np.int64)
+        right_sp = sparse.csc_matrix(right_mat)
+        if right_sp.indices.dtype != np.int64:
+            right_sp.indices = right_sp.indices.astype(np.int64)
+            right_sp.indptr = right_sp.indptr.astype(np.int64)
+        co_occur = (left_sp.T @ right_sp).toarray()  # small: (n_left, n_right)
 
     valid_pairs = np.argwhere(co_occur >= min_nonzero)
 
@@ -915,7 +1181,19 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                 _c = np.concatenate(cols_list)
                 _d = np.concatenate(data_list)
                 _c_local = _c - col_offset
-                chunk = sparse.coo_matrix((_d, (_r, _c_local)), shape=(N, n_new_cols)).tocsr()
+                if cp is not None and cusp is not None:
+                    try:
+                        _d_gpu = cp.asarray(_d)
+                        _r_gpu = cp.asarray(_r)
+                        _c_local_gpu = cp.asarray(_c_local)
+                        chunk = cusp.coo_matrix((_d_gpu, (_r_gpu, _c_local_gpu)), shape=(N, n_new_cols)).tocsr()
+                        chunk = chunk.get()  # Transfer back to scipy CSR on CPU
+                        del _d_gpu, _r_gpu, _c_local_gpu
+                        cp.get_default_memory_pool().free_all_blocks()
+                    except Exception:
+                        chunk = sparse.coo_matrix((_d, (_r, _c_local)), shape=(N, n_new_cols)).tocsr()
+                else:
+                    chunk = sparse.coo_matrix((_d, (_r, _c_local)), shape=(N, n_new_cols)).tocsr()
                 _csr_chunks.append(chunk)
                 del _r, _c, _c_local, _d, chunk
                 gc.collect()

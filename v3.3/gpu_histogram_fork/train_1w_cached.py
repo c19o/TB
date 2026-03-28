@@ -108,15 +108,15 @@ def log(msg):
 
 
 def build_and_save_binary(X_csr, y, binary_path):
-    """Build LightGBM Dataset with EFB DISABLED and save to binary.
+    """Build LightGBM Dataset and save to binary.
 
-    EFB disabled because GPU SpMV produces n_features gradient sums (one per
-    raw feature).  With EFB, LightGBM bundles 2.2M features into ~23K bins —
-    writing 2.2M values into a 23K-bin histogram buffer overflows and corrupts
-    results.  enable_bundle=False keeps total_hist_bins == n_features * 2
-    (2 bins per binary feature), matching the SpMV output exactly.
+    EFB (Exclusive Feature Bundling) is enabled by default — it bundles
+    mutually exclusive binary cross features into single histogram bins,
+    which is architecturally optimal for sparse 0/1 crosses.  The GPU
+    SpMV kernel uses the EFB bin mapping to scatter into the correct
+    bundled histogram slots.
     """
-    log(f'Building Dataset from {X_csr.shape[1]:,} features (EFB DISABLED for GPU SpMV)...')
+    log(f'Building Dataset from {X_csr.shape[1]:,} features (EFB enabled)...')
     t0 = time.time()
 
     # Feed sparse CSR directly — LightGBM accepts scipy sparse
@@ -127,7 +127,6 @@ def build_and_save_binary(X_csr, y, binary_path):
         params={
             'feature_pre_filter': False,
             'max_bin': 255,
-            'enable_bundle': False,
         },
         free_raw_data=False,
     )
@@ -136,8 +135,8 @@ def build_and_save_binary(X_csr, y, binary_path):
 
     ds.save_binary(binary_path)
     log(f'  Saved binary: {binary_path} ({os.path.getsize(binary_path)/1e6:.0f}MB)')
-    log(f'  Total EFB time: {time.time()-t0:.1f}s')
-    log(f'  Next run: use --from-cache to skip EFB (~1 second load)')
+    log(f'  Total build time: {time.time()-t0:.1f}s')
+    log(f'  Next run: use --from-cache to skip rebuild (~1 second load)')
 
     return ds
 

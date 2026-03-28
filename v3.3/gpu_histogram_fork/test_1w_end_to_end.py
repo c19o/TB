@@ -311,10 +311,7 @@ def train_cpu(X_train, y_train, X_test, y_test):
     log(f"  Params: num_leaves={params['num_leaves']}, lr={params['learning_rate']}, "
         f"feature_fraction={params['feature_fraction']}")
 
-    # EFB disabled: GPU SpMV produces n_features gradient sums.  With EFB,
-    # 2.2M features bundle into ~23K bins — histogram buffer overflow.
-    # enable_bundle=False keeps total_hist_bins == n_features * 2.
-    ds_params = {"feature_pre_filter": False, "enable_bundle": False}
+    ds_params = {"feature_pre_filter": False}
 
     t0 = time.perf_counter()
     dtrain = lgb.Dataset(X_train, label=y_train, params=ds_params, free_raw_data=False)
