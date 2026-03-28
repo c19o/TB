@@ -1,15 +1,15 @@
 # 1H Training Guide
 
 ## Machine Requirements
-- **RAM:** 2TB+ MINIMUM (cross gen peaks at ~1.5TB with RC=500)
-- **Cores:** 256+ (parallel CPCV + cross gen)
+- **RAM:** 2TB+ MINIMUM (cross gen peaked at 1871G/2003G — near OOM at both RC=500 and RC=300)
+- **Cores:** 256+ (LightGBM OpenMP threads + cross gen)
 - **CPU Score:** 500+
 - **Disk:** 80GB+
-- **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=300` (MANDATORY — RC=500 peaked at 1871G/2003G and was about to OOM. RC=300 is safe.)
+- **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=300` (MANDATORY — RC=500 peaked at 1871G/2003G, near OOM. RC=300 also near-OOM'd — NOT safe, just slightly better.)
 - **Training stays sparse** — dense would be ~2.3TB, won't fit. int64 indptr handles NNZ > 2^31.
 
 ## CRITICAL: OLD MACHINE DESTROYED — DO NOT USE 33598910
-The 504GB machine subsampled from 17,520 to 13,243 rows (lost 24% of data). Subsampling code has been REMOVED from ml_multi_tf.py. If dense doesn't fit, training keeps sparse (slower but no data loss). **Rent 768GB+ machine to get dense speed with full matrix.**
+The 504GB machine subsampled from 75,405 to 13,243 rows (lost 24% of data). Subsampling code has been REMOVED from ml_multi_tf.py. If dense doesn't fit, training keeps sparse (slower but no data loss). **Rent 768GB+ machine to get dense speed with full matrix.**
 
 ## Required Databases (ALL 16 — ZERO MISSING)
 ```
@@ -53,12 +53,12 @@ echo "DB check: $FAIL missing"
 **If ANY says MISSING -> STOP. Do not launch. Upload the missing file first.**
 
 ## Data
-- **Rows:** ~75,405 (1h bars, 2017-08-17 to 2026). **Was 17,520 — only had 2024+ data from Binance.US.**
+- **Rows:** ~75,405 (1h bars, 2017-08-17 to 2026). **Was ~56,875 (only had 2019-2025 data from Binance)**
 - **Base features:** ~3,968 cols
 - **Cross features:** ~7-8M expected (min_nonzero=3, up from 6.06M at min_nonzero=8)
 - **NPZ from v3.3 cloud_results:** STALE (built with min_nonzero=8). Must regenerate.
-- **Dense matrix:** ~2.3TB (73K rows x 8M features x 4 bytes). **Row-partitioned boosting likely needed (NNZ will exceed int32).**
-- **NNZ estimate:** ~8B+ (73K rows × 8M cols × ~1.5% density) — **exceeds int32 limit, needs row-partitioned training**
+- **Dense matrix:** ~2.3TB (73K rows x 8M features x 4 bytes). Will NOT fit in any machine — stays sparse.
+- **NNZ estimate:** ~8B+ (75K rows x 8M cols x ~1.5% density) — **exceeds int32 limit. int64 indptr fixes NNZ > 2^31. Row-partitioned boosting is BANNED (kills rare signals — Perplexity confirmed).**
 - **Data range:** Binance BTC/USDT 1h from 2017-08-17 (download_btc.py via Binance global API)
 
 ## Nuclear Clean (MANDATORY — delete ALL old artifacts before launch)
@@ -81,9 +81,9 @@ python3 -c "import pandas as pd; df=pd.read_parquet('/workspace/v3.3/features_BT
 
 ## Pipeline Steps
 1. Feature build (~60s) -> features_BTC_1h.parquet
-2. Cross gen (~2 hrs, min_nonzero=3) -> v2_crosses_BTC_1h.npz + v2_cross_names_BTC_1h.json
-3. Dense conversion (~425GB). **768GB+ machine required.** is_enable_sparse=False for multi-core LightGBM.
-4. LightGBM CPCV (folds parallel) -> model_1h.json
+2. Cross gen (50+ hours estimated, min_nonzero=3) -> v2_crosses_BTC_1h.npz + v2_cross_names_BTC_1h.json
+3. Stays SPARSE (~2.3TB dense impossible). SPARSE + SEQUENTIAL CPCV.
+4. LightGBM CPCV (4 folds sequential, (4,1) config) -> model_1h.json
 5. Optuna (200 trials) -> optuna_configs_1h.json
 6. Meta-labeling -> meta_model_1h.pkl
 7. LSTM -> lstm_1h.pt + platt_1h.pkl
@@ -96,14 +96,15 @@ is_enable_sparse=False (data converted to dense -- enables multi-core LightGBM)
 ```
 If you do NOT see this line and data was converted to dense, training is single-threaded. STOP and investigate.
 
+**NOT APPLICABLE FOR 1H — dense matrix would be ~2.3TB, impossible. 1H always stays sparse.**
+
 If the machine has < 768GB cgroup RAM, dense conversion will be SKIPPED and training stays sparse. This is slower but correct — no data is lost. Parallel CPCV still works on sparse via ProcessPoolExecutor.
 
-## CRITICAL: Dense Matrix = 425GB. Needs 768GB+ Machine.
+## CRITICAL: Dense Matrix = ~2.3TB. IMPOSSIBLE — Stays Sparse.
 - Dense conversion threshold: dense_bytes < 70% of available RAM
-- 425GB / 0.70 = 607GB minimum cgroup RAM for dense
-- 1TB machine = ~1000GB cgroup -> 700GB available -> 425GB fits with 275GB headroom
-- 504GB machine = ~504GB cgroup -> 353GB available -> 425GB DOES NOT FIT -> stays sparse (slow)
-- **Belgium A40 1TB ($0.58/hr) is the correct machine class**
+- 2.3TB dense matrix cannot fit in any available machine
+- Training MUST stay sparse. SPARSE + SEQUENTIAL CPCV (parallel disabled for >1M features — pickle bottleneck)
+- int64 indptr fixes NNZ > 2^31. Row-partitioned boosting is BANNED (kills rare signals — Perplexity confirmed).
 
 ## Install Dependencies
 ```bash
@@ -129,10 +130,10 @@ try:
     with open('/sys/fs/cgroup/memory/memory.limit_in_bytes') as f:
         ram = int(f.read().strip())
     print(f'Cgroup RAM: {ram/1e9:.0f} GB')
-    if ram < 768e9:
-        print('WARNING: < 768GB — dense conversion will be SKIPPED, training stays sparse (slower)')
+    if ram < 2000e9:
+        print(f'WARNING: < 2TB — cross gen may OOM (peaked 1871G/2003G at RC=300)')
     else:
-        print('OK — dense conversion will proceed')
+        print('OK — 2TB+ available for cross gen')
 except:
     import psutil
     print(f'System RAM: {psutil.virtual_memory().total/1e9:.0f} GB')
@@ -158,9 +159,8 @@ uptime
 # If load average ~ 1.0, training is SINGLE-THREADED — this is a critical bug
 # Check for "is_enable_sparse=False" in log if data was converted to dense
 
-# Also check RSS matches expected dense matrix size
+# Also check RSS (stays sparse — no dense conversion for 1h)
 ps aux | grep cloud_run_tf | grep -v grep
-# RSS should be ~425GB+ if dense conversion happened
 ```
 
 ## Verify Crosses Not Truncated
@@ -192,7 +192,7 @@ tail -f /workspace/1h_log.txt
 # Check process is alive
 ps aux | grep cloud_run_tf | grep -v grep
 
-# Check memory usage (dense matrix should show ~425GB RSS)
+# Check memory usage (stays sparse — no dense conversion)
 free -g
 
 # Check disk space
@@ -218,8 +218,11 @@ dmesg | tail -20 | grep -i oom
 | Metric | Expected |
 |--------|----------|
 | Cross features | ~7-8M (up from 6.06M) |
-| Dense matrix | ~425GB |
-| Training time | ~5 hrs total |
+| Dense matrix | ~2.3TB (impossible — stays sparse) |
+| Training time | 80+ hours estimated total |
+
+## STATUS
+**READY** — (4,1)=4 folds, no Optuna. Est. 9-15 hrs, ~$16-26. Single machine.
 
 ## Download Results When Done
 ```bash
@@ -232,6 +235,7 @@ scp -P PORT root@HOST:/workspace/v3.3/ml_multi_tf_configs.json .
 
 ## Notes
 - min_data_in_leaf=8 for 1h (per TF_MIN_DATA_IN_LEAF in config.py)
-- NNZ close to int32 limit (~2B) but should stay under. If it exceeds 2^31, LightGBM SILENTLY produces garbage. Monitor NNZ count after cross gen.
+- 4 CPCV paths (N=4, K=1) — was (6,2)=15 folds. Production model identical regardless (trains on ALL data). See FOLD_STRATEGY.md.
+- NNZ will exceed int32 limit (~2B). int64 indptr fixes NNZ > 2^31. Row-partitioned boosting is BANNED (kills rare signals — Perplexity confirmed).
 - Subsampling code REMOVED from ml_multi_tf.py. If dense doesn't fit, it stays sparse. No data loss.
 - Download ALL artifacts after each step — vast.ai machines die without warning.

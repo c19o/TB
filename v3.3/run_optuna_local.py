@@ -276,14 +276,8 @@ def load_tf_data(tf_name):
     # Sample weights: regime + esoteric + uniqueness
     sample_weights = np.ones(len(y), dtype=np.float32)
 
-    # Regime weights
-    if 'ema50_declining' in df.columns and 'ema50_rising' in df.columns:
-        ema_dec = pd.to_numeric(df['ema50_declining'], errors='coerce').values
-        ema_ris = pd.to_numeric(df['ema50_rising'], errors='coerce').values
-        bear_longs = (y == 2) & (ema_dec == 1)
-        bull_shorts = (y == 0) & (ema_ris == 1)
-        sample_weights[bear_longs] = 0.15
-        sample_weights[bull_shorts] = 0.15
+    # MC-1 FIX: No regime weighting — model decides via HMM state feature, not pre-judged weights.
+    # Counter-trend esoteric signals need full weight. HMM state is an input feature column.
 
     # Uniqueness weights
     tb_cfg = TRIPLE_BARRIER_CONFIG.get(tf_name, TRIPLE_BARRIER_CONFIG['1h'])
@@ -348,7 +342,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.1, 5.0)  # lowered floor from 0.5
             max_depth = trial.suggest_int('max_depth', 4, 12)  # new (3.9)
             learning_rate = trial.suggest_float('learning_rate', 0.01, 0.1, log=True)  # new (3.10)
-        max_bin = 15  # LOCKED — binary features use 2 bins regardless (3.7)
+        max_bin = 255  # LOCKED — controls EFB bundle size (254/bundle). Binary features still get 2 bins.
 
         # Build LightGBM params — start from V3_LGBM_PARAMS baseline (fix 3.11)
         lr = search_lr if search_lr else OPTUNA_FINAL_LR
@@ -372,7 +366,6 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             'learning_rate': learning_rate if not search_lr else lr,
             'seed': OPTUNA_SEED,
         })
-
         # ── Row subsample for stage 1 ──
         if row_subsample < 1.0:
             np.random.seed(OPTUNA_SEED)
@@ -431,7 +424,9 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                                reference=dtrain, free_raw_data=True)
 
             # Use pruning callback for stage 1
-            callbacks = [lgb.early_stopping(30), lgb.log_evaluation(0)]
+            # MC-4: scale early stopping inversely with LR — esoteric signals need 800+ trees at low LR
+            _es_patience = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+            callbacks = [lgb.early_stopping(_es_patience), lgb.log_evaluation(0)]
 
             model = lgb.train(
                 params, dtrain,
@@ -509,13 +504,8 @@ def compute_narrow_ranges(study, top_k=5):
         margin = max((hi - lo) * 0.2, abs(lo) * 0.1)
         ranges[pname] = (max(lo - margin, 0.001), hi + margin)
 
-    # max_bin: collect unique values from top trials
-    max_bin_vals = [t.params.get('max_bin', 15) for t in top_trials]
-    ranges['max_bin'] = list(set(max_bin_vals))
-    if len(ranges['max_bin']) == 1:
-        # Add neighbors
-        val = ranges['max_bin'][0]
-        ranges['max_bin'] = sorted(set([max(7, val // 2), val, min(255, val * 2)]))
+    # max_bin: LOCKED at 255 — controls EFB bundle size, not searchable
+    ranges['max_bin'] = [255]
 
     # Clamp integer ranges
     if 'num_leaves' in ranges:
@@ -534,7 +524,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
     """Retrain with best params using full CPCV + full rounds + final LR."""
     log.info(f"  FINAL RETRAIN: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
 
-    n_groups, n_test_groups = TF_CPCV_GROUPS.get(tf_name, (6, 2))
+    n_groups, n_test_groups = TF_CPCV_GROUPS.get(tf_name, (4, 1))
     valid_mask = ~np.isnan(y)
     valid_indices = np.where(valid_mask)[0]
     n_valid = len(valid_indices)
@@ -558,7 +548,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         'learning_rate': OPTUNA_FINAL_LR,
         'seed': OPTUNA_SEED,
         'bagging_freq': 1,
-        'max_conflict_rate': 0.0,  # protect cross feature co-occurrence from EFB
+        'min_data_in_bin': 1,  # allow bins with 1 sample (rare signals)
         'path_smooth': 0.1,
     }
     # Apply best Optuna params
@@ -605,7 +595,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
             num_boost_round=OPTUNA_FINAL_ROUNDS,
             valid_sets=[dtrain, dval],
             valid_names=['train', 'val'],
-            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
+            callbacks=[lgb.early_stopping(max(50, int(100 * (0.1 / params.get('learning_rate', OPTUNA_FINAL_LR))))), lgb.log_evaluation(0)],
         )
 
         preds = model.predict(X_test)
@@ -755,7 +745,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         log.warning("  No completed trials for stage 2 narrowing, skipping")
         return None
 
-    n_groups_full, n_test_full = TF_CPCV_GROUPS.get(tf_name, (6, 2))
+    n_groups_full, n_test_full = TF_CPCV_GROUPS.get(tf_name, (4, 1))
     log.info(f"\n  STAGE 2: {OPTUNA_STAGE2_TRIALS} trials, {n_groups_full} CPCV groups (full), "
              f"100% rows, lr={OPTUNA_SEARCH_LR}")
     log.info(f"  Narrowed ranges: {json.dumps({k: v for k, v in narrow_ranges.items() if k != 'max_bin'}, indent=4, default=str)}")

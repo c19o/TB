@@ -1,11 +1,11 @@
 # 4H Training Guide
 
 ## Machine Requirements
-- **RAM:** 2TB+ MINIMUM (OOM'd at 1007GB with RC=500 during cross gen)
+- **RAM:** 1.5-2TB MINIMUM (1TB OOM'd, 2TB worked at RC=500 — peaked 1213GB)
 - **Cores:** 128+ (parallel CPCV + cross gen)
 - **CPU Score:** 400+
 - **Disk:** 50GB+
-- **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=500` (MANDATORY — auto=2000 OOMs even on 1TB)
+- **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=500` (MANDATORY — auto=2000 OOM'd on 1TB. RC=500 peaked 1213GB on 2TB machine)
 
 ## Required Databases (ALL 16 — ZERO MISSING)
 ```
@@ -49,11 +49,12 @@ echo "DB check: $FAIL missing"
 **If ANY says MISSING -> STOP. Do not launch. Upload the missing file first.**
 
 ## Data
-- **Rows:** ~23,237 expected (4h bars, 2017-08-17 to 2026). **Was 4,380 — only had 2024+ data from Binance.US.**
-- **Base features:** ~3,877 cols
+- **Rows:** ~17,520 (4h bars, 2017-08-17 to 2026). **Was 4,380 — only had 2024+ data from Binance.US.**
+- **Base features:** ~3,904 cols
 - **Cross features:** ~3-4M expected (min_nonzero=3, no pre-built NPZ)
 - **Full cross gen required** (no pre-existing NPZ — build from scratch)
-- **Dense matrix:** ~560GB (23K rows x 4M features x 4 bytes). **768GB+ machine required (was 256GB with old 4,380 rows).**
+- **Dense matrix:** Inconsistent with observed 1213GB peak RAM — actual memory usage dominated by cross gen intermediates, not dense training matrix.
+- **Context signals:** 4269 total (astro:333, ta:2576, esoteric:909, macro:123, regime:27, session:4, aspect:38, price_num:4, moon:23, volatility:232)
 - **Data range:** Binance BTC/USDT 4h from 2017-08-17 (download_btc.py via Binance global API)
 
 ## Nuclear Clean (MANDATORY — delete ALL old artifacts before launch)
@@ -76,9 +77,9 @@ python3 -c "import pandas as pd; df=pd.read_parquet('/workspace/v3.3/features_BT
 
 ## Pipeline Steps
 1. Feature build (~35s) -> features_BTC_4h.parquet
-2. Cross gen (~45-60 min, full from scratch, min_nonzero=3) -> v2_crosses_BTC_4h.npz + v2_cross_names_BTC_4h.json
-3. Dense conversion (~52GB, well under 70% of 252GB) -> is_enable_sparse=False for multi-core LightGBM
-4. LightGBM CPCV (10 folds parallel) -> model_4h.json
+2. Cross gen (Step 5/13 alone took 9.5+ hours. Total estimated 18+ hours) -> v2_crosses_BTC_4h.npz + v2_cross_names_BTC_4h.json
+3. SPARSE + SEQUENTIAL CPCV (parallel disabled for >1M features — pickle bottleneck)
+4. LightGBM CPCV (4 folds sequential, (4,1) config) -> model_4h.json
 5. Optuna (200 trials) -> optuna_configs_4h.json
 6. Meta-labeling -> meta_model_4h.pkl
 7. LSTM -> lstm_4h.pt + platt_4h.pkl
@@ -112,8 +113,8 @@ head -30 /workspace/4h_log.txt
 ```
 Must see:
 - "All 16 databases present" (or zero "MISS" / "WARNING: DB missing")
-- Correct row count: ~23,237
-- Correct base feature count: ~3,877
+- Correct row count: ~17,520
+- Correct base feature count: ~3,904
 - V30_DATA_DIR pointing to /workspace/v3.3 (NOT v3.0)
 
 ## Verify Multi-Threaded Execution
@@ -121,12 +122,11 @@ After training starts (Step 4 — CPCV), check load average:
 ```bash
 # Load average should be >> 1.0 on 128+ core machine
 uptime
-# Expected: load average > 30 (parallel CPCV folds + LightGBM threads)
+# Expected: load average > 30 (LightGBM threads (sequential CPCV))
 # If load average ~ 1.0, training is SINGLE-THREADED — this is a critical bug
 
-# Also check RSS matches expected dense matrix size
+# Also check RSS
 ps aux | grep cloud_run_tf | grep -v grep
-# RSS should be ~52GB+ (dense matrix loaded)
 ```
 
 ## Verify Crosses Not Truncated
@@ -170,14 +170,14 @@ dmesg | tail -20 | grep -i oom
 | Metric | v3.2 Value |
 |--------|-----------|
 | Meta AUC | 0.616 |
-| PBO | REJECT (23,237 rows) |
+| PBO | REJECT (17,520 rows) |
 
 ## v3.3 Expected (min_nonzero=3)
 | Metric | Expected |
 |--------|----------|
 | Cross features | ~3-4M (was unknown at min_nonzero=8) |
-| Dense matrix | ~52GB |
-| Training time | ~2 hrs total |
+| CPCV mode | SPARSE + SEQUENTIAL |
+| Training time | 18+ hrs cross gen + training |
 
 ## Download Results When Done
 ```bash
@@ -189,8 +189,11 @@ scp -P PORT root@HOST:/workspace/v3.3/ml_multi_tf_configs.json .
 ```
 
 ## Notes
-- 4h has ~23,237 rows (2017-08-17 to 2026, Binance global API)
-- 10 CPCV paths (N=5, K=2) gives more validation but slower
+- 4h has ~17,520 rows (2017-08-17 to 2026, Binance global API)
+- 4 CPCV paths (N=4, K=1) — production model identical regardless of fold count (trains on ALL data). See FOLD_STRATEGY.md.
 - min_data_in_leaf=5 for 4h (per TF_MIN_DATA_IN_LEAF in config.py)
 - Full cross gen from scratch — no pre-built NPZ exists for 4h
-- PBO result with 23,237 rows should be more reliable than with old 4,380 rows
+- PBO result with 17,520 rows should be more reliable than with old 4,380 rows
+
+## STATUS
+Cross gen step 5/13 when machine destroyed. Only parquet saved.

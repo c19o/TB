@@ -234,13 +234,13 @@ V3_LGBM_PARAMS = {
     "boosting_type": "gbdt",
     "device": "cpu",
     "force_col_wise": True,
-    "max_bin": 15,
+    "max_bin": 255,                    # max EFB bundle size (254/bundle → ~23K bundles for 6M features). Binary features still get 2 bins.
     "max_depth": -1,                  # -1 = no limit; Optuna searches [4, 12]
     "num_threads": 0,                 # 0 = auto-detect via OpenMP (not -1 which is undocumented)
     "deterministic": True,            # Perplexity: required for reproducible sparse training
     "feature_pre_filter": False,      # CRITICAL: True silently kills rare esoteric features at Dataset construction
     "is_enable_sparse": True,
-    "max_conflict_rate": 0.0,          # CRITICAL: protect cross feature co-occurrence from EFB bundling
+    "min_data_in_bin": 1,              # allow bins with 1 sample (rare esoteric signals)
     "path_smooth": 0.1,                # regularization: smooths leaf values to reduce overfitting
     "min_data_in_leaf": 3,
     "min_gain_to_split": 2.0,
@@ -273,11 +273,11 @@ TF_CLASS_WEIGHT = {
 
 # Per-TF CPCV group settings (n_groups, n_test_groups)
 TF_CPCV_GROUPS = {
-    '1w': (4, 1),
-    '1d': (4, 1),
-    '4h': (5, 2),
-    '1h': (6, 2),
-    '15m': (6, 2),
+    '1w': (4, 1),   # 4 folds — production model identical regardless of fold count (see FOLD_STRATEGY.md)
+    '1d': (4, 1),   # 4 folds
+    '4h': (4, 1),   # was (5,2)=10 folds — 4 folds saves 60% time, final model trains on ALL data anyway
+    '1h': (4, 1),   # was (6,2)=15 folds — 4 folds saves 73% time, 75K rows is plenty per fold
+    '15m': (4, 1),  # 4 folds — 294K rows, ~73K per test set
 }
 
 # Per-TF num_leaves caps (v3.2 1d best was 99, raised cap to 95)
@@ -311,9 +311,9 @@ OPTUNA_FINAL_ROUNDS = 800          # full rounds for final model only
 OPTUNA_SEARCH_CPCV_GROUPS = 2      # 2-fold for search speed, 4+ for final
 # Per-TF row subsample for Optuna search (1w too few rows to subsample)
 OPTUNA_TF_ROW_SUBSAMPLE = {
-    '1w': 1.0, '1d': 0.5, '4h': 0.5, '1h': 0.3, '15m': 0.3,
+    '1w': 1.0, '1d': 1.0, '4h': 1.0, '1h': 1.0, '15m': 1.0,  # ALL 1.0 — subsampling kills rare signals below min_data_in_leaf
 }
-OPTUNA_SEARCH_ROW_SUBSAMPLE = 0.3  # default fallback
+OPTUNA_SEARCH_ROW_SUBSAMPLE = 1.0  # default fallback — subsampling kills rare signals
 # n_jobs: env var override or auto
 OPTUNA_N_JOBS = int(os.environ.get('OPTUNA_N_JOBS', 0))  # 0 = auto (total_cores // 8)
 

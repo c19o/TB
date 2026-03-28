@@ -7,7 +7,7 @@ Pipeline:
 1. HMM re-fitted per walk-forward window (no future leakage)
 2. Triple-barrier labels: LONG(2)/FLAT(1)/SHORT(0) via ATR barriers
 3. Rolling windows (not expanding) -- better for crypto regime drift
-4. LightGBM GBDT with force_col_wise, max_bin=15, sparse-native
+4. LightGBM GBDT with force_col_wise, max_bin=255 (EFB optimized), sparse-native
 5. Nested validation: GA on inner fold, final metrics on outer untouched fold
 6. ALL features used -- no SHAP pruning. LightGBM handles feature selection via tree splits.
 7. multiclass objective with 3 classes (long_prob, flat_prob, short_prob)
@@ -63,6 +63,52 @@ from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 
 # LightGBM runs on CPU with force_col_wise for max throughput
 log(f"LightGBM: CPU mode (force_col_wise=True)")
+
+
+# ============================================================
+# MC-5: SIGTERM CHECKPOINT CALLBACK
+# Saves model every 100 rounds + on SIGTERM for crash recovery
+# ============================================================
+import signal, threading
+
+_SIGTERM_FLAG = threading.Event()
+
+def _sigterm_handler(signum, frame):
+    _SIGTERM_FLAG.set()
+    log(f"  [SIGTERM] Received signal {signum} — will save checkpoint at next callback")
+
+# Install handler (only in main process)
+if threading.current_thread() is threading.main_thread():
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+        signal.signal(signal.SIGINT, _sigterm_handler)
+    except (OSError, ValueError):
+        pass  # can't set signal handler in non-main thread or on Windows
+
+
+class CheckpointCallback:
+    """LightGBM callback: saves model every `period` rounds and on SIGTERM."""
+    def __init__(self, save_path, period=100):
+        self.save_path = save_path
+        self.period = period
+        self.order = 100  # run after early_stopping (order=10) and log_evaluation (order=20)
+
+    def __call__(self, env):
+        iteration = env.iteration + 1
+        save_now = (iteration % self.period == 0) or _SIGTERM_FLAG.is_set()
+        if save_now:
+            try:
+                import tempfile
+                tmp_path = self.save_path + f'.tmp_{os.getpid()}'
+                env.model.save_model(tmp_path)
+                os.replace(tmp_path, self.save_path)
+                if _SIGTERM_FLAG.is_set():
+                    log(f"  [SIGTERM] Checkpoint saved at iteration {iteration}: {self.save_path}")
+                    raise KeyboardInterrupt("SIGTERM checkpoint saved — stopping training")
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                log(f"  WARNING: checkpoint save failed at iter {iteration}: {e}")
 
 
 # ============================================================
@@ -298,7 +344,7 @@ def _cpcv_split_worker(args_tuple):
         num_boost_round=num_boost_round,
         valid_sets=[dtrain, dval],
         valid_names=['train', 'val'],
-        callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
+        callbacks=[lgb.early_stopping(max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))), lgb.log_evaluation(0)],
     )
 
     # OOS predictions (LightGBM predicts directly on arrays)
@@ -460,6 +506,11 @@ if __name__ == '__main__':
   # CLI ARGS
   # ============================================================
   import argparse
+  import multiprocessing as _mp_ctx
+  try:
+      _mp_ctx.set_start_method('spawn', force=True)  # CRITICAL: fork + LightGBM OpenMP = deadlock
+  except RuntimeError:
+      pass  # already set
   from concurrent.futures import ProcessPoolExecutor
   _parser = argparse.ArgumentParser()
   _parser.add_argument('--tf', action='append', help='Only train specific TFs (can repeat)')
@@ -575,18 +626,10 @@ if __name__ == '__main__':
               if candidates:
                   return_col = candidates[0]
 
-          # Regime-aware sample weights: downweight counter-trend trades (0.15x, Perplexity validated)
+          # MC-1 FIX: No regime weighting — model decides via HMM state feature, not pre-judged weights.
+          # Counter-trend esoteric signals (full moon at bull-to-bear transition) need full weight.
           sample_weights = np.ones(len(y_3class), dtype=np.float32)
-          if 'ema50_declining' in df.columns and 'ema50_rising' in df.columns:
-              ema_dec = pd.to_numeric(df['ema50_declining'], errors='coerce').values
-              ema_ris = pd.to_numeric(df['ema50_rising'], errors='coerce').values
-              bear_longs = (y_3class == 2) & (ema_dec == 1)  # LONG in bear regime
-              bull_shorts = (y_3class == 0) & (ema_ris == 1)  # SHORT in bull regime
-              sample_weights[bear_longs] = 0.15
-              sample_weights[bull_shorts] = 0.15
-              log(f"  Regime weights: {bear_longs.sum()} bear LONGs @ 0.15, {bull_shorts.sum()} bull SHORTs @ 0.15")
-          else:
-              log(f"  WARNING: ema50_declining/ema50_rising not in features -- no regime weighting applied")
+          log(f"  Sample weights: uniform (HMM state added as input feature, no regime pre-weighting)")
 
           # Identify feature columns
           meta_cols = {'timestamp', 'date', 'open', 'high', 'low', 'close', 'volume',
@@ -668,13 +711,15 @@ if __name__ == '__main__':
               _n_total_features = X_all.shape[1]
               _dense_bytes = X_all.shape[0] * _n_total_features * 4  # float32
               _avail_ram = psutil.virtual_memory().available
-              if _n_total_features > 1_000_000:
-                  log(f"  Keeping SPARSE ({_n_total_features:,} features > 1M — dense+parallel is slower)")
-                  log(f"  Sparse histogram O(2×NNZ) faster than dense O(rows×features) for binary crosses")
-              elif _dense_bytes < _avail_ram * 0.7:
+              if _dense_bytes < _avail_ram * 0.5:
+                  # Dense fits comfortably — convert for multi-core LightGBM histogram
                   log(f"  Converting sparse to dense ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
                   X_all = X_all.toarray()
                   _converted_to_dense = True  # disable is_enable_sparse in LightGBM params
+              elif _n_total_features > 1_000_000:
+                  # Dense doesn't fit comfortably — stay sparse (sequential CPCV, single-thread histogram)
+                  log(f"  Keeping SPARSE ({_n_total_features:,} features, dense={_dense_bytes/1e9:.1f} GB > 50% of {_avail_ram/1e9:.0f} GB avail)")
+                  log(f"  Sparse histogram is single-threaded — expected ~15 min/fold for 2M+ features")
               else:
                   log(f"  Keeping SPARSE (dense would need {_dense_bytes/1e9:.1f} GB, only {_avail_ram/1e9:.0f} GB avail)")
               feature_cols = feature_cols + cross_cols
@@ -785,7 +830,7 @@ if __name__ == '__main__':
               log(f"  CPCV search mode: n_groups={n_groups}, n_test=1 (--search-mode flag)")
           else:
               from config import TF_CPCV_GROUPS
-              n_groups, n_test_groups = TF_CPCV_GROUPS.get(tf_name, (6, 2))
+              n_groups, n_test_groups = TF_CPCV_GROUPS.get(tf_name, (4, 1))
 
           cpcv_splits = _generate_cpcv_splits(
               n, n_groups=n_groups, n_test_groups=n_test_groups,
@@ -848,18 +893,24 @@ if __name__ == '__main__':
               _base_lgb_params['num_threads'] = _capped_threads
               log(f"  num_threads capped to {_capped_threads} (< 10K rows, LightGBM docs)")
 
-          # Interaction constraints (compute once, used by all paths)
-          _doy_names = [f for f in feature_cols if f.startswith('doy_')]
-          if _doy_names:
-              _trend_kw = ('regime', 'ema50', 'bull', 'bear', 'hmm_', 'trend')
-              _ta_kw = ('rsi_', 'macd', 'bb_', 'atr_', 'sma_', 'ema_', 'adx_', 'stoch_', 'obv', 'vwap', 'cci_', 'mfi_', 'williams', 'ichimoku', 'keltner', 'donchian', 'supertrend', 'sar_')
-              _trend_names = [f for f in feature_cols if any(kw in f for kw in _trend_kw)]
-              _ta_names = [f for f in feature_cols if any(kw in f for kw in _ta_kw)]
-              _constrained = _doy_names + _trend_names + _ta_names
-              if _constrained:
-                  _constrained_indices = [feature_cols.index(f) for f in _constrained if f in feature_cols]
-                  _base_lgb_params['interaction_constraints'] = [_constrained_indices]
-              log(f"  Interaction constraints: 1 group with DOY({len(_doy_names)}) + TREND({len(_trend_names)}) + TA({len(_ta_names)}) = {len(_constrained)} constrained, rest free")
+          # Interaction constraints — DISABLED for 100K+ features (787K constrained features kills LightGBM perf)
+          # LightGBM checks constraint groups per split candidate per round — catastrophic at 787K.
+          # Model learns interactions via tree structure instead. Re-enable for <100K features only.
+          if _n_total_features < 100_000:
+              _fc_index = {f: i for i, f in enumerate(feature_cols)}
+              _doy_names = [f for f in feature_cols if f.startswith('doy_')]
+              if _doy_names:
+                  _trend_kw = ('regime', 'ema50', 'bull', 'bear', 'hmm_', 'trend')
+                  _ta_kw = ('rsi_', 'macd', 'bb_', 'atr_', 'sma_', 'ema_', 'adx_', 'stoch_', 'obv', 'vwap', 'cci_', 'mfi_', 'williams', 'ichimoku', 'keltner', 'donchian', 'supertrend', 'sar_')
+                  _trend_names = [f for f in feature_cols if any(kw in f for kw in _trend_kw)]
+                  _ta_names = [f for f in feature_cols if any(kw in f for kw in _ta_kw)]
+                  _constrained = _doy_names + _trend_names + _ta_names
+                  if _constrained:
+                      _constrained_indices = [_fc_index[f] for f in _constrained if f in _fc_index]
+                      _base_lgb_params['interaction_constraints'] = [_constrained_indices]
+                  log(f"  Interaction constraints: {len(_constrained)} features constrained")
+          else:
+              log(f"  Interaction constraints: DISABLED ({_n_total_features:,} features — constraint checking too slow)")
 
           # Default: final feature cols = feature_cols (parallel path keeps HMM in X_all)
           # Sequential sparse path overrides this after stripping HMM into overlay
@@ -871,9 +922,10 @@ if __name__ == '__main__':
               _use_parallel_splits = False
               log(f"  Forcing sequential CPCV (CSR arrays too large for multiprocess pickle)")
 
-          if _n_total_features > 1_000_000 and _use_parallel_splits:
+          if _n_total_features > 1_000_000 and _use_parallel_splits and _X_all_is_sparse:
               _use_parallel_splits = False
-              log(f"  Forcing sequential CPCV ({_n_total_features:,} features — pickle overhead > training time)")
+              log(f"  Forcing sequential CPCV ({_n_total_features:,} SPARSE features — pickle IPC bottleneck > training time)")
+          # Dense data with >1M features: parallel OK (numpy arrays serialize fast, no pickle bottleneck)
 
           if _use_parallel_splits:
               # ── Parallel CPCV path (CPU workers) ──
@@ -990,9 +1042,10 @@ if __name__ == '__main__':
                   # Find HMM columns already in feature_cols and strip them from X_all
                   _hmm_existing_indices = []
                   _hmm_existing_names = []
+                  _fc_idx = {f: i for i, f in enumerate(feature_cols)}  # O(1) lookup
                   for hc in _HMM_COL_NAMES:
-                      if hc in feature_cols:
-                          _hmm_existing_indices.append(feature_cols.index(hc))
+                      if hc in _fc_idx:
+                          _hmm_existing_indices.append(_fc_idx[hc])
                           _hmm_existing_names.append(hc)
 
                   if _hmm_existing_indices:
@@ -1021,7 +1074,8 @@ if __name__ == '__main__':
                               _trend_s = [f for f in feature_cols if any(kw in f for kw in _trend_kw)]
                               _ta_s = [f for f in feature_cols if any(kw in f for kw in _ta_kw)]
                               _constrained_s = _doy_names_s + _trend_s + _ta_s
-                              _ci_s = [feature_cols.index(f) for f in _constrained_s if f in feature_cols]
+                              _fc_idx2 = {f: i for i, f in enumerate(feature_cols)}
+                              _ci_s = [_fc_idx2[f] for f in _constrained_s if f in _fc_idx2]
                               # Add HMM overlay indices (appended at end of _fold_feature_cols)
                               _n_base = len(feature_cols)
                               for oi, on in enumerate(_hmm_overlay_names):
@@ -1035,6 +1089,38 @@ if __name__ == '__main__':
                       _hmm_overlay = np.full((X_all.shape[0], len(_HMM_COL_NAMES)), np.nan, dtype=np.float32)
                       _hmm_overlay_names = list(_HMM_COL_NAMES)
                       log(f"  HMM overlay: initialized {len(_HMM_COL_NAMES)} new cols as dense overlay")
+
+              # ── Build parent Dataset ONCE for EFB/bin reuse across folds ──
+              # This avoids recomputing EFB bundles + bin thresholds per fold (~30% time savings).
+              # Per-fold Datasets use reference=_parent_ds to inherit bins/EFB.
+              _parent_ds = None
+              try:
+                  _parent_t0 = time.time()
+                  _parent_feature_cols = feature_cols + (_hmm_overlay_names if _hmm_overlay is not None else [])
+                  # Build representative sample: valid rows only, with HMM overlay if present
+                  _parent_valid = ~np.isnan(y_3class)
+                  if _X_all_is_sparse and _hmm_overlay is not None:
+                      _Xp_base = X_all[_parent_valid]
+                      _Xp_hmm = sp_sparse.csr_matrix(_hmm_overlay[_parent_valid])
+                      _Xp = sp_sparse.hstack([_Xp_base, _Xp_hmm], format='csr')
+                      del _Xp_base, _Xp_hmm
+                  else:
+                      _Xp = X_all[_parent_valid]
+                  _parent_ds = lgb.Dataset(
+                      _Xp, label=y_3class[_parent_valid].astype(int),
+                      weight=sample_weights[_parent_valid],
+                      feature_name=_parent_feature_cols,
+                      free_raw_data=True,
+                      params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255)},
+                  )
+                  _parent_ds.construct()
+                  log(f"  Parent Dataset built: {_Xp.shape[1]:,} features, EFB bins computed ONCE "
+                      f"({time.time() - _parent_t0:.1f}s). Folds reuse via reference=.")
+                  del _Xp
+                  gc.collect()
+              except Exception as _pde:
+                  log(f"  WARNING: Parent Dataset build failed ({_pde}), folds will construct independently")
+                  _parent_ds = None
 
               for wi, (train_idx, test_idx) in enumerate(splits):
                   if wi in _completed_folds:
@@ -1069,7 +1155,7 @@ if __name__ == '__main__':
                                   hmm_mapped = pd.Series(date_norm).map(
                                       hmm_df_notz[hmm_col].to_dict()
                                   ).ffill().values.astype(np.float32)
-                                  col_idx = feature_cols.index(hmm_col) if hmm_col in feature_cols else -1
+                                  col_idx = {f: i for i, f in enumerate(feature_cols)}.get(hmm_col, -1)
                                   if col_idx >= 0:
                                       X_all[:, col_idx] = hmm_mapped
                                   else:
@@ -1140,16 +1226,22 @@ if __name__ == '__main__':
                   y_train_es = y_train[:-val_size]
                   w_train_es = w_train[:-val_size]
 
-                  dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
-                                       feature_name=_fold_feature_cols, free_raw_data=False)
-                  dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
-                                     feature_name=_fold_feature_cols, free_raw_data=False)
+                  _ds_kwargs = dict(feature_name=_fold_feature_cols, free_raw_data=False)
+                  if _parent_ds is not None:
+                      _ds_kwargs['reference'] = _parent_ds  # reuse EFB bundles + bin thresholds
+                  dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es, **_ds_kwargs)
+                  dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, **_ds_kwargs)
+                  _ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_fold{wi}.txt')
                   model = lgb.train(
                       params, dtrain,
                       num_boost_round=_args.boost_rounds,
                       valid_sets=[dtrain, dval],
                       valid_names=['train', 'val'],
-                      callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
+                      callbacks=[
+                          lgb.early_stopping(max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))),
+                          lgb.log_evaluation(100),
+                          CheckpointCallback(_ckpt_path, period=100),
+                      ],
                   )
 
                   # Predict OOS (LightGBM predicts directly on arrays)
@@ -1184,6 +1276,10 @@ if __name__ == '__main__':
 
                   # Feature importance for this fold (gain-based)
                   importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='gain')))
+
+                  # Save fold model for feature importance pipeline
+                  _fold_model_path = os.path.join(DB_DIR, f'model_{tf_name}_fold{wi}.txt')
+                  model.save_model(_fold_model_path)
 
                   window_results.append({
                       'window': wi + 1, 'accuracy': acc,
@@ -1307,6 +1403,42 @@ if __name__ == '__main__':
           log(f"  Feature importance stability: {time.time()-t0_fi:.1f}s")
 
           # ============================================================
+          # ADVANCED FEATURE IMPORTANCE PIPELINE (6M-scale)
+          # ============================================================
+          try:
+              from feature_importance_pipeline import FeatureImportancePipeline
+              import lightgbm as _lgb_loader
+
+              # Load saved fold models
+              _fold_boosters = []
+              for _wi in range(len(window_results)):
+                  _fm_path = os.path.join(DB_DIR, f'model_{tf_name}_fold{_wi}.txt')
+                  if os.path.exists(_fm_path):
+                      _fold_boosters.append(_lgb_loader.Booster(model_file=_fm_path))
+
+              if len(_fold_boosters) >= 3:
+                  log(f"  {elapsed()} Running advanced feature importance pipeline ({len(_fold_boosters)} folds)...")
+                  _fi_pipeline = FeatureImportancePipeline(
+                      fold_boosters=_fold_boosters,
+                      feature_names=list(feature_cols) + (list(_hmm_overlay_names) if _hmm_overlay is not None else []),
+                      tf_name=tf_name,
+                      output_dir=DB_DIR,
+                  )
+                  _fi_results = _fi_pipeline.run(
+                      skip_permutation=True,   # No X_val available here
+                      skip_shap=True,          # No X_val available here
+                      skip_injection=True,     # No X_val available here
+                      skip_viz=True,           # matplotlib may not be on cloud
+                  )
+                  log(f"  {elapsed()} Advanced feature importance pipeline complete")
+              else:
+                  log(f"  Advanced FI pipeline: skipped (need >= 3 fold models, got {len(_fold_boosters)})")
+          except ImportError:
+              log(f"  Advanced FI pipeline: skipped (feature_importance_pipeline.py not found)")
+          except Exception as _fi_err:
+              log(f"  Advanced FI pipeline failed: {_fi_err}")
+
+          # ============================================================
           # FINAL MODEL — ALL FEATURES, NO PRUNING
           # ============================================================
           _n_final_feats = len(feature_cols) + (len(_hmm_overlay_names) if _hmm_overlay is not None else 0)
@@ -1350,14 +1482,20 @@ if __name__ == '__main__':
           X_tr_f = X_final_all[:-val_sz]
           y_tr_f = y_final_all[:-val_sz]
           w_tr_f = w_final_all[:-val_sz]
-          dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f,
-                               feature_name=_final_feature_cols, free_raw_data=False)
-          dval = lgb.Dataset(X_val_f, label=y_val_f, weight=w_val_f,
-                             feature_name=_final_feature_cols, free_raw_data=False)
+          _final_ds_kwargs = dict(feature_name=_final_feature_cols, free_raw_data=False)
+          if _parent_ds is not None:
+              _final_ds_kwargs['reference'] = _parent_ds  # reuse EFB from parent
+          dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f, **_final_ds_kwargs)
+          dval = lgb.Dataset(X_val_f, label=y_val_f, weight=w_val_f, **_final_ds_kwargs)
+          _final_ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_final.txt')
           final_model = lgb.train(
               final_params, dtrain, num_boost_round=_args.boost_rounds,
               valid_sets=[dtrain, dval], valid_names=['train', 'val'],
-              callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
+              callbacks=[
+                  lgb.early_stopping(max(50, int(100 * (0.1 / final_params.get('learning_rate', 0.03))))),
+                  lgb.log_evaluation(100),
+                  CheckpointCallback(_final_ckpt_path, period=100),
+              ],
           )
 
           # Evaluate on val set (held-out 15% from end, used for early stopping)
