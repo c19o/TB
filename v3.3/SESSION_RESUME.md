@@ -172,6 +172,36 @@ Each TF inherits best params from parent. Must train in order. Download `optuna_
 
 ---
 
+## KNOWN ISSUES — MUST FIX BEFORE CLOUD DEPLOY
+
+These were flagged during audit but NOT yet fixed. Do NOT deploy until resolved.
+
+| # | Issue | Severity | Files | Details |
+|---|-------|----------|-------|---------|
+| 1 | **Cross gen memmap NOT implemented** | CRITICAL | `v2_cross_generator.py` | 1h needs 1.2TB peak RAM, 15m needs 3TB+. CSR chunks accumulate in RAM with no disk flush. Need disk-backed CSR chunks (memmap or incremental NPZ flush) for 1h/15m. Without this, 1h/15m cross gen requires machines that may not exist at reasonable cost. |
+| 2 | **21 blanket try/except in feature_library.py** | HIGH | `feature_library.py` | Silently swallows esoteric feature computation errors. Violates "crash > silent degradation" rule. Need to audit each one and either: make it specific (catch only expected errors like missing DB columns) or add `ALLOW_CPU` guard. Silent failures = missing features = weaker model. |
+| 3 | **11 blanket try/except in astrology_engine.py** | HIGH | `astrology_engine.py` | Same issue as #2 for astrology features. Silent swallow means we never know if planetary calculations are failing. Must make exceptions specific or remove. |
+| 4 | **cloud_run_tf.py nuclear clean bug** | HIGH | `cloud_run_tf.py` (lines 177-188) | On restart, deletes ALL `v2_crosses_*.npz` files — destroying the CURRENT TF's valid artifacts. Need TF-specific glob filter (e.g., `v2_crosses_*_{tf}.npz`) so restart only cleans the target TF, not artifacts from other completed TFs. |
+| 5 | **No checkpoint/resume for cross gen** | HIGH | `v2_cross_generator.py` | If OOM occurs at cross type 12 of 13, ALL prior work is lost. Need per-cross-type intermediate saves (flush completed cross type NPZs to disk before starting the next). Currently all-or-nothing. |
+| 6 | **No model backup before overwrite** | MEDIUM | `ml_multi_tf.py` | Overwrites `model_{tf}.json` without backing up the previous version. If new training produces a worse model, the old one is gone. Need `shutil.copy` to `model_{tf}_prev.json` before writing new model. |
+| 7 | **CPCV fold logic duplicated in 6 files** | MEDIUM | `ml_multi_tf.py`, `run_optuna_local.py`, `cloud_run_tf.py`, `backtest_validation.py`, `mini_train.py`, `leakage_check.py` | Same fold-splitting logic copy-pasted. Any fix to one file must be manually replicated in 5 others. Should be extracted to a shared `cpcv_utils.py` module. |
+| 8 | **Optuna missing HMM features** | MEDIUM | `run_optuna_local.py` | Optuna search trains WITHOUT HMM state columns, but the final training in `ml_multi_tf.py` INCLUDES them. This means Optuna optimizes hyperparams on a different feature set than what the final model sees — consistency gap that could cause suboptimal params. |
+| 9 | **CMA-ES sampler for Stage 2** | LOW | `run_optuna_local.py` | Recommended but not implemented. TPE is suboptimal for noisy CPCV objectives — CMA-ES handles noise better for continuous param search in Stage 2 (refinement). Would improve param convergence quality. |
+| 10 | **n_warmup_steps=30 may be too aggressive** | LOW | `run_optuna_local.py` | MedianPruner starts pruning after 30 steps. Crypto data is noisy — early validation scores are unreliable. Consider 50-100 warmup steps to avoid killing trials that would converge with more rounds. Risk: premature pruning of good trials. |
+
+### Priority Order for Fixing
+1. **#4** (nuclear clean bug) — quick fix, prevents data loss on restart
+2. **#5** (cross gen checkpoint) — prevents losing hours of work on OOM
+3. **#6** (model backup) — quick fix, prevents losing good models
+4. **#1** (memmap) — BLOCKING for 1h/15m deployment, most engineering effort
+5. **#2 + #3** (blanket try/except) — audit and fix together
+6. **#8** (HMM consistency) — fix before Optuna runs
+7. **#7** (CPCV dedup) — refactor, lower urgency but prevents future bugs
+8. **#9** (CMA-ES) — nice-to-have optimization
+9. **#10** (warmup steps) — tune after first Optuna run on real data
+
+---
+
 ## NEXT STEPS (ordered)
 
 1. **Run 1w Optuna locally** — root of warm-start cascade (50+30 trials, ~1.5hr on 3090)

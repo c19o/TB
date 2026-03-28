@@ -194,7 +194,8 @@ print(f"  Purge gap: {purge_bars} bars between train and test")
 params = {'max_depth': 3, 'min_data_in_leaf': TF_MIN_DATA_IN_LEAF.get(tf_name, 3), 'bagging_fraction': 0.6,
           'feature_fraction': 0.5, 'lambda_l2': 10, 'learning_rate': 0.05,
           'objective': 'multiclass', 'num_class': 3, 'metric': 'multi_logloss', 'verbosity': -1,
-          'device': 'cpu', 'force_col_wise': True}
+          'device': 'cpu', 'force_col_wise': True,
+          'feature_pre_filter': False}
 
 # Normal accuracy
 dtrain = lgb.Dataset(X_train, label=y_train)

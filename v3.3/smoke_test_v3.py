@@ -290,6 +290,7 @@ def step_lgbm_mini_train(df, filtered_sparse, tmp_dir):
                 "num_leaves": 63,
                 "learning_rate": 0.03,
                 "verbosity": -1,
+                "feature_pre_filter": False,  # CRITICAL: True silently kills rare esoteric features
             }
 
         dtrain = lgb.Dataset(X_train, label=y_train, free_raw_data=False)

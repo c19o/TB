@@ -400,6 +400,7 @@ def run_smoke_test(tf_name='1h', max_rows=None):
                 'min_data_in_leaf': 3, 'lambda_l2': 5.0,  # Match production: rare esoteric signals
                 'metric': 'multi_logloss', 'verbosity': -1,
                 'force_col_wise': True,
+                'feature_pre_filter': False,  # CRITICAL: True silently kills rare esoteric features
             }
 
             w_train = uniqueness[train_idx][train_valid].astype(np.float32)

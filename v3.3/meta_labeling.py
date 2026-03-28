@@ -153,7 +153,8 @@ def train_meta_model(oos_predictions, feature_data=None, feature_cols=None,
         dtrain = lgb.Dataset(X_meta_train, label=y_meta_train,
                              feature_name=meta_feature_names, free_raw_data=False)
         dtest = lgb.Dataset(X_meta_test, label=y_meta_test,
-                            feature_name=meta_feature_names, free_raw_data=False)
+                            feature_name=meta_feature_names, free_raw_data=False,
+                            reference=dtrain)
         params = {
             'objective': 'binary',
             'max_depth': 2,
@@ -164,6 +165,7 @@ def train_meta_model(oos_predictions, feature_data=None, feature_cols=None,
             'lambda_l1': 2.0,
             'metric': 'auc',
             'verbosity': -1,
+            'feature_pre_filter': False,  # CRITICAL: True silently kills rare esoteric features
         }
         model = lgb.train(params, dtrain, num_boost_round=100,
                           valid_sets=[dtest], valid_names=['test'],
