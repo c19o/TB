@@ -207,7 +207,7 @@ def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
         end = (g + 1) * group_size if g < n_groups - 1 else n_samples
         groups.append(np.arange(start, end))
 
-    embargo_size = max(1, int(n_samples * embargo_pct))
+    embargo_size = max_hold_bars if max_hold_bars else max(1, int(n_samples * embargo_pct))
 
     # Generate all combinatorial test paths
     all_paths = list(combinations(range(n_groups), n_test_groups))

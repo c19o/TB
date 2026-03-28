@@ -51,6 +51,10 @@ os.environ.setdefault('SKIP_LLM', '1')
 
 import optuna
 from optuna.pruners import HyperbandPruner, MedianPruner
+try:
+    from optuna.pruners import PatientPruner
+except ImportError:
+    PatientPruner = None  # fallback to plain MedianPruner
 import lightgbm as lgb
 from sklearn.metrics import accuracy_score, precision_score, log_loss
 
@@ -157,7 +161,7 @@ def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
         end = (g + 1) * group_size if g < n_groups - 1 else n_samples
         groups.append(np.arange(start, end))
 
-    embargo_size = max(1, int(n_samples * embargo_pct))
+    embargo_size = max_hold_bars if max_hold_bars else max(1, int(n_samples * embargo_pct))
 
     # Generate all combinatorial test paths
     all_paths = list(combinations(range(n_groups), n_test_groups))
@@ -374,6 +378,7 @@ class _RoundPruningCallback:
         self.fold_i = fold_i
         self.max_rounds = max_rounds
         self.interval = interval
+        self._best_score = float('inf')
 
     def __call__(self, env):
         if (env.iteration + 1) % self.interval != 0:
@@ -384,8 +389,10 @@ class _RoundPruningCallback:
                 break
         else:
             return
+        # Report best-so-far score to prevent noisy dips from triggering false prunes
+        self._best_score = min(self._best_score, score)
         step = self.fold_i * self.max_rounds + (env.iteration + 1)
-        self.trial.report(score, step=step)
+        self.trial.report(self._best_score, step=step)
         if self.trial.should_prune():
             raise optuna.TrialPruned()
 
@@ -479,11 +486,11 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             max_depth = trial.suggest_int('max_depth', nr.get('max_depth', (4, 12))[0], nr.get('max_depth', (4, 12))[1])
         else:
             # Stage 1: Perplexity-validated wide ranges
-            num_leaves = trial.suggest_int('num_leaves', 15, _tf_nl_cap)
-            min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(1, _tf_mdil - 2), _tf_mdil + 10)
-            feature_fraction = trial.suggest_float('feature_fraction', 0.005, 0.1, log=True)  # log-scaled (3.16)
+            num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
+            min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(1, _tf_mdil - 2), _tf_mdil + 20)
+            feature_fraction = trial.suggest_float('feature_fraction', 0.01, 0.1, log=True)  # log-scaled — 0.01 = ~3 trees/feature @ 300 rounds
             feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.2, 0.8)
-            bagging_fraction = trial.suggest_float('bagging_fraction', 0.5, 0.95)
+            bagging_fraction = trial.suggest_float('bagging_fraction', 0.5, 1.0)
             lambda_l1 = trial.suggest_float('lambda_l1', 0.01, 1.0, log=True)  # capped at 1.0 (was 10.0)
             lambda_l2 = trial.suggest_float('lambda_l2', 0.1, 20.0, log=True)  # v3.2 best was 13.58
             min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.1, 5.0)  # lowered floor from 0.5
@@ -563,9 +570,10 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                     if no_improve >= _es_patience:
                         break
                     # Round-level pruning for Optuna (every 10 rounds)
+                    # Report best-so-far score to prevent noisy dips from triggering false prunes
                     if (rnd + 1) % 10 == 0:
                         global_step = fold_i * rounds + (rnd + 1)
-                        trial.report(val_score, step=global_step)
+                        trial.report(best_score, step=global_step)
                         if trial.should_prune():
                             del booster
                             import gc
@@ -671,7 +679,7 @@ def compute_narrow_ranges(study, top_k=5):
 
     # Clamp integer ranges
     if 'num_leaves' in ranges:
-        ranges['num_leaves'] = (max(7, int(ranges['num_leaves'][0])), min(255, int(ranges['num_leaves'][1])))
+        ranges['num_leaves'] = (max(4, int(ranges['num_leaves'][0])), min(255, int(ranges['num_leaves'][1])))
     if 'min_data_in_leaf' in ranges:
         ranges['min_data_in_leaf'] = (max(1, int(ranges['min_data_in_leaf'][0])), max(2, int(ranges['min_data_in_leaf'][1])))
     if 'max_depth' in ranges:
@@ -752,20 +760,20 @@ def compute_warmstart_ranges(parent_params, tf_name):
         lo, hi = ranges['max_depth']
         ranges['max_depth'] = (max(4, lo), min(12, hi))
 
-    # Clamp feature_fraction to [0.005, 0.1]
+    # Clamp feature_fraction to [0.01, 0.1]
     if 'feature_fraction' in ranges:
         lo, hi = ranges['feature_fraction']
-        ranges['feature_fraction'] = (max(0.005, lo), min(0.1, hi))
+        ranges['feature_fraction'] = (max(0.01, lo), min(0.1, hi))
 
     # Clamp feature_fraction_bynode to [0.2, 0.8]
     if 'feature_fraction_bynode' in ranges:
         lo, hi = ranges['feature_fraction_bynode']
         ranges['feature_fraction_bynode'] = (max(0.2, lo), min(0.8, hi))
 
-    # Clamp bagging_fraction to [0.5, 0.95]
+    # Clamp bagging_fraction to [0.5, 1.0]
     if 'bagging_fraction' in ranges:
         lo, hi = ranges['bagging_fraction']
-        ranges['bagging_fraction'] = (max(0.5, lo), min(0.95, hi))
+        ranges['bagging_fraction'] = (max(0.5, lo), min(1.0, hi))
 
     # Clamp lambda_l1 to [0.01, 1.0]
     if 'lambda_l1' in ranges:
@@ -785,8 +793,8 @@ def compute_warmstart_ranges(parent_params, tf_name):
     # TF-specific params: use standard wide ranges (NOT inherited)
     _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
     _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
-    ranges['num_leaves'] = (15, _tf_nl_cap)
-    ranges['min_data_in_leaf'] = (max(1, _tf_mdil - 2), _tf_mdil + 10)
+    ranges['num_leaves'] = (4, _tf_nl_cap)
+    ranges['min_data_in_leaf'] = (max(1, _tf_mdil - 2), _tf_mdil + 20)
 
     # max_bin: LOCKED at 255
     ranges['max_bin'] = [255]
@@ -812,7 +820,7 @@ def build_warmstart_enqueue_params(parent_params, tf_name):
     # TF-specific: use sensible defaults (not inherited)
     _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
     _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
-    enqueue['num_leaves'] = min(_tf_nl_cap, max(15, _tf_nl_cap // 2))
+    enqueue['num_leaves'] = min(_tf_nl_cap, max(4, _tf_nl_cap // 2))
     enqueue['min_data_in_leaf'] = _tf_mdil
 
     return enqueue
@@ -1071,11 +1079,19 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
             reduction_factor=OPTUNA_PRUNER_REDUCTION_FACTOR,
         )
     else:
-        pruner = MedianPruner(
+        _median = MedianPruner(
             n_startup_trials=_tf_startup,
-            n_warmup_steps=30,    # skip first 30 rounds (round-level pruning)
+            n_warmup_steps=50,    # skip first 50 rounds (round-level pruning)
             interval_steps=10,    # match round-level report interval
         )
+        if PatientPruner is not None:
+            pruner = PatientPruner(
+                wrapped_pruner=_median,
+                patience=5,          # 5 consecutive stagnant reports (50 rounds)
+                min_delta=0.001,     # must improve by 0.001 to reset patience
+            )
+        else:
+            pruner = _median
 
     # Sampler with fixed seed for reproducibility
     sampler = optuna.samplers.TPESampler(

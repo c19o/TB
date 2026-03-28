@@ -241,8 +241,9 @@ V3_LGBM_PARAMS = {
     "feature_pre_filter": False,      # CRITICAL: True silently kills rare esoteric features at Dataset construction
     "is_enable_sparse": True,
     "min_data_in_bin": 1,              # allow bins with 1 sample (rare esoteric signals)
-    "path_smooth": 0.1,                # regularization: smooths leaf values to reduce overfitting
+    "path_smooth": 2.0,                # regularization: smooths extreme leaf predictions toward parent (was 0.1)
     "min_data_in_leaf": 3,
+    "min_sum_hessian_in_leaf": 1.5,    # adaptive guard — shrinks as model overfits
     "min_gain_to_split": 2.0,
     "lambda_l1": 0.5,
     "lambda_l2": 3.0,
@@ -257,8 +258,8 @@ V3_LGBM_PARAMS = {
 
 # Per-TF min_data_in_leaf overrides (rare astro conjunctions fire 10-20x on daily)
 TF_MIN_DATA_IN_LEAF = {
-    '1w': 3,
-    '1d': 3,
+    '1w': 5,   # was 3 — too aggressive with 2M+ features
+    '1d': 5,   # was 3
     '4h': 5,
     '1h': 8,
     '15m': 15,
@@ -309,7 +310,7 @@ OPTUNA_PRUNER_MIN_RESOURCE = 1     # min CPCV folds before pruning can kill a tr
 OPTUNA_PRUNER_REDUCTION_FACTOR = 3
 OPTUNA_SEARCH_LR = 0.08            # higher LR during search (faster convergence)
 OPTUNA_SEARCH_ROUNDS = 300         # WAS 150 — BUG: ES patience=125 at lr=0.08, so ES never fired with 150 rounds
-OPTUNA_SEARCH_ES_PATIENCE = 30     # search-only ES patience (decoupled from LR-scaled formula for fast trial eval)
+OPTUNA_SEARCH_ES_PATIENCE = 94     # max(50, int(75 * 0.1 / 0.08)) = 94 — gives rare esoteric features 50-100 rounds to appear in tree splits at LR=0.08
 OPTUNA_FINAL_LR = 0.03             # original LR for final model
 OPTUNA_FINAL_ROUNDS = 800          # full rounds for final model only
 OPTUNA_SEARCH_CPCV_GROUPS = 2      # 2-fold for search speed, 4+ for final
