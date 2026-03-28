@@ -1,17 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-run_optuna_local.py -- Two-Stage Optuna LightGBM Hyperparameter Search (v3.1)
-===============================================================================
-Stage 1: Coarse search with row subsample + fewer CPCV groups + pruning
-Stage 2: Refined search around best region, full CPCV + full data
-Final:   Retrain best config with full CPCV + full rounds + original LR
+run_optuna_local.py -- Phase 1 + Validation Gate Optuna LightGBM Search (v3.3)
+================================================================================
+Phase 1:      Rapid search — 25 trials (2 seeded + 8 random + 15 TPE),
+              2-fold CPCV, 60 rounds max, LR=0.15, ES=15
+Validation:   Top-3 re-evaluated with 4-fold CPCV, 200 rounds, LR=0.08
+Final:        Retrain best config with full CPCV K=2, 800 rounds, LR=0.03
 
 Usage:
     python run_optuna_local.py                    # all TFs
     python run_optuna_local.py --tf 1d            # single TF
     python run_optuna_local.py --tf 1d --tf 4h    # multiple TFs
-    python run_optuna_local.py --stage 1          # only stage 1
     python run_optuna_local.py --n-jobs 4         # parallel trials
 """
 import os
@@ -50,7 +50,7 @@ os.environ.setdefault('SAVAGE22_DB_DIR', PROJECT_DIR)
 os.environ.setdefault('SKIP_LLM', '1')
 
 import optuna
-from optuna.pruners import HyperbandPruner, MedianPruner
+from optuna.pruners import MedianPruner
 try:
     from optuna.pruners import PatientPruner
 except ImportError:
@@ -71,17 +71,17 @@ except ImportError:
     pass
 
 from config import (
-    V3_LGBM_PARAMS, TF_MIN_DATA_IN_LEAF, V30_DATA_DIR,
-    OPTUNA_STAGE1_TRIALS, OPTUNA_STAGE2_TRIALS,
-    OPTUNA_WARMSTART_STAGE1_TRIALS, OPTUNA_WARMSTART_STAGE2_TRIALS,
-    OPTUNA_N_STARTUP_TRIALS, OPTUNA_SEED,
-    OPTUNA_PRUNER, OPTUNA_PRUNER_MIN_RESOURCE, OPTUNA_PRUNER_REDUCTION_FACTOR,
-    OPTUNA_SEARCH_LR, OPTUNA_SEARCH_ROUNDS, OPTUNA_SEARCH_ES_PATIENCE,
+    V3_LGBM_PARAMS, TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES, V30_DATA_DIR,
+    OPTUNA_SEED,
+    OPTUNA_PHASE1_TRIALS, OPTUNA_PHASE1_CPCV_GROUPS,
+    OPTUNA_PHASE1_ROUNDS, OPTUNA_PHASE1_LR, OPTUNA_PHASE1_ES_PATIENCE,
+    OPTUNA_PHASE1_N_STARTUP,
+    OPTUNA_VALIDATION_TOP_K, OPTUNA_VALIDATION_CPCV_GROUPS,
+    OPTUNA_VALIDATION_ROUNDS, OPTUNA_VALIDATION_LR, OPTUNA_VALIDATION_ES_PATIENCE,
+    OPTUNA_WARMSTART_PHASE1_TRIALS, OPTUNA_WARMSTART_VALIDATION_TOP_K,
+    OPTUNA_TF_ROW_SUBSAMPLE, OPTUNA_TF_PHASE1_TRIALS,
     OPTUNA_FINAL_LR, OPTUNA_FINAL_ROUNDS,
-    OPTUNA_SEARCH_CPCV_GROUPS, OPTUNA_SEARCH_ROW_SUBSAMPLE,
-    OPTUNA_TF_ROW_SUBSAMPLE,
-    OPTUNA_N_JOBS, TF_CPCV_GROUPS, OPTUNA_STAGE2_CPCV_GROUPS,
-    OPTUNA_TF_STAGE1_TRIALS, OPTUNA_TF_STAGE2_TRIALS, OPTUNA_TF_N_STARTUP_TRIALS,
+    OPTUNA_N_JOBS, TF_CPCV_GROUPS, TF_CLASS_WEIGHT,
 )
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 
@@ -100,8 +100,6 @@ log = logging.getLogger(__name__)
 
 DB_DIR = os.environ.get('SAVAGE22_DB_DIR', PROJECT_DIR)
 TF_ORDER = ['1w', '1d', '4h', '1h', '15m']
-
-# CPCV groups per TF — imported from config.TF_CPCV_GROUPS (single source of truth)
 
 
 # ============================================================
@@ -328,14 +326,14 @@ def load_tf_data(tf_name):
                 _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32 (data is downcast)
                 _avail_ram = psutil.virtual_memory().available
                 if _dense_bytes < _avail_ram * 0.7:
-                    log.info(f"  Converting sparse→dense for multi-core Optuna ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
+                    log.info(f"  Converting sparse->dense for multi-core Optuna ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
                     X_all = X_all.toarray()
                     is_sparse = False
                 else:
                     log.warning(f"  Dense would need {_dense_bytes/1e9:.1f}GB, only {_avail_ram/1e9:.0f}GB avail — keeping sparse")
                     is_sparse = True
             except ImportError:
-                log.info(f"  Converting sparse→dense for multi-core Optuna...")
+                log.info(f"  Converting sparse->dense for multi-core Optuna...")
                 X_all = X_all.toarray()
                 is_sparse = False
         log.info(f"  Combined: {X_all.shape[1]:,} features ({n_base} base + {len(cross_cols):,} crosses) [{'SPARSE' if is_sparse else 'DENSE'}]")
@@ -398,27 +396,22 @@ class _RoundPruningCallback:
 
 
 # ============================================================
-# OBJECTIVE FUNCTION BUILDER
+# PHASE 1 OBJECTIVE FUNCTION BUILDER
 # ============================================================
-def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
-                    max_hold, n_groups, n_test_groups, row_subsample=1.0,
-                    search_lr=None, search_rounds=None, stage=1,
-                    narrow_ranges=None, use_gpu=False, parent_ds=None):
-    """Build an Optuna objective function for LightGBM hyperparameter search.
+def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
+                           max_hold, parent_ds, row_subsample=1.0,
+                           use_gpu=False):
+    """Build an Optuna objective for Phase 1 rapid search.
 
-    Pre-computes CPCV fold data slicing ONCE (valid_mask, subsample, splits,
-    X/y/w slices) -- identical across all trials. Eliminates ~0.5-2s of
-    redundant slicing per trial.
-
-    Args:
-        narrow_ranges: dict of param -> (low, high) for stage 2 narrowing
-        use_gpu: bool -- if True, use GPU fork (cuda_sparse + set_external_csr)
-        parent_ds: lgb.Dataset -- pre-constructed parent Dataset for EFB reuse.
-                   Folds use parent_ds.subset(indices) which reuses pre-computed
-                   bin boundaries from the parent -- no re-scanning raw data per fold.
+    Uses LR=0.15, ES=15, max 60 rounds, 2-fold CPCV.
+    Pre-computes CPCV fold indices ONCE for all trials.
     """
+    n_groups = OPTUNA_PHASE1_CPCV_GROUPS
+    lr = OPTUNA_PHASE1_LR
+    rounds = OPTUNA_PHASE1_ROUNDS
+    es_patience = OPTUNA_PHASE1_ES_PATIENCE
 
-    # ── Pre-compute CPCV fold data ONCE (identical across all trials) ──
+    # ── Pre-compute CPCV fold data ONCE ──
     valid_mask = ~np.isnan(y)
     subsample_idx = np.where(valid_mask)[0]
     if row_subsample < 1.0:
@@ -428,14 +421,12 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
 
     n_sub = len(subsample_idx)
     splits = _generate_cpcv_splits(
-        n_sub, n_groups=n_groups, n_test_groups=n_test_groups,
+        n_sub, n_groups=n_groups, n_test_groups=1,
         max_hold_bars=max_hold, embargo_pct=0.01,
     )
 
-    # Pre-compute fold INDICES into parent Dataset for subset() pattern.
-    # parent_ds was built from X_all[valid_mask], so parent row i = valid_indices[i].
-    # We map absolute indices back to parent row positions via searchsorted.
-    valid_indices_sorted = np.where(valid_mask)[0]  # sorted by construction
+    # Map absolute indices to parent Dataset row positions
+    valid_indices_sorted = np.where(valid_mask)[0]
 
     fold_data = []
     for _fi, (train_rel, test_rel) in enumerate(splits):
@@ -445,7 +436,6 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
         if len(abs_train) < 50 or len(abs_test) < 20:
             continue
 
-        # Map absolute indices -> parent Dataset row indices
         parent_train_idx = np.searchsorted(valid_indices_sorted, abs_train)
 
         # 85/15 train/val split for early stopping
@@ -456,7 +446,6 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
         train_indices = parent_train_idx[:-val_size]
         val_indices = parent_train_idx[-val_size:]
 
-        # Test data still needs raw arrays for OOS evaluation
         X_test = X_all[abs_test]
         y_test = y[abs_test].astype(int)
 
@@ -467,43 +456,22 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             'y_test': y_test,
         })
 
-    log.info(f"  Pre-computed {len(fold_data)} CPCV folds (from {len(splits)} splits) [subset() pattern]")
+    log.info(f"  Phase 1: pre-computed {len(fold_data)} CPCV folds (from {len(splits)} splits) [subset() pattern]")
 
     def objective(trial):
-        # ── Suggest hyperparameters ──
-        # Per-TF ranges from config
-        from config import TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES
         _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
         _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
 
-        if narrow_ranges:
-            # Stage 2: narrow ranges around best region
-            nr = narrow_ranges
-            num_leaves = trial.suggest_int('num_leaves', nr['num_leaves'][0], nr['num_leaves'][1])
-            min_data_in_leaf = trial.suggest_int('min_data_in_leaf', nr['min_data_in_leaf'][0], nr['min_data_in_leaf'][1])
-            feature_fraction = trial.suggest_float('feature_fraction', nr['feature_fraction'][0], nr['feature_fraction'][1], log=True)
-            feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', nr['feature_fraction_bynode'][0], nr['feature_fraction_bynode'][1])
-            bagging_fraction = trial.suggest_float('bagging_fraction', nr['bagging_fraction'][0], nr['bagging_fraction'][1])
-            lambda_l1 = trial.suggest_float('lambda_l1', nr['lambda_l1'][0], nr['lambda_l1'][1], log=True)
-            lambda_l2 = trial.suggest_float('lambda_l2', nr['lambda_l2'][0], nr['lambda_l2'][1], log=True)
-            min_gain_to_split = trial.suggest_float('min_gain_to_split', nr['min_gain_to_split'][0], nr['min_gain_to_split'][1])
-            max_depth = trial.suggest_int('max_depth', nr.get('max_depth', (4, 12))[0], nr.get('max_depth', (4, 12))[1])
-        else:
-            # Stage 1: Perplexity-validated wide ranges
-            num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
-            min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(1, _tf_mdil - 2), _tf_mdil + 20)
-            feature_fraction = trial.suggest_float('feature_fraction', 0.02, 0.3, log=True)  # log-scaled — wider range for targeted crossing (~1-3M features)
-            feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.2, 0.8)
-            bagging_fraction = trial.suggest_float('bagging_fraction', 0.5, 1.0)
-            lambda_l1 = trial.suggest_float('lambda_l1', 0.01, 1.0, log=True)  # capped at 1.0 (was 10.0)
-            lambda_l2 = trial.suggest_float('lambda_l2', 0.1, 20.0, log=True)  # v3.2 best was 13.58
-            min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.1, 5.0)  # lowered floor from 0.5
-            max_depth = trial.suggest_int('max_depth', 4, 12)  # new (3.9)
-        max_bin = 255  # LOCKED — controls EFB bundle size (254/bundle). Binary features still get 2 bins.
-
-        # Build LightGBM params — start from V3_LGBM_PARAMS baseline (fix 3.11)
-        lr = search_lr if search_lr else OPTUNA_FINAL_LR
-        rounds = search_rounds if search_rounds else OPTUNA_FINAL_ROUNDS
+        # Wide ranges — no narrowing in Phase 1
+        num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
+        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(1, _tf_mdil - 2), _tf_mdil + 20)
+        feature_fraction = trial.suggest_float('feature_fraction', 0.02, 0.3, log=True)
+        feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.2, 0.8)
+        bagging_fraction = trial.suggest_float('bagging_fraction', 0.5, 1.0)
+        lambda_l1 = trial.suggest_float('lambda_l1', 0.01, 1.0, log=True)
+        lambda_l2 = trial.suggest_float('lambda_l2', 0.1, 20.0, log=True)
+        min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.1, 5.0)
+        max_depth = trial.suggest_int('max_depth', 4, 12)
 
         params = V3_LGBM_PARAMS.copy()
         params.update({
@@ -518,13 +486,14 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             'lambda_l1': lambda_l1,
             'lambda_l2': lambda_l2,
             'min_gain_to_split': min_gain_to_split,
-            'max_bin': max_bin,
+            'max_bin': 255,  # LOCKED — EFB bundle size
             'max_depth': max_depth,
             'learning_rate': lr,
             'seed': OPTUNA_SEED,
         })
+        if tf_name in TF_CLASS_WEIGHT:
+            params['is_unbalance'] = True
 
-        # ── Evaluate across pre-computed CPCV folds ──
         fold_scores = []
         fold_sortinos = []
 
@@ -532,20 +501,11 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             X_test = fold['X_test']
             y_test = fold['y_test']
 
-            # subset() reuses parent's pre-computed EFB bins -- no re-scanning raw data
             dtrain = parent_ds.subset(fold['train_indices'])
             dval = parent_ds.subset(fold['val_indices'])
 
-            # MC-4: search trials use fast ES patience (OPTUNA_SEARCH_ES_PATIENCE=30);
-            # final retrain uses LR-scaled patience for esoteric signals needing 800+ trees
-            if search_lr:
-                _es_patience = OPTUNA_SEARCH_ES_PATIENCE  # fast cutoff during search
-            else:
-                _es_patience = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
-
             if use_gpu and is_sparse:
-                # GPU fork path: manual Booster loop with set_external_csr
-                # Extract train data from parent for set_external_csr
+                # GPU fork path
                 _gpu_train_data = X_all[np.where(valid_mask)[0][fold['train_indices']]]
                 gpu_params = params.copy()
                 gpu_params['device_type'] = 'cuda_sparse'
@@ -565,7 +525,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                 no_improve = 0
                 for rnd in range(rounds):
                     booster.update()
-                    val_result = booster.eval_valid()[0]  # (dataset_name, metric_name, value, is_higher_better)
+                    val_result = booster.eval_valid()[0]
                     val_score = val_result[2]
                     if val_score < best_score:
                         best_score = val_score
@@ -573,10 +533,9 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                         no_improve = 0
                     else:
                         no_improve += 1
-                    if no_improve >= _es_patience:
+                    if no_improve >= es_patience:
                         break
-                    # Round-level pruning for Optuna (every 10 rounds)
-                    # Report best-so-far score to prevent noisy dips from triggering false prunes
+                    # Round-level pruning every 10 rounds
                     if (rnd + 1) % 10 == 0:
                         global_step = fold_i * rounds + (rnd + 1)
                         trial.report(best_score, step=global_step)
@@ -589,7 +548,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             else:
                 # CPU path
                 _prune_cb = _RoundPruningCallback(trial, fold_i, rounds, interval=10)
-                callbacks = [lgb.early_stopping(_es_patience), lgb.log_evaluation(0), _prune_cb]
+                callbacks = [lgb.early_stopping(es_patience), lgb.log_evaluation(0), _prune_cb]
 
                 model = lgb.train(
                     params, dtrain,
@@ -599,16 +558,14 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                     callbacks=callbacks,
                 )
 
-            # OOS predictions — GPU path uses num_iteration=best_iter to avoid overfitting trees
+            # OOS predictions
             if use_gpu and sp_sparse.issparse(X_all):
                 preds = model.predict(X_test, num_iteration=best_iter)
             else:
                 preds = model.predict(X_test)
             pred_labels = np.argmax(preds, axis=1)
-            acc = accuracy_score(y_test, pred_labels)
             mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
 
-            # Sortino-style metric: reward correct directional trades, penalize wrong
             sim_ret = np.where(pred_labels == y_test, 1.0, -1.0)
             downside = sim_ret[sim_ret < 0]
             downside_std = np.std(downside, ddof=1) if len(downside) > 1 else 1.0
@@ -622,13 +579,11 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             gc.collect()
 
         if not fold_scores:
-            return float('inf')  # minimize mlogloss
+            return float('inf')
 
-        # Primary objective: mean OOS multi_logloss (lower = better)
         mean_mlogloss = np.mean(fold_scores)
         mean_sortino = np.mean(fold_sortinos)
 
-        # Store sortino as user attr for analysis
         trial.set_user_attr('mean_sortino', float(mean_sortino))
         trial.set_user_attr('n_folds', len(fold_scores))
         trial.set_user_attr('mean_mlogloss', float(mean_mlogloss))
@@ -639,59 +594,127 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
 
 
 # ============================================================
-# NARROW RANGES FROM TOP TRIALS
+# VALIDATION GATE
 # ============================================================
-def compute_narrow_ranges(study, top_k=5):
-    """Compute narrowed search ranges from top-K trials of stage 1."""
-    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-    completed.sort(key=lambda t: t.value)
-    top_trials = completed[:top_k]
+def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
+                    max_hold, parent_ds, use_gpu=False):
+    """Validate a single config with 4-fold CPCV, 200 rounds, LR=0.08.
 
-    if not top_trials:
-        return None
+    Returns mean OOS mlogloss (lower = better). No pruning — full evaluation.
+    """
+    n_groups = OPTUNA_VALIDATION_CPCV_GROUPS
+    lr = OPTUNA_VALIDATION_LR
+    rounds = OPTUNA_VALIDATION_ROUNDS
+    es_patience = OPTUNA_VALIDATION_ES_PATIENCE
 
-    import math
-    ranges = {}
+    valid_mask = ~np.isnan(y)
+    valid_indices = np.where(valid_mask)[0]
+    n_valid = len(valid_indices)
 
-    # Linear-scale params: expand by 20% margin in linear space
-    linear_params = ['num_leaves', 'min_data_in_leaf',
-                     'feature_fraction_bynode', 'bagging_fraction',
-                     'min_gain_to_split', 'max_depth']
-    # Log-scale params: expand by 20% margin in LOG space (these use log=True in Optuna)
-    log_params = ['feature_fraction', 'lambda_l1', 'lambda_l2']
+    splits = _generate_cpcv_splits(
+        n_valid, n_groups=n_groups, n_test_groups=1,
+        max_hold_bars=max_hold, embargo_pct=0.01,
+    )
 
-    for pname in linear_params:
-        values = [t.params[pname] for t in top_trials if pname in t.params]
-        if not values:
+    params = V3_LGBM_PARAMS.copy()
+    params.update({
+        'is_enable_sparse': is_sparse,
+        'num_threads': 0,  # auto-detect via OpenMP (full cores for validation)
+        'learning_rate': lr,
+        'seed': OPTUNA_SEED,
+        'bagging_freq': 1,
+    })
+    if tf_name in TF_CLASS_WEIGHT:
+        params['is_unbalance'] = True
+    # Apply the trial's tuned params
+    for k in ['num_leaves', 'min_data_in_leaf', 'feature_fraction',
+              'feature_fraction_bynode', 'bagging_fraction',
+              'lambda_l1', 'lambda_l2', 'min_gain_to_split', 'max_depth']:
+        if k in params_dict:
+            params[k] = params_dict[k]
+    params['max_bin'] = 255  # LOCKED
+
+    fold_scores = []
+
+    for fold_i, (train_rel, test_rel) in enumerate(splits):
+        if len(train_rel) < 50 or len(test_rel) < 20:
             continue
-        lo = min(values)
-        hi = max(values)
-        margin = max((hi - lo) * 0.2, abs(lo) * 0.1)
-        ranges[pname] = (max(lo - margin, 0.001), hi + margin)
 
-    for pname in log_params:
-        values = [t.params[pname] for t in top_trials if pname in t.params]
-        if not values:
-            continue
-        log_vals = [math.log(v) for v in values]
-        lo_log = min(log_vals)
-        hi_log = max(log_vals)
-        # Expand by 20% on each side in log space
-        margin = max((hi_log - lo_log) * 0.2, abs(lo_log) * 0.1)
-        ranges[pname] = (math.exp(lo_log - margin), math.exp(hi_log + margin))
+        # splits are on range(n_valid), parent rows = 0..n_valid-1
+        parent_train_idx = train_rel
 
-    # max_bin: LOCKED at 255 — controls EFB bundle size, not searchable
-    ranges['max_bin'] = [255]
+        val_size = max(int(len(parent_train_idx) * 0.15), 50)
+        if val_size >= len(parent_train_idx):
+            val_size = max(len(parent_train_idx) // 5, 20)
 
-    # Clamp integer ranges
-    if 'num_leaves' in ranges:
-        ranges['num_leaves'] = (max(4, int(ranges['num_leaves'][0])), min(255, int(ranges['num_leaves'][1])))
-    if 'min_data_in_leaf' in ranges:
-        ranges['min_data_in_leaf'] = (max(1, int(ranges['min_data_in_leaf'][0])), max(2, int(ranges['min_data_in_leaf'][1])))
-    if 'max_depth' in ranges:
-        ranges['max_depth'] = (max(2, int(ranges['max_depth'][0])), min(20, int(ranges['max_depth'][1])))
+        train_subset_idx = parent_train_idx[:-val_size].tolist()
+        val_subset_idx = parent_train_idx[-val_size:].tolist()
 
-    return ranges
+        dtrain = parent_ds.subset(train_subset_idx)
+        dval = parent_ds.subset(val_subset_idx)
+
+        abs_test = valid_indices[test_rel]
+        X_test = X_all[abs_test]
+        y_test = y[abs_test].astype(int)
+
+        if use_gpu and is_sparse:
+            _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
+            gpu_params = params.copy()
+            gpu_params['device_type'] = 'cuda_sparse'
+            gpu_params.pop('force_col_wise', None)
+            gpu_params.pop('force_row_wise', None)
+            gpu_params.pop('device', None)
+            gpu_params['histogram_pool_size'] = 512
+
+            dtrain.construct()
+            dval.construct()
+            booster = lgb.Booster(gpu_params, dtrain)
+            booster.add_valid(dval, 'val')
+            booster.set_external_csr(_gpu_train_data)
+
+            best_score = float('inf')
+            best_iter = 0
+            no_improve = 0
+            for rnd in range(rounds):
+                booster.update()
+                val_result = booster.eval_valid()[0]
+                val_score = val_result[2]
+                if val_score < best_score:
+                    best_score = val_score
+                    best_iter = rnd + 1
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if no_improve >= es_patience:
+                    break
+            model = booster
+        else:
+            model = lgb.train(
+                params, dtrain,
+                num_boost_round=rounds,
+                valid_sets=[dval],
+                valid_names=['val'],
+                callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
+            )
+
+        if use_gpu and sp_sparse.issparse(X_all):
+            preds = model.predict(X_test, num_iteration=best_iter)
+        else:
+            preds = model.predict(X_test)
+        mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
+        fold_scores.append(mlogloss)
+
+        _n_trees = getattr(model, 'best_iteration', None) or getattr(model, 'current_iteration', lambda: '?')()
+        log.info(f"      Val fold {fold_i+1}/{len(splits)}: mlogloss={mlogloss:.4f} trees={_n_trees}")
+
+        del model, dtrain, dval
+        import gc
+        gc.collect()
+
+    if not fold_scores:
+        return float('inf')
+
+    return float(np.mean(fold_scores))
 
 
 # ============================================================
@@ -736,86 +759,12 @@ def load_warmstart_params(tf_name):
     return parent_params, parent_tf
 
 
-def compute_warmstart_ranges(parent_params, tf_name):
-    """Compute narrowed search ranges from parent TF's best params.
-
-    Transferable params get ±20% range. TF-specific params use their
-    standard wide ranges (num_leaves, min_data_in_leaf).
-    """
-    from config import TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES
-
-    ranges = {}
-
-    for pname in _WARMSTART_TRANSFERABLE:
-        if pname not in parent_params:
-            continue
-        val = parent_params[pname]
-        if isinstance(val, int):
-            margin = max(int(abs(val) * 0.2), 1)
-            lo = max(1, val - margin)
-            hi = val + margin
-            ranges[pname] = (lo, hi)
-        else:
-            # Float: ±20%, clamped to sensible minimums
-            lo = max(val * 0.8, 0.001)
-            hi = val * 1.2
-            ranges[pname] = (lo, hi)
-
-    # Clamp max_depth to valid range
-    if 'max_depth' in ranges:
-        lo, hi = ranges['max_depth']
-        ranges['max_depth'] = (max(4, lo), min(12, hi))
-
-    # Clamp feature_fraction to [0.02, 0.3]
-    if 'feature_fraction' in ranges:
-        lo, hi = ranges['feature_fraction']
-        ranges['feature_fraction'] = (max(0.02, lo), min(0.3, hi))
-
-    # Clamp feature_fraction_bynode to [0.2, 0.8]
-    if 'feature_fraction_bynode' in ranges:
-        lo, hi = ranges['feature_fraction_bynode']
-        ranges['feature_fraction_bynode'] = (max(0.2, lo), min(0.8, hi))
-
-    # Clamp bagging_fraction to [0.5, 1.0]
-    if 'bagging_fraction' in ranges:
-        lo, hi = ranges['bagging_fraction']
-        ranges['bagging_fraction'] = (max(0.5, lo), min(1.0, hi))
-
-    # Clamp lambda_l1 to [0.01, 1.0]
-    if 'lambda_l1' in ranges:
-        lo, hi = ranges['lambda_l1']
-        ranges['lambda_l1'] = (max(0.01, lo), min(1.0, hi))
-
-    # Clamp lambda_l2 to [0.1, 20.0]
-    if 'lambda_l2' in ranges:
-        lo, hi = ranges['lambda_l2']
-        ranges['lambda_l2'] = (max(0.1, lo), min(20.0, hi))
-
-    # Clamp min_gain_to_split to [0.1, 5.0]
-    if 'min_gain_to_split' in ranges:
-        lo, hi = ranges['min_gain_to_split']
-        ranges['min_gain_to_split'] = (max(0.1, lo), min(5.0, hi))
-
-    # TF-specific params: use standard wide ranges (NOT inherited)
-    _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
-    _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
-    ranges['num_leaves'] = (4, _tf_nl_cap)
-    ranges['min_data_in_leaf'] = (max(1, _tf_mdil - 2), _tf_mdil + 20)
-
-    # max_bin: LOCKED at 255
-    ranges['max_bin'] = [255]
-
-    return ranges
-
-
 def build_warmstart_enqueue_params(parent_params, tf_name):
     """Build a param dict suitable for study.enqueue_trial() from parent TF params.
 
     Transferable params are copied directly. TF-specific params use the
     TF's default values (mid-range).
     """
-    from config import TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES
-
     enqueue = {}
 
     # Copy transferable params
@@ -830,6 +779,22 @@ def build_warmstart_enqueue_params(parent_params, tf_name):
     enqueue['min_data_in_leaf'] = _tf_mdil
 
     return enqueue
+
+
+def build_default_enqueue_params(tf_name):
+    """Build a param dict from V3_LGBM_PARAMS defaults for seeding."""
+    _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
+    return {
+        'num_leaves': V3_LGBM_PARAMS.get('num_leaves', 63),
+        'min_data_in_leaf': _tf_mdil,
+        'feature_fraction': V3_LGBM_PARAMS.get('feature_fraction', 0.1),
+        'feature_fraction_bynode': V3_LGBM_PARAMS.get('feature_fraction_bynode', 0.5),
+        'bagging_fraction': V3_LGBM_PARAMS.get('bagging_fraction', 0.8),
+        'lambda_l1': V3_LGBM_PARAMS.get('lambda_l1', 0.5),
+        'lambda_l2': V3_LGBM_PARAMS.get('lambda_l2', 3.0),
+        'min_gain_to_split': V3_LGBM_PARAMS.get('min_gain_to_split', 2.0),
+        'max_depth': -1 if V3_LGBM_PARAMS.get('max_depth', -1) == -1 else V3_LGBM_PARAMS.get('max_depth', 8),
+    }
 
 
 # ============================================================
@@ -859,6 +824,8 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         'seed': OPTUNA_SEED,
         'bagging_freq': 1,
     })
+    if tf_name in TF_CLASS_WEIGHT:
+        params['is_unbalance'] = True
     # Apply best Optuna params
     for k in ['num_leaves', 'min_data_in_leaf', 'feature_fraction',
               'feature_fraction_bynode', 'bagging_fraction',
@@ -989,14 +956,13 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
 # ============================================================
 # MAIN SEARCH FOR ONE TF
 # ============================================================
-def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
-    """Run two-stage Optuna search + final retrain for one timeframe.
+def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
+    """Run Phase 1 + Validation Gate + Final Retrain for one timeframe.
 
     Args:
         warmstart: If True, load best params from parent TF and use them to:
-                   (1) seed the study with enqueue_trial
-                   (2) narrow stage 1 ranges to parent ±20%
-                   (3) reduce trial counts (50+50 instead of 100+100)
+                   (1) seed the study with enqueue_trial (warm-start best)
+                   (2) reduce trial counts (15 instead of 25)
     """
     log.info(f"\n{'='*70}")
     log.info(f"OPTUNA SEARCH: {tf_name.upper()}")
@@ -1011,8 +977,6 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
     log.info(f"  Valid samples: {int(n_valid):,} / {len(y):,}")
 
     # ── GPU fork detection ──
-    # Strategy: CPU parallel for search stages (enables n_jobs parallelism),
-    # GPU only for the single final retrain (no parallelism needed there)
     gpu_available = False
     if _HAS_GPU_FORK and is_sparse:
         try:
@@ -1024,7 +988,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
     final_use_gpu = gpu_available  # GPU for the single final retrain
 
     if gpu_available:
-        log.info(f"  GPU available — Stage 1+2: CPU parallel (n_jobs={n_jobs}), Final: GPU")
+        log.info(f"  GPU available — Phase 1+Validation: CPU parallel (n_jobs={n_jobs}), Final: GPU")
     else:
         if _HAS_GPU_FORK and is_sparse:
             log.warning(f"  GPU fork available but not viable for {tf_name} — using CPU")
@@ -1035,17 +999,14 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
 
     # ── Warm-start: load parent TF params if available ──
     warmstart_params = None
-    warmstart_ranges = None
     warmstart_parent_tf = None
     is_warmstarted = False
 
     if warmstart:
         warmstart_params, warmstart_parent_tf = load_warmstart_params(tf_name)
         if warmstart_params is not None:
-            warmstart_ranges = compute_warmstart_ranges(warmstart_params, tf_name)
             is_warmstarted = True
             log.info(f"  WARM-START from {warmstart_parent_tf.upper()}: inheriting {len([p for p in _WARMSTART_TRANSFERABLE if p in warmstart_params])}/{len(_WARMSTART_TRANSFERABLE)} transferable params")
-            log.info(f"  Warm-start ranges: {json.dumps({k: v for k, v in warmstart_ranges.items() if k != 'max_bin'}, indent=4, default=str)}")
         else:
             log.info(f"  No warm-start available for {tf_name} (no parent TF config found)")
 
@@ -1057,59 +1018,52 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
         X_all[valid_mask], label=y[valid_mask].astype(int),
         weight=sample_weights[valid_mask] if sample_weights is not None else None,
         params={'feature_pre_filter': False, 'max_bin': 255, 'min_data_in_bin': 1},
-        free_raw_data=True,  # free raw data after construct -- subset() works on binned C++ data only
+        free_raw_data=False,  # keep raw data — validation gate needs it for full-data re-eval
     )
     _parent_ds.construct()
     log.info(f"  Parent Dataset built in {time.time()-t0_ds:.1f}s: "
              f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features "
-             f"(EFB cached, raw data freed -- folds use subset())")
+             f"(EFB cached — folds use subset())")
 
     # Save binary so ml_multi_tf.py can skip EFB reconstruction
     bin_path = os.path.join(PROJECT_DIR, f'lgbm_dataset_{tf_name}.bin')
     _parent_ds.save_binary(bin_path)
     log.info(f"  Parent Dataset saved to binary: {bin_path}")
 
-    # Determine trial counts: per-TF override > warm-start override > global default
+    # Determine trial counts
     if is_warmstarted:
-        s1_trials = OPTUNA_WARMSTART_STAGE1_TRIALS
-        s2_trials = OPTUNA_WARMSTART_STAGE2_TRIALS
+        phase1_trials = OPTUNA_WARMSTART_PHASE1_TRIALS
+        validation_top_k = OPTUNA_WARMSTART_VALIDATION_TOP_K
     else:
-        s1_trials = OPTUNA_TF_STAGE1_TRIALS.get(tf_name, OPTUNA_STAGE1_TRIALS)
-        s2_trials = OPTUNA_TF_STAGE2_TRIALS.get(tf_name, OPTUNA_STAGE2_TRIALS)
+        phase1_trials = OPTUNA_TF_PHASE1_TRIALS.get(tf_name, OPTUNA_PHASE1_TRIALS)
+        validation_top_k = OPTUNA_VALIDATION_TOP_K
 
-    # Per-TF startup trials (15m needs more random warm-up due to higher variance)
-    _tf_startup = OPTUNA_TF_N_STARTUP_TRIALS.get(tf_name, OPTUNA_N_STARTUP_TRIALS)
+    row_subsample = OPTUNA_TF_ROW_SUBSAMPLE.get(tf_name, 1.0)
 
-    # Create pruner
-    if OPTUNA_PRUNER == 'hyperband':
-        pruner = HyperbandPruner(
-            min_resource=OPTUNA_PRUNER_MIN_RESOURCE,
-            reduction_factor=OPTUNA_PRUNER_REDUCTION_FACTOR,
+    # Create pruner: PatientPruner wrapping MedianPruner
+    _median = MedianPruner(
+        n_startup_trials=OPTUNA_PHASE1_N_STARTUP,
+        n_warmup_steps=50,    # skip first 50 rounds (round-level pruning)
+        interval_steps=10,    # match round-level report interval
+    )
+    if PatientPruner is not None:
+        pruner = PatientPruner(
+            wrapped_pruner=_median,
+            patience=5,          # 5 consecutive stagnant reports (50 rounds)
+            min_delta=0.001,     # must improve by 0.001 to reset patience
         )
     else:
-        _median = MedianPruner(
-            n_startup_trials=_tf_startup,
-            n_warmup_steps=50,    # skip first 50 rounds (round-level pruning)
-            interval_steps=10,    # match round-level report interval
-        )
-        if PatientPruner is not None:
-            pruner = PatientPruner(
-                wrapped_pruner=_median,
-                patience=5,          # 5 consecutive stagnant reports (50 rounds)
-                min_delta=0.001,     # must improve by 0.001 to reset patience
-            )
-        else:
-            pruner = _median
+        pruner = _median
 
-    # Sampler with fixed seed for reproducibility
+    # Sampler with fixed seed, multivariate TPE
     sampler = optuna.samplers.TPESampler(
         seed=OPTUNA_SEED,
-        n_startup_trials=_tf_startup,
+        n_startup_trials=OPTUNA_PHASE1_N_STARTUP,
         multivariate=True,
         group=True,
     )
 
-    study_name = f'lgbm_{tf_name}_v31'
+    study_name = f'lgbm_{tf_name}_v33'
     storage_path = os.path.join(PROJECT_DIR, f'optuna_{tf_name}.db')
     storage = f'sqlite:///{storage_path}'
 
@@ -1122,145 +1076,130 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
         load_if_exists=True,
     )
 
-    # Enqueue warm-start params as first trial (TPE evaluates this before exploring)
+    # ── Enqueue 2 seed trials ──
+    # Seed 1: warm-start best (parent TF) OR V3_LGBM_PARAMS defaults
     if is_warmstarted:
-        enqueue_params = build_warmstart_enqueue_params(warmstart_params, tf_name)
-        study.enqueue_trial(enqueue_params)
-        log.info(f"  Enqueued warm-start trial: {enqueue_params}")
+        enqueue_ws = build_warmstart_enqueue_params(warmstart_params, tf_name)
+        study.enqueue_trial(enqueue_ws)
+        log.info(f"  Enqueued seed 1 (warm-start): {enqueue_ws}")
+    else:
+        # No warm-start — use default params as seed 1
+        default_params = build_default_enqueue_params(tf_name)
+        # max_depth=-1 not valid for suggest_int range [4,12], clamp to 8
+        if default_params.get('max_depth', -1) == -1:
+            default_params['max_depth'] = 8
+        study.enqueue_trial(default_params)
+        log.info(f"  Enqueued seed 1 (defaults): {default_params}")
 
-    # ── STAGE 1: Coarse search (narrowed if warm-started) ──
+    # Seed 2: V3_LGBM_PARAMS defaults (always — gives TPE a known baseline)
+    default_seed2 = build_default_enqueue_params(tf_name)
+    if default_seed2.get('max_depth', -1) == -1:
+        default_seed2['max_depth'] = 8
+    # Only enqueue if different from seed 1 (avoid duplicate)
+    if is_warmstarted:
+        study.enqueue_trial(default_seed2)
+        log.info(f"  Enqueued seed 2 (defaults): {default_seed2}")
+    # If not warmstarted, seed 1 IS the defaults, so skip duplicate
+
+    # ═══════════════════════════════════════════════════════════
+    # PHASE 1: RAPID SEARCH
+    # ═══════════════════════════════════════════════════════════
     _ws_tag = " [WARM-START]" if is_warmstarted else ""
-    log.info(f"\n  STAGE 1{_ws_tag}: {s1_trials} trials, {OPTUNA_SEARCH_CPCV_GROUPS} CPCV groups, "
-             f"{OPTUNA_SEARCH_ROW_SUBSAMPLE:.0%} row subsample, lr={OPTUNA_SEARCH_LR}")
-    stage1_start = time.time()
+    log.info(f"\n  PHASE 1{_ws_tag}: {phase1_trials} trials, {OPTUNA_PHASE1_CPCV_GROUPS}-fold CPCV, "
+             f"{row_subsample:.0%} row subsample, lr={OPTUNA_PHASE1_LR}, "
+             f"ES={OPTUNA_PHASE1_ES_PATIENCE}, rounds={OPTUNA_PHASE1_ROUNDS}")
+    phase1_start = time.time()
 
     # Store n_jobs in env for thread calculation inside objective
     os.environ['OPTUNA_N_JOBS'] = str(n_jobs)
 
-    objective_s1 = build_objective(
+    objective_p1 = build_phase1_objective(
         X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
-        max_hold,
-        n_groups=OPTUNA_SEARCH_CPCV_GROUPS,
-        n_test_groups=1,
-        row_subsample=OPTUNA_TF_ROW_SUBSAMPLE.get(tf_name, OPTUNA_SEARCH_ROW_SUBSAMPLE),
-        search_lr=OPTUNA_SEARCH_LR,
-        search_rounds=OPTUNA_SEARCH_ROUNDS,
-        stage=1,
-        narrow_ranges=warmstart_ranges if is_warmstarted else None,
+        max_hold, parent_ds=_parent_ds,
+        row_subsample=row_subsample,
         use_gpu=search_use_gpu,
-        parent_ds=_parent_ds,
     )
 
     # Count existing completed trials to determine remaining
     existing_completed = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    stage1_remaining = max(0, s1_trials - existing_completed)
+    phase1_remaining = max(0, phase1_trials - existing_completed)
 
-    if stage1_remaining > 0:
-        log.info(f"  Running {stage1_remaining} stage 1 trials ({existing_completed} already done)...")
+    if phase1_remaining > 0:
+        log.info(f"  Running {phase1_remaining} Phase 1 trials ({existing_completed} already done)...")
         study.optimize(
-            objective_s1,
-            n_trials=stage1_remaining,
+            objective_p1,
+            n_trials=phase1_remaining,
             n_jobs=n_jobs,
             show_progress_bar=True,
         )
     else:
-        log.info(f"  Stage 1 already complete ({existing_completed} trials)")
+        log.info(f"  Phase 1 already complete ({existing_completed} trials)")
 
-    stage1_elapsed = time.time() - stage1_start
-    best_s1 = study.best_trial
-    log.info(f"  Stage 1 done in {stage1_elapsed:.0f}s: best mlogloss={best_s1.value:.4f}")
-    log.info(f"  Best params: {best_s1.params}")
-    if 'mean_sortino' in best_s1.user_attrs:
-        log.info(f"  Best sortino: {best_s1.user_attrs['mean_sortino']:.2f}")
+    phase1_elapsed = time.time() - phase1_start
+    best_p1 = study.best_trial
+    log.info(f"  Phase 1 done in {phase1_elapsed:.0f}s: best mlogloss={best_p1.value:.4f}")
+    log.info(f"  Best params: {best_p1.params}")
+    if 'mean_sortino' in best_p1.user_attrs:
+        log.info(f"  Best sortino: {best_p1.user_attrs['mean_sortino']:.2f}")
 
-    if max_stage < 2:
-        log.info("  Stopping after stage 1 (--stage 1)")
-        return {
-            'tf': tf_name,
-            'stage1_best_value': best_s1.value,
-            'stage1_best_params': best_s1.params,
-            'stage1_time': stage1_elapsed,
-        }
+    # ═══════════════════════════════════════════════════════════
+    # VALIDATION GATE: Top-K re-evaluated with 4-fold CPCV
+    # ═══════════════════════════════════════════════════════════
+    log.info(f"\n  VALIDATION GATE: top-{validation_top_k} configs, "
+             f"{OPTUNA_VALIDATION_CPCV_GROUPS}-fold CPCV, "
+             f"lr={OPTUNA_VALIDATION_LR}, rounds={OPTUNA_VALIDATION_ROUNDS}, "
+             f"ES={OPTUNA_VALIDATION_ES_PATIENCE}")
+    val_start = time.time()
 
-    # ── STAGE 2: Refined search around best region, full CPCV + full data ──
-    narrow_ranges = compute_narrow_ranges(study, top_k=5)
-    if narrow_ranges is None:
-        log.warning("  No completed trials for stage 2 narrowing, skipping")
+    # Get top-K completed trials from Phase 1
+    completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    completed_trials.sort(key=lambda t: t.value)
+    top_trials = completed_trials[:validation_top_k]
+
+    if not top_trials:
+        log.error("  No completed trials found — cannot validate")
         return None
 
-    # Stage 2: use 4-fold for speed (full K=2 only for final CPCV eval)
-    n_groups_full, n_test_full = OPTUNA_STAGE2_CPCV_GROUPS, 1
-    log.info(f"\n  STAGE 2{_ws_tag}: {s2_trials} trials, {n_groups_full} CPCV groups (4-fold speed), "
-             f"100% rows, lr={OPTUNA_SEARCH_LR}")
-    log.info(f"  Narrowed ranges: {json.dumps({k: v for k, v in narrow_ranges.items() if k != 'max_bin'}, indent=4, default=str)}")
+    best_params = None
+    best_val_score = float('inf')
+    val_results = []
 
-    stage2_start = time.time()
+    for rank, trial in enumerate(top_trials):
+        log.info(f"    Validating trial #{trial.number} (Phase 1 mlogloss={trial.value:.4f})...")
 
-    # New study for stage 2 (or continue with same study and adjusted objective)
-    study_s2 = optuna.create_study(
-        study_name=f'{study_name}_s2',
-        storage=storage,
-        direction='minimize',
-        pruner=pruner,
-        sampler=optuna.samplers.TPESampler(
-            seed=OPTUNA_SEED + 1,
-            n_startup_trials=5,
-            multivariate=True,
-        ),
-        load_if_exists=True,
-    )
-
-    # Enqueue best params from stage 1 as first trial
-    study_s2.enqueue_trial(best_s1.params)
-
-    objective_s2 = build_objective(
-        X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
-        max_hold,
-        n_groups=n_groups_full,
-        n_test_groups=n_test_full,
-        row_subsample=1.0,
-        search_lr=OPTUNA_SEARCH_LR,
-        search_rounds=OPTUNA_SEARCH_ROUNDS,
-        stage=2,
-        narrow_ranges=narrow_ranges,
-        use_gpu=search_use_gpu,
-        parent_ds=_parent_ds,
-    )
-
-    existing_s2 = len([t for t in study_s2.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    s2_remaining = max(0, s2_trials - existing_s2)
-
-    if s2_remaining > 0:
-        log.info(f"  Running {s2_remaining} stage 2 trials ({existing_s2} already done)...")
-        study_s2.optimize(
-            objective_s2,
-            n_trials=s2_remaining,
-            n_jobs=n_jobs,
-            show_progress_bar=True,
+        val_score = validate_config(
+            trial.params, X_all, y, sample_weights, is_sparse, tf_name,
+            max_hold, parent_ds=_parent_ds, use_gpu=search_use_gpu,
         )
-    else:
-        log.info(f"  Stage 2 already complete ({existing_s2} trials)")
 
-    stage2_elapsed = time.time() - stage2_start
-    best_s2 = study_s2.best_trial
-    log.info(f"  Stage 2 done in {stage2_elapsed:.0f}s: best mlogloss={best_s2.value:.4f}")
-    log.info(f"  Best params: {best_s2.params}")
+        val_results.append({
+            'trial_number': trial.number,
+            'phase1_mlogloss': float(trial.value),
+            'validation_mlogloss': val_score,
+            'params': trial.params,
+        })
 
-    # Pick overall best between stage 1 and stage 2
-    if best_s2.value < best_s1.value:
-        best_overall = best_s2
-        log.info(f"  Stage 2 improved: {best_s1.value:.4f} -> {best_s2.value:.4f}")
-    else:
-        best_overall = best_s1
-        log.info(f"  Stage 1 was better: {best_s1.value:.4f} vs {best_s2.value:.4f}")
+        log.info(f"    Trial #{trial.number}: validation mlogloss={val_score:.4f} "
+                 f"(Phase 1: {trial.value:.4f})")
 
-    # ── FINAL RETRAIN with best config ──
+        if val_score < best_val_score:
+            best_val_score = val_score
+            best_params = trial.params.copy()
+
+    val_elapsed = time.time() - val_start
+    log.info(f"  Validation Gate done in {val_elapsed:.0f}s: "
+             f"best validation mlogloss={best_val_score:.4f}")
+    log.info(f"  Winner params: {best_params}")
+
+    # ═══════════════════════════════════════════════════════════
+    # FINAL RETRAIN with best config
+    # ═══════════════════════════════════════════════════════════
     log.info(f"\n  FINAL RETRAIN: best params with lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
     final_start = time.time()
 
     final_result = final_retrain(
         X_all, y, sample_weights, feature_cols, is_sparse,
-        tf_name, max_hold, best_overall.params,
+        tf_name, max_hold, best_params,
         use_gpu=final_use_gpu, parent_ds=_parent_ds,
     )
     final_elapsed = time.time() - final_start
@@ -1269,9 +1208,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
              f"mean_acc={final_result['mean_accuracy']:.4f} "
              f"mean_sortino={final_result['mean_sortino']:.2f}")
 
-    # Save best model — IMPORTANT: save as optuna_model_{tf}.json to avoid
-    # overwriting the production model (model_{tf}.json) from ml_multi_tf.py.
-    # Both use LightGBM; live_trader.py loads model_{tf}.json with lgb.Booster.
+    # Save best model
     if final_result['best_model'] is not None:
         model_path = os.path.join(PROJECT_DIR, f'optuna_model_{tf_name}.json')
         final_result['best_model'].save_model(model_path)
@@ -1288,18 +1225,21 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
     # Save optimal config
     config_path = os.path.join(PROJECT_DIR, f'optuna_configs_{tf_name}.json')
     config_out = {
-        'best_params': best_overall.params,
-        'stage1_best_value': float(best_s1.value),
-        'stage2_best_value': float(best_s2.value),
+        'best_params': best_params,
+        'phase1_best_value': float(best_p1.value),
+        'validation_best_value': best_val_score,
+        'validation_results': val_results,
         'final_mean_accuracy': final_result['mean_accuracy'],
         'final_mean_sortino': final_result['mean_sortino'],
         'n_features': len(feature_cols),
         'n_valid_samples': int(n_valid),
-        'stage1_time': stage1_elapsed,
-        'stage2_time': stage2_elapsed,
+        'phase1_time': phase1_elapsed,
+        'validation_time': val_elapsed,
         'final_time': final_elapsed,
         'warmstart_from': warmstart_parent_tf,
-        'warmstart_trials': f'{s1_trials}+{s2_trials}' if is_warmstarted else None,
+        'phase1_trials': phase1_trials,
+        'validation_top_k': validation_top_k,
+        'row_subsample': row_subsample,
     }
     with open(config_path, 'w') as f:
         json.dump(config_out, f, indent=2)
@@ -1308,9 +1248,9 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
     total_elapsed = time.time() - total_start
     return {
         'tf': tf_name,
-        'best_params': best_overall.params,
-        'stage1_best_value': float(best_s1.value),
-        'stage2_best_value': float(best_s2.value),
+        'best_params': best_params,
+        'phase1_best_value': float(best_p1.value),
+        'validation_best_value': best_val_score,
         'final_mean_accuracy': final_result['mean_accuracy'],
         'final_mean_sortino': final_result['mean_sortino'],
         'total_time': total_elapsed,
@@ -1321,11 +1261,9 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
 # CLI ENTRYPOINT
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='Two-stage Optuna LightGBM hyperparameter search')
+    parser = argparse.ArgumentParser(description='Phase 1 + Validation Gate Optuna LightGBM hyperparameter search')
     parser.add_argument('--tf', type=str, nargs='*', default=None,
                         help='Timeframes to search (default: all)')
-    parser.add_argument('--stage', type=int, default=2, choices=[1, 2],
-                        help='Max stage to run (1=coarse only, 2=coarse+refine+final)')
     parser.add_argument('--n-jobs', type=int, default=None,
                         help='Parallel Optuna trials (default: cpu_count // threads_per_trial)')
     parser.add_argument('--no-warmstart', action='store_true',
@@ -1340,27 +1278,29 @@ def main():
     if args.n_jobs is not None:
         n_jobs = args.n_jobs
     else:
-        # Use config constant if set (>0), otherwise auto-calculate
         n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, min(4, total_cores // 96))
 
-    log.info(f"Optuna LightGBM Search v3.3")
+    log.info(f"Optuna LightGBM Search v3.3 (Phase 1 + Validation Gate)")
     log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}")
     log.info(f"  Timeframes: {timeframes}")
     log.info(f"  Warm-start: {'ENABLED (cascade: 1w->1d->4h->1h->15m)' if use_warmstart else 'DISABLED'}")
-    log.info(f"  Stage 1 (cold): per-TF {OPTUNA_TF_STAGE1_TRIALS} | (warm): {OPTUNA_WARMSTART_STAGE1_TRIALS} trials")
-    log.info(f"  Stage 2 (cold): per-TF {OPTUNA_TF_STAGE2_TRIALS} | (warm): {OPTUNA_WARMSTART_STAGE2_TRIALS} trials")
-    log.info(f"  Search: {OPTUNA_SEARCH_CPCV_GROUPS} CPCV groups, "
-             f"{OPTUNA_SEARCH_ROW_SUBSAMPLE:.0%} subsample, lr={OPTUNA_SEARCH_LR}, "
-             f"ES patience={OPTUNA_SEARCH_ES_PATIENCE}, rounds={OPTUNA_SEARCH_ROUNDS}")
+    log.info(f"  Phase 1 (cold): per-TF {OPTUNA_TF_PHASE1_TRIALS} | (warm): {OPTUNA_WARMSTART_PHASE1_TRIALS} trials")
+    log.info(f"  Phase 1: {OPTUNA_PHASE1_CPCV_GROUPS}-fold CPCV, "
+             f"lr={OPTUNA_PHASE1_LR}, ES={OPTUNA_PHASE1_ES_PATIENCE}, "
+             f"rounds={OPTUNA_PHASE1_ROUNDS}")
+    log.info(f"  Validation: top-{OPTUNA_VALIDATION_TOP_K} (cold) / "
+             f"top-{OPTUNA_WARMSTART_VALIDATION_TOP_K} (warm), "
+             f"{OPTUNA_VALIDATION_CPCV_GROUPS}-fold CPCV, "
+             f"lr={OPTUNA_VALIDATION_LR}, rounds={OPTUNA_VALIDATION_ROUNDS}")
     log.info(f"  Final: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
+    log.info(f"  Row subsample: {OPTUNA_TF_ROW_SUBSAMPLE}")
 
     all_results = {}
     total_start = time.time()
 
     for tf in timeframes:
         try:
-            result = run_search_for_tf(tf, max_stage=args.stage, n_jobs=n_jobs,
-                                       warmstart=use_warmstart)
+            result = run_search_for_tf(tf, n_jobs=n_jobs, warmstart=use_warmstart)
             if result:
                 all_results[tf] = result
         except Exception as e:
@@ -1376,8 +1316,8 @@ def main():
     log.info(f"ALL DONE in {total_elapsed:.0f}s ({total_elapsed/60:.1f} min)")
     log.info(f"{'='*70}")
     for tf, r in all_results.items():
-        log.info(f"  {tf}: s1={r.get('stage1_best_value', 'N/A'):.4f} "
-                 f"s2={r.get('stage2_best_value', 'N/A'):.4f} "
+        log.info(f"  {tf}: p1={r.get('phase1_best_value', 'N/A'):.4f} "
+                 f"val={r.get('validation_best_value', 'N/A'):.4f} "
                  f"acc={r.get('final_mean_accuracy', 0):.4f} "
                  f"sortino={r.get('final_mean_sortino', 0):.2f} "
                  f"({r.get('total_time', 0):.0f}s)")
