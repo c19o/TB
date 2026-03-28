@@ -308,7 +308,8 @@ def _use_gpu_sparse():
 
 
 def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
-               early_stopping_rounds, checkpoint_cb=None, log_period=100):
+               early_stopping_rounds, checkpoint_cb=None, log_period=100,
+               gpu_device_id=0):
     """Train with GPU sparse histograms via the CUDA fork.
 
     Uses lgb.Booster + manual update() loop with set_external_csr().
@@ -340,6 +341,7 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
     """
     params = dict(params)
     params['device_type'] = 'cuda_sparse'
+    params['gpu_device_id'] = gpu_device_id
     # Remove force_col_wise — GPU path uses its own histogram builder
     params.pop('force_col_wise', None)
     # GPU fork needs histogram_pool_size to avoid OOM on large num_leaves
@@ -1133,18 +1135,35 @@ if __name__ == '__main__':
           _hmm_overlay_names = []
           _parent_ds = None  # Set by sequential path for EFB reuse; parallel path doesn't use it
 
-          if _nnz_exceeds_int32 and _use_parallel_splits:
-              _use_parallel_splits = False
-              log(f"  Forcing sequential CPCV (CSR arrays too large for multiprocess pickle)")
+          # Multi-GPU detection — must come BEFORE the pickle/sparse checks
+          # because multi-GPU uses ThreadPoolExecutor (no pickle needed)
+          _num_gpus = 1
+          _multi_gpu_mode = False
+          if _use_gpu_sparse():
+              try:
+                  import subprocess as _sp
+                  _nv = _sp.run(['nvidia-smi', '-L'], capture_output=True, text=True, timeout=5)
+                  _num_gpus = _nv.stdout.strip().count('\n') + 1 if _nv.stdout.strip() else 1
+              except Exception:
+                  _num_gpus = 1
 
-          if _n_total_features > 1_000_000 and _use_parallel_splits and _X_all_is_sparse:
-              _use_parallel_splits = False
-              log(f"  Forcing sequential CPCV ({_n_total_features:,} SPARSE features — pickle IPC bottleneck > training time)")
-          # Dense data with >1M features: parallel OK (numpy arrays serialize fast, no pickle bottleneck)
+              if _num_gpus > 1:
+                  log(f"  Multi-GPU CPCV: {_num_gpus} GPUs detected — ThreadPoolExecutor (no pickle)")
+                  _use_parallel_splits = True  # Override sparse/nnz checks — threads don't pickle
+                  _multi_gpu_mode = True
+              else:
+                  _use_parallel_splits = False
+                  _multi_gpu_mode = False
+                  log(f"  Single GPU — sequential CPCV")
+          else:
+              # CPU path — original pickle checks apply
+              if _nnz_exceeds_int32 and _use_parallel_splits:
+                  _use_parallel_splits = False
+                  log(f"  Forcing sequential CPCV (CSR arrays too large for multiprocess pickle)")
 
-          if _use_gpu_sparse() and _use_parallel_splits:
-              _use_parallel_splits = False
-              log(f"  Forcing sequential CPCV (GPU Boosters can't run in parallel on same GPU)")
+              if _n_total_features > 1_000_000 and _use_parallel_splits and _X_all_is_sparse:
+                  _use_parallel_splits = False
+                  log(f"  Forcing sequential CPCV ({_n_total_features:,} SPARSE features — pickle IPC bottleneck > training time)")
 
           if _use_parallel_splits:
               # ── Parallel CPCV path (CPU workers) ──
@@ -1464,12 +1483,14 @@ if __name__ == '__main__':
                   if _use_gpu_sparse() and hasattr(X_train_es, 'tocsr'):
                       # GPU sparse histogram path — keep CSR, use manual update loop
                       _X_csr_fold = X_train_es.tocsr() if not isinstance(X_train_es, sp_sparse.csr_matrix) else X_train_es
+                      _gpu_id = wi % _num_gpus if _multi_gpu_mode else 0
                       model = _train_gpu(
                           params, dtrain, dval, _X_csr_fold,
                           num_boost_round=_args.boost_rounds,
                           early_stopping_rounds=_es_rounds,
                           checkpoint_cb=CheckpointCallback(_ckpt_path, period=100),
                           log_period=100,
+                          gpu_device_id=_gpu_id,
                       )
                       del _X_csr_fold
                   else:
