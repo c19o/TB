@@ -1,5 +1,6 @@
-# V3.3 Optimization Plan — 2026-03-27
+# V3.3 Optimization Plan — 2026-03-28
 # AUTHORITATIVE. 3 rounds of 30-agent Perplexity research. 3x reviewed. 3x matrix compliance audited.
+# Updated 2026-03-28: GPU histogram fork COMPLETE, cross gen GPU done, Optuna now #1 bottleneck.
 
 ## Matrix Thesis (NON-NEGOTIABLE)
 - ALL features preserved. No filtering, no subsampling, no feature selection.

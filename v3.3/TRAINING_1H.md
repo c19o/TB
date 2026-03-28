@@ -108,7 +108,9 @@ If the machine has < 768GB cgroup RAM, dense conversion will be SKIPPED and trai
 
 ## Install Dependencies
 ```bash
-pip install lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml psutil
+pip install -q lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy \
+  pyarrow optuna hmmlearn numba tqdm pyyaml alembic cmaes colorlog sqlalchemy \
+  threadpoolctl psutil 2>&1 | tail -3
 python -c "import pandas, numpy, scipy, sklearn, lightgbm, ephem, astropy, pyarrow, optuna, numba, hmmlearn, yaml, tqdm; print('ALL OK')"
 ```
 
@@ -224,14 +226,40 @@ dmesg | tail -20 | grep -i oom
 ## STATUS
 **READY** — (4,1)=4 folds, no Optuna. Est. 9-15 hrs, ~$16-26. Single machine.
 
+## Failure Modes and What to Check
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "WARNING: DB missing" in log | Missing database file | Upload the missing .db, re-run verify script |
+| Cross cols < 6M | Old v2_cross_names JSON left over (min_nonzero=8) | Delete BOTH npz AND json, restart |
+| OOM during cross gen | V2_RIGHT_CHUNK too large | Set V2_RIGHT_CHUNK=300 (lower to 200 if still OOMing) |
+| "ModuleNotFoundError: astrology_engine" | astrology_engine.py not in v3.3/ | Copy from project root |
+| Feature count mismatch | Stale parquet from old feature_library.py | Delete features_BTC_1h.parquet, restart |
+| V30_DATA_DIR shows v3.0 path | Env var not set | Verify `export V30_DATA_DIR=/workspace/v3.3` |
+| Cross gen very slow (>72 hrs) | Single-threaded sparse matmul | Normal for 75K rows x 7-8M crosses. Wait. |
+| LSTM crashes with NaN | Features have NaN not imputed for LSTM | ml_multi_tf.py imputes NaN->0 for LSTM only. Check log. |
+| NNZ overflow (silent corruption) | int32 indptr on >2B NNZ | Verify `_ensure_lgbm_sparse_dtypes()` applied. Check log for int64 indptr. |
+
+---
+
 ## Download Results When Done
+
 ```bash
-scp -P PORT root@HOST:/workspace/v3.3/model_1h.json .
-scp -P PORT root@HOST:/workspace/v3.3/optuna_configs_1h.json .
-scp -P PORT root@HOST:/workspace/v3.3/features_1h_all.json .
-scp -P PORT root@HOST:/workspace/v3.3/ml_multi_tf_results.txt .
-scp -P PORT root@HOST:/workspace/v3.3/ml_multi_tf_configs.json .
+# Check if pipeline completed
+grep "DONE\|pipeline complete\|All steps" /workspace/1h_log.txt
+
+# Download all artifacts
+scp -P {PORT} root@{HOST}:/workspace/v3.3/model_1h.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/optuna_configs_1h.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/meta_model_1h.pkl .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/lstm_1h.pt .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/platt_1h.pkl .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/validation_report_1h.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/feature_importance_*.json .
+scp -P {PORT} root@{HOST}:/workspace/1h_log.txt .
 ```
+
+**Download partial results after each critical step (vast.ai machines die without warning).**
 
 ## Notes
 - min_data_in_leaf=8 for 1h (per TF_MIN_DATA_IN_LEAF in config.py)

@@ -159,7 +159,7 @@ At 293,980 rows x 10M features:
 - **Dense:** 293,980 x 10,000,000 x 4 bytes = **~11 TB** -> IMPOSSIBLE. No machine has this.
 - **Sparse:** Stays as CSR. `is_enable_sparse=True` in LightGBM params (set automatically by ml_multi_tf.py since dense conversion fails).
 - **Consequence:** LightGBM trains on sparse CSR. This is SLOWER than dense (sparse serializes OpenMP histogram building). But it's the only option.
-- **EFB still works on sparse:** LightGBM's Exclusive Feature Bundling handles sparse binary features optimally. max_bin=15 keeps it fast.
+- **EFB still works on sparse:** LightGBM's Exclusive Feature Bundling handles sparse binary features optimally. max_bin=255 allows maximum EFB compression (binary features always get 2 bins regardless of max_bin).
 
 ---
 
@@ -200,6 +200,16 @@ Per `TF_MIN_DATA_IN_LEAF` in config.py — higher than other TFs due to more row
 | 6 | LSTM | lstm_15m.pt + platt_15m.pkl | **Run locally** | 13900K + RTX 3090. Cloud H200 has weak CPU for DataLoader. |
 | 7 | PBO/Audit | validation_report_15m.json | ~10 min | PBO on CPCV OOS equity curves. |
 | **Total** | | | **13-19 hrs** | No Optuna. 4 folds (4,1). Production model identical regardless of fold count. See FOLD_STRATEGY.md. |
+
+---
+
+## Install Dependencies
+```bash
+pip install -q lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy \
+  pyarrow optuna hmmlearn numba tqdm pyyaml alembic cmaes colorlog sqlalchemy \
+  threadpoolctl psutil 2>&1 | tail -3
+python -c "import pandas, numpy, scipy, sklearn, lightgbm, ephem, astropy, pyarrow, optuna, numba, hmmlearn, yaml, tqdm; print('ALL OK')"
+```
 
 ---
 

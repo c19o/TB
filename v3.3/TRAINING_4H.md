@@ -94,7 +94,9 @@ If you do NOT see this line, training is single-threaded. STOP and investigate.
 
 ## Install Dependencies
 ```bash
-pip install lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml psutil
+pip install -q lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy \
+  pyarrow optuna hmmlearn numba tqdm pyyaml alembic cmaes colorlog sqlalchemy \
+  threadpoolctl psutil 2>&1 | tail -3
 python -c "import pandas, numpy, scipy, sklearn, lightgbm, ephem, astropy, pyarrow, optuna, numba, hmmlearn, yaml, tqdm; print('ALL OK')"
 ```
 
@@ -179,14 +181,40 @@ dmesg | tail -20 | grep -i oom
 | CPCV mode | SPARSE + SEQUENTIAL |
 | Training time | 18+ hrs cross gen + training |
 
+## Failure Modes and What to Check
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "WARNING: DB missing" in log | Missing database file | Upload the missing .db, re-run verify script |
+| Cross cols < 2M | Old v2_cross_names JSON left over (min_nonzero=8) | Delete BOTH npz AND json, restart |
+| Load avg ~1.0 during training | is_enable_sparse=True on dense data | Check log for "is_enable_sparse=False" |
+| "ModuleNotFoundError: astrology_engine" | astrology_engine.py not in v3.3/ | Copy from project root |
+| OOM during cross gen | V2_RIGHT_CHUNK too large for RAM | Set V2_RIGHT_CHUNK=500 (default), lower to 300 if still OOMing |
+| Feature count mismatch | Stale parquet from old feature_library.py | Delete features_BTC_4h.parquet, restart |
+| V30_DATA_DIR shows v3.0 path | Env var not set | Verify `export V30_DATA_DIR=/workspace/v3.3` |
+| Cross gen very slow (>24 hrs) | Single-threaded sparse matmul | Expected for 17K rows x 3-4M crosses. Wait. |
+| LSTM crashes with NaN | Features have NaN not imputed for LSTM | ml_multi_tf.py imputes NaN->0 for LSTM only. Check log. |
+
+---
+
 ## Download Results When Done
+
 ```bash
-scp -P PORT root@HOST:/workspace/v3.3/model_4h.json .
-scp -P PORT root@HOST:/workspace/v3.3/optuna_configs_4h.json .
-scp -P PORT root@HOST:/workspace/v3.3/features_4h_all.json .
-scp -P PORT root@HOST:/workspace/v3.3/ml_multi_tf_results.txt .
-scp -P PORT root@HOST:/workspace/v3.3/ml_multi_tf_configs.json .
+# Check if pipeline completed
+grep "DONE\|pipeline complete\|All steps" /workspace/4h_log.txt
+
+# Download all artifacts
+scp -P {PORT} root@{HOST}:/workspace/v3.3/model_4h.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/optuna_configs_4h.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/meta_model_4h.pkl .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/lstm_4h.pt .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/platt_4h.pkl .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/validation_report_4h.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/feature_importance_*.json .
+scp -P {PORT} root@{HOST}:/workspace/4h_log.txt .
 ```
+
+**Download partial results after each critical step (vast.ai machines die without warning).**
 
 ## Notes
 - 4h has ~17,520 rows (2017-08-17 to 2026, Binance global API)
