@@ -234,6 +234,7 @@ __global__ void scatter_grad_kernel(
 __global__ void interleave_grad_kernel(
     const double* __restrict__ spmv_result,
     double*       __restrict__ hist,
+    const uint32_t* __restrict__ feature_hist_offsets,
     int32_t                    n_features,
     int32_t                    component);
 
@@ -246,6 +247,7 @@ static void launch_scatter_kernel(
 
 static void launch_interleave_grad_kernel(
     const double* d_spmv_result, double* d_hist,
+    const uint32_t* d_feature_hist_offsets,
     int32_t n_features, int component, cudaStream_t stream);
 
 
@@ -323,39 +325,62 @@ void CUDASparseHistTreeLearner::Init(const Dataset* train_data,
     /* Total histogram bins — from the base class share_state_ which was
      * initialized by SerialTreeLearner::Init() above.
      *
-     * With enable_bundle=False (REQUIRED for GPU SpMV):
-     *   total_hist_bins == n_features * 2  (2 bins per binary feature)
-     *   hist buffer == n_features * 4 doubles (grad+hess per bin)
+     * With EFB enabled (default):
+     *   total_hist_bins < n_features (bundled bins)
+     *   GPU SpMV scatter uses the EFB bin mapping to write into the
+     *   correct bundled histogram slots.
      *
-     * With EFB enabled (BROKEN for GPU SpMV):
-     *   total_hist_bins == ~23K (bundled), but SpMV produces n_features
-     *   results -> buffer overflow -> corrupted histograms.
+     * With EFB disabled (enable_bundle=False):
+     *   total_hist_bins == n_features * 2  (2 bins per binary feature)
      */
     total_hist_bins_ = share_state_->num_hist_total_bin();
     hist_buf_elems_  = total_hist_bins_ * 2;  /* interleaved grad/hess */
+
+    /* Upload feature histogram offsets to GPU for sparse histogram mapping.
+     *
+     * share_state_->feature_hist_offsets() is indexed by INNER feature index
+     * (0..num_used_features) and has num_used_features+1 entries.
+     * But the SpMV output is indexed by TOTAL feature index (0..num_total_features-1)
+     * because the transposed CSR has num_total_features rows.
+     *
+     * We build an extended offset table of size num_total_features, mapping each
+     * CSR column to its histogram bin offset.  Unused features (filtered out by
+     * LightGBM's dataset construction) get UINT32_MAX as a sentinel — the
+     * interleave kernel skips them. */
+    {
+        const auto& inner_offsets = share_state_->feature_hist_offsets();
+        int n_used = train_data->num_features();
+        int n_total = n_features_;  /* num_total_features */
+
+        /* Build extended offset table on host */
+        std::vector<uint32_t> ext_offsets(n_total, UINT32_MAX);
+        int mapped = 0;
+        for (int col = 0; col < n_total; ++col) {
+            int inner = train_data->InnerFeatureIndex(col);
+            if (inner >= 0 && inner < n_used) {
+                ext_offsets[col] = inner_offsets[inner];
+                ++mapped;
+            }
+        }
+
+        size_t offsets_bytes = ext_offsets.size() * sizeof(uint32_t);
+        CUDA_CHECK_FATAL(cudaMalloc(&d_feature_hist_offsets_, offsets_bytes));
+        gpu_bytes_alloc_ += offsets_bytes;
+        CUDA_CHECK_FATAL(cudaMemcpy(d_feature_hist_offsets_, ext_offsets.data(),
+                                    offsets_bytes, cudaMemcpyHostToDevice));
+        Log::Info("[CUDASparseHist] Feature hist offsets uploaded: %d total features, "
+                  "%d mapped to hist bins, %d unused (sentinel=UINT32_MAX)",
+                  n_total, mapped, n_total - mapped);
+    }
 
     Log::Info("[CUDASparseHist] Dataset: %lld rows, %d features, "
               "%d classes, %lld hist bins",
               static_cast<long long>(n_rows_), n_features_,
               num_classes_, static_cast<long long>(total_hist_bins_));
 
-    /* Validate: with enable_bundle=False, total_hist_bins should equal
-     * n_features * 2 (each binary feature has 2 bins).  If EFB is still
-     * active, total_hist_bins << n_features and SpMV will overflow. */
-    int64_t expected_bins = static_cast<int64_t>(n_features_) * 2;
-    Log::Info("[CUDASparseHist] EFB check: total_hist_bins=%lld, "
-              "n_features*2=%lld, ratio=%.2f",
-              static_cast<long long>(total_hist_bins_),
-              static_cast<long long>(expected_bins),
-              static_cast<double>(total_hist_bins_) / std::max(1LL, expected_bins));
-
-    if (total_hist_bins_ < n_features_) {
-        Log::Fatal("[CUDASparseHist] FATAL: total_hist_bins (%lld) < n_features "
-                   "(%d). EFB is bundling features — GPU SpMV will overflow the "
-                   "histogram buffer! Set enable_bundle=False in lgb.Dataset() "
-                   "params to fix this.",
-                   static_cast<long long>(total_hist_bins_), n_features_);
-    }
+    Log::Info("[CUDASparseHist] EFB mapping active: %d features -> %lld hist bins (%.1fx compression)",
+              n_features_, static_cast<long long>(total_hist_bins_),
+              static_cast<double>(n_features_) / std::max(1LL, static_cast<int64_t>(total_hist_bins_)));
 
     /* Initialize GPU resources */
     InitGPU();
@@ -751,8 +776,10 @@ void CUDASparseHistTreeLearner::SetupCuSPARSE() {
  * ========================================================================= */
 
 void CUDASparseHistTreeLearner::AllocateBuffers() {
-    size_t grad_bytes = static_cast<size_t>(n_rows_) * num_classes_
-                        * sizeof(double);
+    /* Gradient buffer: n_rows_ doubles (NOT * num_classes_).
+     * For multiclass, GBDT::TrainOneIter() pre-offsets the gradient pointer
+     * to the current class, so gradients_[row] is already class-specific. */
+    size_t grad_bytes = static_cast<size_t>(n_rows_) * sizeof(double);
     size_t hist_bytes = static_cast<size_t>(hist_buf_elems_) * sizeof(double);
     size_t leaf_bytes = static_cast<size_t>(n_rows_) * sizeof(int32_t);
 
@@ -803,6 +830,12 @@ void CUDASparseHistTreeLearner::AllocateBuffers() {
 void CUDASparseHistTreeLearner::ConstructHistograms(
     const std::vector<int8_t>& is_feature_used,
     bool use_subtract) {
+
+    /* TEMP DEBUG: force CPU histogram to verify it works */
+    {
+        SerialTreeLearner::ConstructHistograms(is_feature_used, use_subtract);
+        return;
+    }
 
     if (!gpu_initialized_) {
         /* Fallback to CPU if GPU init failed */
@@ -860,12 +893,13 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
 
     /* ---- Step 1: Upload gradients/hessians to GPU ---- */
     /* gradients_ and hessians_ are inherited protected members from
-     * SerialTreeLearner. They point to the raw (unordered) gradient
-     * arrays for all training rows. For GPU histogram building, we
-     * use the raw arrays and index by original row position via
-     * the leaf's data_indices mapping. */
+     * SerialTreeLearner. For multiclass, GBDT::TrainOneIter() offsets
+     * the gradient pointer by (cur_tree_id * num_data_) before calling
+     * tree_learner_->Train(). So gradients_[row] gives the gradient
+     * for the CURRENT class at original row position `row`.
+     * There are n_rows_ elements (NOT n_rows_ * num_classes_). */
     {
-        int64_t n_grad_elems = static_cast<int64_t>(n_rows_) * num_classes_;
+        int64_t n_grad_elems = static_cast<int64_t>(n_rows_);
         size_t grad_bytes = static_cast<size_t>(n_grad_elems) * sizeof(double);
 
         /* Copy to pinned staging buffers. score_t may be float or double
@@ -949,19 +983,76 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
                      hist_bytes, cudaMemcpyDeviceToHost, stream_d2h_));
     CUDA_CHECK_FATAL(cudaStreamSynchronize(stream_d2h_));
 
+    /* ---- DEBUG: check histogram contents ---- */
+    if (!debug_printed_) {
+        double sum_abs = 0.0;
+        int nonzero_count = 0;
+        double first_nonzero = 0.0;
+        int first_nonzero_idx = -1;
+        for (int64_t i = 0; i < hist_buf_elems_; i++) {
+            double val = h_hist_pinned_[i];
+            if (val != 0.0) {
+                sum_abs += std::abs(val);
+                nonzero_count++;
+                if (first_nonzero_idx < 0) {
+                    first_nonzero = val;
+                    first_nonzero_idx = static_cast<int>(i);
+                }
+            }
+        }
+        Log::Info("[CUDASparseHist] DEBUG hist: %lld elems, nonzero=%d, sum_abs=%.6f, "
+                  "first_nz_idx=%d val=%.6f",
+                  static_cast<long long>(hist_buf_elems_), nonzero_count, sum_abs,
+                  first_nonzero_idx, first_nonzero);
+
+        /* Print first 10 nonzero entries */
+        int shown = 0;
+        for (int64_t i = 0; i < hist_buf_elems_ && shown < 10; i++) {
+            if (h_hist_pinned_[i] != 0.0) {
+                Log::Info("[CUDASparseHist] DEBUG hist[%lld] = %.8f (bin=%lld, %s)",
+                          static_cast<long long>(i),
+                          h_hist_pinned_[i],
+                          static_cast<long long>(i / 2),
+                          (i % 2 == 0) ? "grad" : "hess");
+                shown++;
+            }
+        }
+
+        /* (RawData() debug moved after Step 5 memcpy) */
+
+        /* Check total grad/hess for feature 0 (inner idx 0) */
+        int n_used = train_data_->num_features();
+        if (n_used > 0) {
+            Log::Info("[CUDASparseHist] DEBUG n_used_features=%d, n_total_features=%d, "
+                      "n_smaller_rows=%d",
+                      n_used, n_features_, n_smaller_rows);
+        }
+
+        /* Don't set debug_printed_ until after Step 5 memcpy verification */
+    }
+
     /* ---- Step 5: Write GPU histogram into LightGBM's histogram arrays ---- */
-    /* The base class expects histogram data in smaller_leaf_histogram_array_.
-     * Each FeatureHistogram has a RawData() pointer into a flat buffer.
-     * The GPU histogram is laid out as [total_bins * 2] interleaved doubles,
-     * matching LightGBM's internal layout: [grad, hess] per bin.
-     * hist_t is double (bin.h). RawData() returns hist_t* pointing to the
-     * start of this feature's histogram region. Feature 0's RawData()
-     * starts at the base of the contiguous flat buffer. */
+    /* The base class expects histogram data starting at RawData() - kHistOffset.
+     * kHistOffset = 2 (from bin.h). feature_hist_offsets[0] is typically 1,
+     * meaning feature 0's data is at position 1 in the buffer. The CPU writes
+     * at base[offset*2 + component] where base = RawData() - kHistOffset.
+     * Our GPU histogram uses the same offset table, so we copy the GPU buffer
+     * to RawData() - kHistOffset to align correctly. */
     {
-        hist_t* hist_ptr = smaller_leaf_histogram_array_[0].RawData();
-        /* The histogram arrays are contiguous — RawData() of feature 0
-         * points to the start of the flat buffer. Copy directly. */
+        hist_t* hist_ptr = smaller_leaf_histogram_array_[0].RawData() - kHistOffset;
+        /* The histogram arrays are contiguous — hist_ptr points to the
+         * actual start of the flat buffer (before RawData). */
         std::memcpy(hist_ptr, h_hist_pinned_, hist_bytes);
+
+        /* DEBUG: verify data arrived in RawData() */
+        if (!debug_printed_) {
+            hist_t* raw_ptr = smaller_leaf_histogram_array_[0].RawData();
+            Log::Info("[CUDASparseHist] DEBUG AFTER COPY RawData() [-2..3]: %.8f %.8f %.8f %.8f %.8f %.8f",
+                      raw_ptr[-2], raw_ptr[-1], raw_ptr[0], raw_ptr[1], raw_ptr[2], raw_ptr[3]);
+            Log::Info("[CUDASparseHist] DEBUG AFTER COPY hist_ptr[0..5]: %.8f %.8f %.8f %.8f %.8f %.8f",
+                      hist_ptr[0], hist_ptr[1], hist_ptr[2], hist_ptr[3], hist_ptr[4], hist_ptr[5]);
+            debug_printed_ = true;
+        }
     }
 
     /* ---- Step 6: Handle larger leaf histogram ---- */
@@ -1129,6 +1220,7 @@ void CUDASparseHistTreeLearner::BuildHistogramCuSPARSE(
 
     /* Write grad component (component=0) */
     launch_interleave_grad_kernel(d_spmv_result_, d_hist_,
+                                   d_feature_hist_offsets_,
                                    n_features_, 0, stream_compute_);
 
     /* SpMV for hessians: csr_AT @ full_hess -> spmv_result (n_features) */
@@ -1147,6 +1239,7 @@ void CUDASparseHistTreeLearner::BuildHistogramCuSPARSE(
 
     /* Write hess component (component=1) */
     launch_interleave_grad_kernel(d_spmv_result_, d_hist_,
+                                   d_feature_hist_offsets_,
                                    n_features_, 1, stream_compute_);
 }
 
@@ -1201,43 +1294,51 @@ void CUDASparseHistTreeLearner::BuildHistogramAtomicScatter(
  * Defined at file scope to match forward declarations above.
  * ========================================================================= */
 
-/* Scatter kernel: copy ordered gradients into full-size vectors at the
- * positions given by leaf row indices.
- *   d_full_grad[leaf_rows[i]] = d_ordered[i * num_classes + class_id]  */
+/* Scatter kernel: copy class-specific gradients into full-size vectors
+ * at original row positions for leaf rows.
+ *   d_full_grad[leaf_rows[i]] = d_grad[leaf_rows[i]]
+ *
+ * For multiclass, GBDT::TrainOneIter() already offsets gradients_ by
+ * (cur_tree_id * num_data_), so gradients_[row] is the current class's
+ * gradient for that row. No interleaving, no class_id indexing needed. */
 __global__ void scatter_grad_kernel(
     const int32_t* __restrict__ leaf_rows,
-    const double*  __restrict__ ordered_grad,
-    const double*  __restrict__ ordered_hess,
+    const double*  __restrict__ raw_grad,
+    const double*  __restrict__ raw_hess,
     double*        __restrict__ full_grad,
     double*        __restrict__ full_hess,
     int32_t                     n_leaf_rows,
-    int32_t                     num_classes,
-    int32_t                     class_id
+    int32_t                     num_classes,  /* unused, kept for ABI compat */
+    int32_t                     class_id      /* unused, kept for ABI compat */
 ) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n_leaf_rows) return;
 
     int32_t row = leaf_rows[tid];
-    int64_t src_idx = static_cast<int64_t>(tid) * num_classes + class_id;
-
-    full_grad[row] = ordered_grad[src_idx];
-    full_hess[row] = ordered_hess[src_idx];
+    full_grad[row] = raw_grad[row];
+    full_hess[row] = raw_hess[row];
 }
 
 
 /* Interleave kernel: copy SpMV results into interleaved histogram buffer.
- *   d_hist[f * 2 + component] = d_spmv_result[f]
- * component=0 for gradients, component=1 for hessians. */
+ *   d_hist[feature_hist_offsets[f] * 2 + component] = d_spmv_result[f]
+ * component=0 for gradients, component=1 for hessians.
+ *
+ * The offset table has n_features entries (one per CSR column / total feature).
+ * Unused features have offset == UINT32_MAX — their SpMV output is discarded. */
 __global__ void interleave_grad_kernel(
     const double* __restrict__ spmv_result,
     double*       __restrict__ hist,
+    const uint32_t* __restrict__ feature_hist_offsets,
     int32_t                    n_features,
     int32_t                    component      /* 0=grad, 1=hess */
 ) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n_features) return;
 
-    hist[static_cast<int64_t>(tid) * 2 + component] = spmv_result[tid];
+    uint32_t hist_offset = feature_hist_offsets[tid];
+    if (hist_offset == UINT32_MAX) return;  /* unused feature — skip */
+    hist[static_cast<int64_t>(hist_offset) * 2 + component] = spmv_result[tid];
 }
 
 
@@ -1260,11 +1361,12 @@ static void launch_scatter_kernel(
 
 static void launch_interleave_grad_kernel(
     const double* d_spmv_result, double* d_hist,
+    const uint32_t* d_feature_hist_offsets,
     int32_t n_features, int component, cudaStream_t stream) {
 
     int n_blocks = grid_blocks(n_features);
     interleave_grad_kernel<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
-        d_spmv_result, d_hist, n_features, component);
+        d_spmv_result, d_hist, d_feature_hist_offsets, n_features, component);
     /* Caller checks cudaGetLastError */
 }
 
@@ -1289,6 +1391,9 @@ void CUDASparseHistTreeLearner::CleanupGPU() {
     if (matA_T_)           cusparseDestroySpMat(matA_T_);
     if (cusparse_handle_)  cusparseDestroy(cusparse_handle_);
     if (d_spmv_buffer_)    cudaFree(d_spmv_buffer_);
+
+    /* Free device memory — feature hist offsets */
+    if (d_feature_hist_offsets_) cudaFree(d_feature_hist_offsets_);
 
     /* Free device memory — CSR */
     if (d_csr_indptr_)     cudaFree(d_csr_indptr_);

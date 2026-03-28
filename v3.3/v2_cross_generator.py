@@ -854,7 +854,7 @@ def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
 
     # ── Sparse matmul pre-filter: compute ALL co-occurrence counts at once ──
     # GPU path (cuSPARSE SpGEMM) with CPU fallback
-    if cp is not None:
+    if cp is not None and cusp is not None:
         try:
             left_gpu_sp = cusp.csc_matrix(cp.asarray(left_mat.astype(np.float32)))
             right_gpu_sp = cusp.csc_matrix(cp.asarray(right_mat.astype(np.float32)))

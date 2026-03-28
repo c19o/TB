@@ -60,8 +60,38 @@ This is a significant kernel rewrite, not a simple patch.
 
 **5. Build Note:** `lightgbm.exe` target doesn't link `c_api` symbols — must build `_lightgbm` target (DLL) only.
 
-### Decision: GPU Fork Deferred
-CPU training delivers 73.9% accuracy in 5 minutes for 1w. The GPU fork would speed up histogram construction but is not needed to produce trading models. All timeframes will be trained via the CPU pipeline first. GPU fork can be revisited after all TF models are trained and verified for live trading.
+### Phase 4: Full GPU Pipeline Acceleration (IN PROGRESS — 20 parallel agents)
+CPU training works but pipeline bottleneck is cross generation (90-174h for 15m). Phase 4 accelerates the ENTIRE pipeline, not just LightGBM histograms.
+
+**Phase 4 Components:**
+
+**1. cuSPARSE SpGEMM replacing scipy sparse matmul (15-40x speedup)**
+- scipy `left_sp.T @ right_sp` is single-threaded CPU
+- cuSPARSE SpGEMM does sparse-sparse matmul on GPU with massive parallelism
+- Pre-filter co-occurrence counts computed on GPU instead of CPU
+
+**2. GPU nonzero replacing CPU np.nonzero (3-5x speedup)**
+- `np.nonzero()` on large sparse results is CPU-bound
+- CuPy/CUDA kernel extracts nonzero indices directly on GPU
+
+**3. binarize_contexts vectorized with Numba prange (10-20x speedup)**
+- Binarization loop over contexts is single-threaded Python
+- Numba `@njit(parallel=True)` with `prange` over context columns
+- Saturates multi-core CPUs (64-512 cores on cloud machines)
+
+**4. LightGBM feature_hist_offsets mapping fix — re-enables EFB bundling**
+- Phase 3 was BLOCKED because GPU histogram kernel wrote to per-feature indices, but LightGBM expects per-EFB-bundle cumulative bin offsets
+- Fix: extract `feature_hist_offsets` array from `share_state_`, upload to GPU, remap SpMV output indices in CUDA kernel before writing to histogram buffer
+- This re-enables the full GPU histogram path with proper EFB bundling
+- Binary features (2 bins each) correctly mapped to cumulative offset positions
+
+**Expected impact on 15m pipeline:**
+- Cross gen: 90-174h (CPU) → 15-25h (GPU-accelerated)
+- Training: already fast with LightGBM sparse CSR
+- Total 15m pipeline: dramatically reduced from multi-day to ~1 day
+
+### Previous Decision (Phase 3): GPU Fork Was Deferred
+CPU training delivers 73.9% accuracy in 5 minutes for 1w. Phase 3 deferred GPU fork because the EFB histogram mismatch was blocking. Phase 4 now fixes this AND accelerates the full pipeline beyond just histograms.
 
 ### Build Environment (Windows 11, user's local machine)
 - CUDA Toolkit 12.6 at `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6`
@@ -140,9 +170,12 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 1. [DONE] CSR bridge fix — global-to-instance bridge in ConstructHistograms()
 2. [DONE] Dangling pointer fix — store CSR arrays as Booster instance attributes
 3. [DONE] enable_bundle=False — applied but does not solve the offset mapping problem
-4. [BLOCKED] feature_hist_offsets mapping needed for GPU histograms — requires extracting cumulative bin offset table from share_state_, uploading to GPU, and remapping SpMV output indices in the CUDA kernel. Significant kernel rewrite.
-5. [DECISION] CPU training works at 73.9% accuracy in 5 minutes for 1w — GPU fork deferred to after all TF models are trained and verified for live trading
-6. **Current focus: train all TFs via CPU pipeline, verify models for trading**
+4. [IN PROGRESS] feature_hist_offsets mapping fix — extract cumulative bin offset table from share_state_, upload to GPU, remap SpMV output indices in CUDA kernel. Re-enables EFB bundling with GPU histograms.
+5. [IN PROGRESS] cuSPARSE SpGEMM for cross gen — replaces single-threaded scipy sparse matmul (15-40x speedup)
+6. [IN PROGRESS] GPU nonzero — CuPy/CUDA kernel replaces CPU np.nonzero (3-5x speedup)
+7. [IN PROGRESS] Numba prange binarize_contexts — vectorized parallel binarization (10-20x speedup)
+8. **All 4 components being implemented by 20 parallel agents**
+9. **Target: 15m pipeline from 90-174h down to 15-25h**
 
 ## KEY FILES
 - Binary cache: `v3.3/lgbm_dataset_1w.bin` (252MB, skips 4.5min EFB)

@@ -180,6 +180,7 @@ class CUDASparseHistTreeLearner : public SerialTreeLearner {
   bool   gpu_initialized_   = false;
   bool   csr_uploaded_       = false;  /* set true after first UploadCSR() */
   bool   has_efb_data_      = false;
+  bool   debug_printed_     = false;   /* one-shot debug histogram dump */
   size_t gpu_bytes_alloc_   = 0;
 
   /* ---- Host-side transposed CSR (built once, uploaded, then freed) ---- */

@@ -16,12 +16,16 @@
 
 ## CURRENT STATE (2026-03-28)
 
-### GPU Histogram Fork
+### GPU Histogram Fork — Phase 4: Full GPU Pipeline Acceleration
 - **Phase 1 (standalone benchmark)**: COMPLETE — 71x speedup on real 1w data (RTX 3090)
 - **Phase 2 (LightGBM integration)**: COMPLETE — Fork builds (42/42), `device_type="cuda_sparse"` accepted, GPU detected
 - **Phase 3 (CSR bridge)**: COMPLETE — CSR bridge fix applied, dangling pointer fixed, DLL rebuilt
-- **Architectural issue discovered**: EFB histogram mismatch — GPU produces per-feature sums, CPU expects per-EFB-bundle bins. This is a fundamental mismatch between the sparse histogram kernel output format and LightGBM's internal EFB-bundled histogram format.
-- **Decision pending**: Fix EFB mapping in GPU kernel (non-trivial) vs accept CPU training (which already works well at 73.9%)
+- **Phase 4 (full GPU pipeline acceleration)**: IN PROGRESS — 20 parallel agents implementing 4 components:
+  1. **cuSPARSE SpGEMM** replacing scipy sparse matmul in cross gen (15-40x speedup) — scipy `left_sp.T @ right_sp` is single-threaded CPU, cuSPARSE does sparse-sparse matmul on GPU
+  2. **GPU nonzero** replacing CPU `np.nonzero` (3-5x speedup) — CuPy/CUDA kernel extracts nonzero indices directly on GPU
+  3. **binarize_contexts vectorized with Numba prange** (10-20x speedup) — saturates multi-core CPUs (64-512 cores on cloud)
+  4. **LightGBM feature_hist_offsets mapping fix** — extracts cumulative bin offset table from `share_state_`, uploads to GPU, remaps SpMV output indices in CUDA kernel. Re-enables EFB bundling with GPU histograms (was BLOCKED in Phase 3)
+- **Expected 15m pipeline**: 90-174h (CPU) → 15-25h (GPU-accelerated)
 - **Location**: `v3.3/gpu_histogram_fork/` (isolated from main pipeline)
 - **Commit**: `0a94b4e` (latest)
 
@@ -111,10 +115,11 @@ For each TF on cloud:
 14. **Run Optuna** on all models (can be local for 1w, cloud for others)
 15. **Push to git** — all models + artifacts
 
-### GPU Fork Decision (deferred)
-- Option A: Fix EFB mapping in GPU kernel (map per-feature histograms to per-bundle bins)
-- Option B: Accept CPU training — 73.9% accuracy is strong, CPU path fully working
-- Can revisit after all 5 TFs trained and live trading validated
+### GPU Fork — Phase 4 Active (no longer deferred)
+- Phase 4 implements full GPU pipeline acceleration via 20 parallel agents
+- 4 components: cuSPARSE SpGEMM (cross gen), GPU nonzero, Numba prange binarize, feature_hist_offsets mapping fix (LightGBM EFB)
+- Target: 15m pipeline 90-174h → 15-25h
+- See `v3.3/gpu_histogram_fork/GPU_SESSION_RESUME.md` for full details
 
 ---
 
@@ -192,7 +197,10 @@ For each TF on cloud:
 ### GPU Fork
 - v3.3/gpu_histogram_fork/ — full LightGBM fork with CUDA sparse histogram kernel
 - Phase 1 benchmark: 71x speedup proven
-- Phase 2-3: integrated but hit EFB mismatch
+- Phase 2-3: integrated, CSR bridge fixed, EFB mismatch identified
+- Phase 4: full GPU pipeline acceleration in progress (20 parallel agents)
+  - cuSPARSE SpGEMM (15-40x), GPU nonzero (3-5x), Numba prange binarize (10-20x), feature_hist_offsets fix (EFB re-enabled)
+  - Target: 15m pipeline 90-174h → 15-25h
 
 ## GIT STATUS
 Branch: v3.3
