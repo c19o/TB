@@ -318,17 +318,46 @@ def load_tf_data(tf_name):
 
 
 # ============================================================
+# ROUND-LEVEL PRUNING CALLBACK (for CPU lgb.train path)
+# ============================================================
+class _RoundPruningCallback:
+    """Reports val score to Optuna every `interval` rounds for round-level pruning."""
+    def __init__(self, trial, fold_i, max_rounds, interval=10):
+        self.trial = trial
+        self.fold_i = fold_i
+        self.max_rounds = max_rounds
+        self.interval = interval
+
+    def __call__(self, env):
+        if (env.iteration + 1) % self.interval != 0:
+            return
+        for entry in env.evaluation_result_list:
+            if entry[0] == 'val' and entry[1] == 'multi_logloss':
+                score = entry[2]
+                break
+        else:
+            return
+        step = self.fold_i * self.max_rounds + (env.iteration + 1)
+        self.trial.report(score, step=step)
+        if self.trial.should_prune():
+            raise optuna.TrialPruned()
+
+
+# ============================================================
 # OBJECTIVE FUNCTION BUILDER
 # ============================================================
 def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                     max_hold, n_groups, n_test_groups, row_subsample=1.0,
                     search_lr=None, search_rounds=None, stage=1,
-                    narrow_ranges=None, use_gpu=False):
+                    narrow_ranges=None, use_gpu=False, parent_ds=None):
     """Build an Optuna objective function for LightGBM hyperparameter search.
 
     Args:
         narrow_ranges: dict of param -> (low, high) for stage 2 narrowing
         use_gpu: bool — if True, use GPU fork (cuda_sparse + set_external_csr)
+        parent_ds: lgb.Dataset — pre-constructed parent Dataset for EFB reuse
+                   (reference= shares EFB bins across all trials, eliminating
+                   redundant bin construction)
     """
 
     def objective(trial):
@@ -372,7 +401,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
         params = V3_LGBM_PARAMS.copy()
         params.update({
             'is_enable_sparse': is_sparse,
-            'num_threads': max(1, get_cpu_count() // max(1, int(os.environ.get('OPTUNA_N_JOBS', '1')))),
+            'num_threads': max(1, (os.cpu_count() or 4) // max(1, int(os.environ.get('OPTUNA_N_JOBS', '1')))),
             'num_leaves': num_leaves,
             'min_data_in_leaf': min_data_in_leaf,
             'feature_fraction': feature_fraction,
@@ -440,9 +469,9 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             w_train_es = w_train[:-val_size]
 
             dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
-                                 free_raw_data=False if use_gpu else True)
+                                 reference=parent_ds, free_raw_data=False)
             dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
-                               reference=dtrain, free_raw_data=False if use_gpu else True)
+                               reference=parent_ds, free_raw_data=False)
 
             # MC-4: search trials use fast ES patience (OPTUNA_SEARCH_ES_PATIENCE=30);
             # final retrain uses LR-scaled patience for esoteric signals needing 800+ trees
@@ -481,10 +510,20 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                         no_improve += 1
                     if no_improve >= _es_patience:
                         break
+                    # Round-level pruning for Optuna (every 10 rounds)
+                    if (rnd + 1) % 10 == 0:
+                        global_step = fold_i * rounds + (rnd + 1)
+                        trial.report(val_score, step=global_step)
+                        if trial.should_prune():
+                            del booster
+                            import gc
+                            gc.collect()
+                            raise optuna.TrialPruned()
                 model = booster
             else:
                 # CPU path
-                callbacks = [lgb.early_stopping(_es_patience), lgb.log_evaluation(0)]
+                _prune_cb = _RoundPruningCallback(trial, fold_i, rounds, interval=10)
+                callbacks = [lgb.early_stopping(_es_patience), lgb.log_evaluation(0), _prune_cb]
 
                 model = lgb.train(
                     params, dtrain,
@@ -511,17 +550,6 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
 
             fold_scores.append(mlogloss)
             fold_sortinos.append(sortino)
-
-            # Report intermediate value for pruning (after each fold)
-            try:
-                trial.report(np.mean(fold_scores), fold_i)
-                if trial.should_prune():
-                    raise optuna.TrialPruned()
-            except optuna.TrialPruned:
-                del model
-                import gc
-                gc.collect()
-                raise
 
             del model, dtrain, dval, X_train, X_test
             import gc
@@ -556,20 +584,35 @@ def compute_narrow_ranges(study, top_k=5):
     if not top_trials:
         return None
 
+    import math
     ranges = {}
-    param_names = ['num_leaves', 'min_data_in_leaf', 'feature_fraction',
-                   'feature_fraction_bynode', 'bagging_fraction',
-                   'lambda_l1', 'lambda_l2', 'min_gain_to_split']
 
-    for pname in param_names:
+    # Linear-scale params: expand by 20% margin in linear space
+    linear_params = ['num_leaves', 'min_data_in_leaf',
+                     'feature_fraction_bynode', 'bagging_fraction',
+                     'min_gain_to_split', 'max_depth']
+    # Log-scale params: expand by 20% margin in LOG space (these use log=True in Optuna)
+    log_params = ['feature_fraction', 'lambda_l1', 'lambda_l2', 'learning_rate']
+
+    for pname in linear_params:
         values = [t.params[pname] for t in top_trials if pname in t.params]
         if not values:
             continue
         lo = min(values)
         hi = max(values)
-        # Expand by 20% on each side
         margin = max((hi - lo) * 0.2, abs(lo) * 0.1)
         ranges[pname] = (max(lo - margin, 0.001), hi + margin)
+
+    for pname in log_params:
+        values = [t.params[pname] for t in top_trials if pname in t.params]
+        if not values:
+            continue
+        log_vals = [math.log(v) for v in values]
+        lo_log = min(log_vals)
+        hi_log = max(log_vals)
+        # Expand by 20% on each side in log space
+        margin = max((hi_log - lo_log) * 0.2, abs(lo_log) * 0.1)
+        ranges[pname] = (math.exp(lo_log - margin), math.exp(hi_log + margin))
 
     # max_bin: LOCKED at 255 — controls EFB bundle size, not searchable
     ranges['max_bin'] = [255]
@@ -579,6 +622,8 @@ def compute_narrow_ranges(study, top_k=5):
         ranges['num_leaves'] = (max(7, int(ranges['num_leaves'][0])), min(255, int(ranges['num_leaves'][1])))
     if 'min_data_in_leaf' in ranges:
         ranges['min_data_in_leaf'] = (max(1, int(ranges['min_data_in_leaf'][0])), max(2, int(ranges['min_data_in_leaf'][1])))
+    if 'max_depth' in ranges:
+        ranges['max_depth'] = (max(2, int(ranges['max_depth'][0])), min(20, int(ranges['max_depth'][1])))
 
     return ranges
 
@@ -730,7 +775,7 @@ def build_warmstart_enqueue_params(parent_params, tf_name):
 # FINAL RETRAINING WITH BEST PARAMS
 # ============================================================
 def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
-                  tf_name, max_hold, best_params, use_gpu=False):
+                  tf_name, max_hold, best_params, use_gpu=False, parent_ds=None):
     """Retrain with best params using full CPCV + full rounds + final LR."""
     log.info(f"  FINAL RETRAIN: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
 
@@ -796,10 +841,11 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         X_train_fold = X_train[:-val_size]
         dtrain = lgb.Dataset(X_train_fold, label=y_train[:-val_size],
                              weight=w_train[:-val_size], feature_name=feature_cols,
-                             free_raw_data=False)
+                             reference=parent_ds, free_raw_data=False)
         dval = lgb.Dataset(X_train[-val_size:], label=y_train[-val_size:],
                            weight=w_train[-val_size:],
-                           feature_name=feature_cols, free_raw_data=False)
+                           feature_name=feature_cols, reference=parent_ds,
+                           free_raw_data=False)
 
         _es_patience_final = max(50, int(100 * (0.1 / params.get('learning_rate', OPTUNA_FINAL_LR))))
 
@@ -915,17 +961,20 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
     log.info(f"  Valid samples: {int(n_valid):,} / {len(y):,}")
 
     # ── GPU fork detection ──
-    use_gpu = False
+    # Strategy: CPU parallel for search stages (enables n_jobs parallelism),
+    # GPU only for the single final retrain (no parallelism needed there)
+    gpu_available = False
     if _HAS_GPU_FORK and is_sparse:
         try:
-            use_gpu = should_use_gpu(tf_name, X_all)
+            gpu_available = should_use_gpu(tf_name, X_all)
         except Exception as e:
             log.warning(f"  GPU fork detection failed: {e}")
-    if use_gpu:
-        log.info(f"  GPU FORK: cuda_sparse enabled for Optuna trials")
-        if n_jobs > 1:
-            log.info("  GPU mode: forcing n_jobs=1 (concurrent GPU Boosters not supported)")
-            n_jobs = 1
+
+    search_use_gpu = False  # Always CPU for search = enables n_jobs parallelism
+    final_use_gpu = gpu_available  # GPU for the single final retrain
+
+    if gpu_available:
+        log.info(f"  GPU available — Stage 1+2: CPU parallel (n_jobs={n_jobs}), Final: GPU")
     else:
         if _HAS_GPU_FORK and is_sparse:
             log.warning(f"  GPU fork available but not viable for {tf_name} — using CPU")
@@ -950,6 +999,21 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
         else:
             log.info(f"  No warm-start available for {tf_name} (no parent TF config found)")
 
+    # ── Build parent Dataset ONCE for EFB reuse across all trials ──
+    valid_mask = ~np.isnan(y)
+    log.info("  Building parent Dataset for EFB reuse...")
+    t0_ds = time.time()
+    _parent_ds = lgb.Dataset(
+        X_all[valid_mask], label=y[valid_mask].astype(int),
+        weight=sample_weights[valid_mask] if sample_weights is not None else None,
+        params={'feature_pre_filter': False, 'max_bin': 255, 'min_data_in_bin': 1},
+        free_raw_data=False,
+    )
+    _parent_ds.construct()
+    log.info(f"  Parent Dataset built in {time.time()-t0_ds:.1f}s: "
+             f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features "
+             f"(EFB cached for all trials)")
+
     # Determine trial counts: per-TF override > warm-start override > global default
     if is_warmstarted:
         s1_trials = OPTUNA_WARMSTART_STAGE1_TRIALS
@@ -970,7 +1034,8 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
     else:
         pruner = MedianPruner(
             n_startup_trials=_tf_startup,
-            n_warmup_steps=2,
+            n_warmup_steps=30,    # skip first 30 rounds (round-level pruning)
+            interval_steps=10,    # match round-level report interval
         )
 
     # Sampler with fixed seed for reproducibility
@@ -1019,7 +1084,8 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
         search_rounds=OPTUNA_SEARCH_ROUNDS,
         stage=1,
         narrow_ranges=warmstart_ranges if is_warmstarted else None,
-        use_gpu=use_gpu,
+        use_gpu=search_use_gpu,
+        parent_ds=_parent_ds,
     )
 
     # Count existing completed trials to determine remaining
@@ -1093,7 +1159,8 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
         search_rounds=OPTUNA_SEARCH_ROUNDS,
         stage=2,
         narrow_ranges=narrow_ranges,
-        use_gpu=use_gpu,
+        use_gpu=search_use_gpu,
+        parent_ds=_parent_ds,
     )
 
     existing_s2 = len([t for t in study_s2.trials if t.state == optuna.trial.TrialState.COMPLETE])
@@ -1130,7 +1197,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
     final_result = final_retrain(
         X_all, y, sample_weights, feature_cols, is_sparse,
         tf_name, max_hold, best_overall.params,
-        use_gpu=use_gpu,
+        use_gpu=final_use_gpu, parent_ds=_parent_ds,
     )
     final_elapsed = time.time() - final_start
 
@@ -1210,7 +1277,7 @@ def main():
         n_jobs = args.n_jobs
     else:
         # Use config constant if set (>0), otherwise auto-calculate
-        n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, total_cores // 8)
+        n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, min(4, total_cores // 96))
 
     log.info(f"Optuna LightGBM Search v3.3")
     log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}")
