@@ -16,8 +16,8 @@ Steps:
   1. Fix btc_prices.db symbol format if needed
   2. Rebuild features if parquet missing or < 2000 cols
   3. Build crosses (v2_cross_generator.py --symbol BTC --save-sparse)
-  4. Train (ml_multi_tf.py --tf TF) — VERIFY crosses loaded (SPARSE or DENSE)
-  5. (removed — was --search-mode Optuna, overwrote Step 4 model)
+  5. Optuna hyperparameter search (saves optuna_configs_{tf}.json — params only, no model)
+  4. Train (ml_multi_tf.py --tf TF) — reads Optuna params, VERIFY crosses loaded (SPARSE or DENSE)
   6-10. Optimizer, meta, LSTM, PBO, audit, SHAP
   11. Verify all artifacts exist
 """
@@ -486,12 +486,34 @@ else:
     log(f"  Inference artifacts OK: all {len(_inf_artifacts)} files present")
 
 # ============================================================
-# STEP 4: Train — MUST produce SPARSE output
+# STEP 5: Optuna hyperparameter search (BEFORE training)
+# Saves optuna_configs_{tf}.json with best params — does NOT save a production model.
+# Step 4 reads optuna_configs_{tf}.json and uses those params for the real CPCV training.
 # ============================================================
 # --- Unset OMP/NUMBA so LightGBM uses num_threads=0 (all cores) ---
 os.environ.pop('OMP_NUM_THREADS', None)
 os.environ.pop('NUMBA_NUM_THREADS', None)
 log(f"Training phase: OMP_NUM_THREADS/NUMBA_NUM_THREADS unset (LightGBM uses all cores)")
+
+optuna_config_path = f'optuna_configs_{TF}.json'
+if os.path.exists(optuna_config_path):
+    log(f"Optuna config already exists ({optuna_config_path}) — skipping search")
+else:
+    run_tee(f'python -X utf8 -u {_script("run_optuna_local.py")} --tf {TF}',
+            f'Optuna search {TF}', f'optuna_{TF}.log', critical=False)
+    if os.path.exists(optuna_config_path):
+        import json as _json_step5
+        with open(optuna_config_path) as _f5:
+            _oc = _json_step5.load(_f5)
+        log(f"Optuna search complete: accuracy={_oc.get('final_mean_accuracy', 'N/A')}, "
+            f"sortino={_oc.get('final_mean_sortino', 'N/A')}")
+        log(f"Best params: {_oc.get('best_params', {})}")
+    else:
+        log(f"WARNING: Optuna search did not produce {optuna_config_path} — Step 4 will use config.py defaults")
+
+# ============================================================
+# STEP 4: Train — MUST produce SPARSE output
+# ============================================================
 
 train_log = f'train_{TF}.log'
 run_tee(f'python -X utf8 -u {_script("ml_multi_tf.py")} --tf {TF}',
@@ -527,7 +549,8 @@ if os.path.exists(_model_path):
     shutil.copy2(_model_path, _backup_path)
     log(f"  Model backed up: {_backup_path} ({os.path.getsize(_model_path)/1024:.0f} KB)")
 
-# NOTE: Step 5 (--search-mode Optuna) REMOVED — it overwrote Step 4 model with inferior 2-fold version
+# NOTE: Step 5 (Optuna search) now runs BEFORE Step 4. It saves only params (optuna_configs_{tf}.json),
+# NOT a model. Step 4 reads those params and uses them for full CPCV training.
 
 # ============================================================
 # STEP 6: Exhaustive trade optimizer

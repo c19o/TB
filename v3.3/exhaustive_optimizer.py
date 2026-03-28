@@ -39,9 +39,11 @@ try:
     GPU_ARRAY = True
     print(f"[GPU] CuPy + CUDA detected — RTX 3090 24GB — OPTUNA OPTIMIZER")
 except ImportError:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError("GPU REQUIRED: CuPy not installed for Optuna optimizer. Set ALLOW_CPU=1 for CPU mode.")
     xp = np
     GPU_ARRAY = False
-    print("[CPU] CuPy not available — using NumPy (slower)")
+    print("[ALLOW_CPU=1] CuPy not available — using NumPy (slower)")
 
 import lightgbm as lgb
 try:

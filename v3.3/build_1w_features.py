@@ -15,8 +15,11 @@ if not _skip_gpu:
         import cudf.pandas
         cudf.pandas.install()
         print("[GPU] cudf.pandas ENABLED")
-    except (ImportError, Exception):
-        print("[GPU] cudf.pandas not available, using CPU pandas", flush=True)
+    except (ImportError, Exception) as e:
+        if os.environ.get('ALLOW_CPU', '0') == '1':
+            print(f"[WARNING] GPU not available ({e}), running on CPU (ALLOW_CPU=1)", flush=True)
+        else:
+            raise RuntimeError(f"GPU REQUIRED: cuDF.pandas import failed: {e}. Set ALLOW_CPU=1 to force CPU mode.") from e
 """
 build_1w_features.py
 =====================

@@ -38,19 +38,23 @@ def _cuda_major():
 _skip_gpu = os.environ.get('V2_SKIP_GPU', '') == '1' or _cuda_major() >= 13
 
 if _skip_gpu:
+    _reason = "V2_SKIP_GPU=1" if os.environ.get('V2_SKIP_GPU') == '1' else "CUDA 13+ driver (580+)"
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError(f"GPU REQUIRED: {_reason}. CuPy segfaults on CUDA 13. Set ALLOW_CPU=1 for CPU mode.")
     cp = None
     GPU_KNN = False
-    _reason = "V2_SKIP_GPU=1" if os.environ.get('V2_SKIP_GPU') == '1' else "CUDA 13+ driver (580+)"
-    print(f"[KNN] GPU disabled — {_reason}. CuPy segfaults on CUDA 13. Using CPU fallback.")
+    print(f"[KNN] ALLOW_CPU=1 — {_reason}. Using CPU mode.")
 else:
     try:
         import cupy as cp
         GPU_KNN = True
         print(f"[KNN] CuPy GPU detected — GPU-accelerated KNN")
     except ImportError:
+        if os.environ.get('ALLOW_CPU', '0') != '1':
+            raise RuntimeError("GPU REQUIRED: CuPy not installed for KNN engine. Set ALLOW_CPU=1 for CPU mode.")
         cp = None
         GPU_KNN = False
-        print(f"[KNN] CuPy not available — CPU fallback")
+        print(f"[KNN] ALLOW_CPU=1 — CuPy not available, using CPU mode.")
 
 # Per-TF config
 KNN_TF_CONFIG = {

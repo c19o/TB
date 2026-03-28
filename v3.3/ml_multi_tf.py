@@ -903,6 +903,45 @@ if __name__ == '__main__':
               _base_lgb_params['num_threads'] = _capped_threads
               log(f"  num_threads capped to {_capped_threads} (< 10K rows, LightGBM docs)")
 
+          # ── Optuna best params overlay ──
+          # If run_optuna_local.py was run first (Step 5 in cloud pipeline), it saves
+          # optuna_configs_{tf}.json with best_params. Load and overlay onto _base_lgb_params.
+          # This lets Step 4 (training) use Optuna-found params instead of config.py defaults.
+          _optuna_config_path = os.path.join(PROJECT_DIR, f'optuna_configs_{tf_name}.json')
+          if not os.path.exists(_optuna_config_path):
+              # Also check CWD (cloud deploys may have it in /workspace)
+              _optuna_config_path_cwd = f'optuna_configs_{tf_name}.json'
+              if os.path.exists(_optuna_config_path_cwd):
+                  _optuna_config_path = _optuna_config_path_cwd
+          if os.path.exists(_optuna_config_path):
+              try:
+                  with open(_optuna_config_path) as _ocf:
+                      _optuna_cfg = json.load(_ocf)
+                  _optuna_best = _optuna_cfg.get('best_params', {})
+                  # Keys that Optuna tunes (from run_optuna_local.py objective)
+                  _OPTUNA_TUNABLE_KEYS = [
+                      'num_leaves', 'min_data_in_leaf', 'feature_fraction',
+                      'feature_fraction_bynode', 'bagging_fraction',
+                      'lambda_l1', 'lambda_l2', 'min_gain_to_split',
+                      'max_depth', 'learning_rate',
+                  ]
+                  _applied = []
+                  for _ok in _OPTUNA_TUNABLE_KEYS:
+                      if _ok in _optuna_best:
+                          _base_lgb_params[_ok] = _optuna_best[_ok]
+                          _applied.append(f"{_ok}={_optuna_best[_ok]}")
+                  if _applied:
+                      log(f"  OPTUNA PARAMS LOADED from {_optuna_config_path}")
+                      log(f"    Applied: {', '.join(_applied)}")
+                      log(f"    Optuna accuracy: {_optuna_cfg.get('final_mean_accuracy', 'N/A')}, "
+                          f"Sortino: {_optuna_cfg.get('final_mean_sortino', 'N/A')}")
+                  else:
+                      log(f"  WARNING: optuna_configs_{tf_name}.json found but no tunable params in best_params")
+              except Exception as _oe:
+                  log(f"  WARNING: Failed to load Optuna params: {_oe}")
+          else:
+              log(f"  No optuna_configs_{tf_name}.json found — using config.py defaults")
+
           # Interaction constraints — DISABLED for 100K+ features (787K constrained features kills LightGBM perf)
           # LightGBM checks constraint groups per split candidate per round — catastrophic at 787K.
           # Model learns interactions via tree structure instead. Re-enable for <100K features only.
@@ -1481,6 +1520,16 @@ if __name__ == '__main__':
           # Copy interaction_constraints from CPCV params (fix 2.5)
           if 'interaction_constraints' in _base_lgb_params:
               final_params['interaction_constraints'] = _base_lgb_params['interaction_constraints']
+          # Apply Optuna-found params to final retrain (same overlay as CPCV phase)
+          _OPTUNA_TUNABLE_KEYS_FINAL = [
+              'num_leaves', 'min_data_in_leaf', 'feature_fraction',
+              'feature_fraction_bynode', 'bagging_fraction',
+              'lambda_l1', 'lambda_l2', 'min_gain_to_split',
+              'max_depth', 'learning_rate',
+          ]
+          for _ok in _OPTUNA_TUNABLE_KEYS_FINAL:
+              if _ok in _base_lgb_params and _ok not in ('num_threads',):
+                  final_params[_ok] = _base_lgb_params[_ok]
 
           # Split into 85% train + 15% val for early stopping
           n_final = X_final_all.shape[0]

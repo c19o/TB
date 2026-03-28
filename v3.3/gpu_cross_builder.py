@@ -41,10 +41,14 @@ if os.environ.get('V2_SKIP_GPU') != '1':
         pool = cp.get_default_memory_pool()
         print(f'[GPU {args.gpu}] CuPy ready, VRAM free: {cp.cuda.runtime.memGetInfo()[0]/1e9:.1f} GB')
     except (ImportError, FileNotFoundError, Exception) as e:
+        if os.environ.get('ALLOW_CPU', '0') != '1':
+            raise RuntimeError(f"GPU REQUIRED: CuPy/CUDA init failed ({e}). Set ALLOW_CPU=1 for CPU mode.")
         GPU = False
-        print(f'[CPU fallback] {e}')
+        print(f'[ALLOW_CPU=1] {e}')
 else:
-    print('[CPU fallback] V2_SKIP_GPU=1, skipping CuPy')
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError("GPU REQUIRED: V2_SKIP_GPU=1 set but ALLOW_CPU=1 not set. Set ALLOW_CPU=1 for CPU mode.")
+    print('[ALLOW_CPU=1] V2_SKIP_GPU=1, skipping CuPy')
 
 
 def build_crosses(tf):

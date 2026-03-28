@@ -4,35 +4,44 @@
 
 ---
 
-## STATUS: 1W DONE → 1D/4H CLOUD REQUIRED (OOM locally) → BUILD REMAINING TFs
+## STATUS: GPU-OR-NOTHING — LightGBM GPU Histograms + Optuna Re-enabled
 
-1w training complete locally (CPCV 67.7%, needs Optuna). 1d cross gen crashed locally at 68GB RAM — needs 256GB+. Both 1d and 4h must train on cloud. GPU histogram fork hit architectural wall (EFB mismatch). CPU training already works well.
+**GPU-or-nothing policy**: NO CPU fallbacks anywhere in the pipeline. Every compute stage runs on GPU. Set `ALLOW_CPU=1` as escape hatch for local testing only — cloud deploys MUST use GPU.
+
+1w trained at 67.7% without Optuna. The 71.9% accuracy came from Optuna HPO — re-enabling it is critical. LightGBM GPU histogram Bug 4 (feature_hist_offsets EFB mapping) is being debugged by 20 parallel agents. Trade optimizer already GPU (CuPy), no changes needed.
 
 ### TWO SEPARATE OPTIMIZERS IN OUR PIPELINE
-1. **LightGBM HPO** (`run_optuna_local.py`) — optimizes 10 LightGBM hyperparams (num_leaves, feature_fraction, learning_rate, lambdas, etc.). Objective: minimize mlogloss via CPCV. THIS is the 90% bottleneck (200 trials × 4-15 folds × 150 min/fold).
-2. **Trade Strategy Optimizer** (`exhaustive_optimizer.py`) — optimizes 7 trading params (leverage, risk%, stop-loss, R:R, hold, exit, confidence). Objective: maximize Sortino. Runs on pre-computed predictions, GPU-vectorized on 3090. Fast (minutes).
+1. **LightGBM HPO** (`run_optuna_local.py`) — optimizes 10 LightGBM hyperparams (num_leaves, feature_fraction, learning_rate, lambdas, etc.). Objective: minimize mlogloss via CPCV. THIS is the 90% bottleneck (200 trials × 4-15 folds). **Being re-enabled — was the cause of 67.7% vs 71.9%.**
+2. **Trade Strategy Optimizer** (`exhaustive_optimizer.py`) — optimizes 7 trading params (leverage, risk%, stop-loss, R:R, hold, exit, confidence). Objective: maximize Sortino. Runs on pre-computed predictions, GPU-vectorized on 3090 (CuPy). Already GPU, no changes needed.
 
 ---
 
 ## CURRENT STATE (2026-03-28)
 
-### GPU Histogram Fork — Phase 4: Full GPU Pipeline Acceleration
+### GPU Histogram Fork — Bug 4 Debug (20 Parallel Agents)
 - **Phase 1 (standalone benchmark)**: COMPLETE — 71x speedup on real 1w data (RTX 3090)
 - **Phase 2 (LightGBM integration)**: COMPLETE — Fork builds (42/42), `device_type="cuda_sparse"` accepted, GPU detected
 - **Phase 3 (CSR bridge)**: COMPLETE — CSR bridge fix applied, dangling pointer fixed, DLL rebuilt
-- **Phase 4 (full GPU pipeline acceleration)**: IN PROGRESS — 20 parallel agents implementing 4 components:
-  1. **cuSPARSE SpGEMM** replacing scipy sparse matmul in cross gen (15-40x speedup) — scipy `left_sp.T @ right_sp` is single-threaded CPU, cuSPARSE does sparse-sparse matmul on GPU
-  2. **GPU nonzero** replacing CPU `np.nonzero` (3-5x speedup) — CuPy/CUDA kernel extracts nonzero indices directly on GPU
-  3. **binarize_contexts vectorized with Numba prange** (10-20x speedup) — saturates multi-core CPUs (64-512 cores on cloud)
-  4. **LightGBM feature_hist_offsets mapping fix** — extracts cumulative bin offset table from `share_state_`, uploads to GPU, remaps SpMV output indices in CUDA kernel. Re-enables EFB bundling with GPU histograms (was BLOCKED in Phase 3)
-- **Expected 15m pipeline**: 90-174h (CPU) → 15-25h (GPU-accelerated)
+- **Bug 4 (feature_hist_offsets EFB mapping)**: ACTIVE DEBUG — 20 parallel agents working on it
+  - Extracts cumulative bin offset table from `share_state_`, uploads to GPU, remaps SpMV output indices in CUDA kernel
+  - Re-enables EFB bundling with GPU histograms (was BLOCKED in Phase 3)
+  - Once fixed: GPU histograms work end-to-end with EFB for all TFs
+- **Other Phase 4 components** (completed or in progress):
+  1. **cuSPARSE SpGEMM** replacing scipy sparse matmul in cross gen (15-40x speedup)
+  2. **GPU nonzero** replacing CPU `np.nonzero` (3-5x speedup)
+  3. **binarize_contexts vectorized with Numba prange** (10-20x speedup)
 - **Location**: `v3.3/gpu_histogram_fork/` (isolated from main pipeline)
 - **Commit**: `0a94b4e` (latest)
+
+### LightGBM Optuna — Being Re-enabled
+- Optuna HPO was the difference between 67.7% (no Optuna) and 71.9% (with Optuna)
+- Re-enabling across all TFs is critical for target accuracy
+- 200 TPE trials, CPCV folds, mlogloss objective
 
 ### Training Status
 | TF | Status | Accuracy | Features | Notes |
 |----|--------|----------|----------|-------|
-| **1w** | DONE | CPCV 67.7% (needs Optuna) | 2.2M | CPU training, real labels |
+| **1w** | DONE (needs Optuna) | CPCV 67.7% → target 71.9% | 2.2M | GPU histograms once Bug 4 fixed |
 | **1d** | BASE BUILT | — | 5,733×3,796 base | Cross gen OOM at 68GB locally. Needs 256GB+ RAM → CLOUD |
 | **4h** | BASE BUILT | — | 8,794×3,904 base | Cross gen + training → CLOUD (512GB+ RAM needed) |
 | **1h** | NEEDS CLOUD | — | — | Separate cloud machine, 2TB+ RAM |
@@ -115,26 +124,50 @@ For each TF on cloud:
 14. **Run Optuna** on all models (can be local for 1w, cloud for others)
 15. **Push to git** — all models + artifacts
 
-### GPU Fork — Phase 4 Active (no longer deferred)
-- Phase 4 implements full GPU pipeline acceleration via 20 parallel agents
-- 4 components: cuSPARSE SpGEMM (cross gen), GPU nonzero, Numba prange binarize, feature_hist_offsets mapping fix (LightGBM EFB)
-- Target: 15m pipeline 90-174h → 15-25h
+### GPU-or-Nothing Policy
+- **NO CPU fallbacks anywhere.** Every compute stage runs on GPU.
+- `ALLOW_CPU=1` environment variable as escape hatch for local testing ONLY
+- Cloud deploys MUST use GPU — no ALLOW_CPU
+- Trade optimizer: already GPU (CuPy vectorized on 3090), no changes needed
+- LightGBM training: GPU histograms once Bug 4 is fixed
+- Cross gen: cuSPARSE SpGEMM replacing scipy sparse matmul
+- Feature build: cuDF rolling/ewm (already GPU)
+
+### GPU Fork — Bug 4 Active (20 parallel agents)
+- Bug 4 (feature_hist_offsets EFB mapping) is the last blocker for GPU histograms
+- Once fixed: all TFs train with GPU histograms end-to-end
 - See `v3.3/gpu_histogram_fork/GPU_SESSION_RESUME.md` for full details
+
+### Revised ETAs with GPU Histograms
+| TF | No Optuna | With Optuna (200 trials) |
+|----|-----------|--------------------------|
+| **1w** | 10 min | 2 hr |
+| **1d** | 1 hr | 14 hr |
+| **4h** | — | — |
+| **1h** | — | — |
+| **15m** | 10.5 hr | 50 hr |
 
 ---
 
 ## TRAINING PLAN & COSTS
 
-### Per-TF Training Times (with optimizations, per pipeline step)
+### Per-TF Training Times — GPU Histograms (revised)
 
+| TF | No Optuna | With Optuna (200 trials) | Notes |
+|----|-----------|--------------------------|-------|
+| **1w** | **10 min** | **2 hr** | Local 3090 OK |
+| **1d** | **1 hr** | **14 hr** | Cloud 256GB+ RAM |
+| **4h** | TBD | TBD | Cloud 512GB+ RAM |
+| **1h** | TBD | TBD | Cloud 2TB+ RAM |
+| **15m** | **10.5 hr** | **50 hr** | Cloud 2TB+ RAM, user picks |
+
+Previous CPU estimates (for reference):
 | Step | 1w | 1d | 4h | 1h | 15m |
 |------|-----|-----|-----|------|------|
 | Feature build | 5m | 15m | 30m | 1hr | 2hr |
 | Cross gen | 15s | 10m | 36m | 2.3hr | 5.8hr |
-| save_binary | 30s | 5m | 15m | 30m | 45m |
-| CPCV per fold | 3m | 30m | 50m | 104m | 150m |
-| CPCV total (4 folds all TFs) | 12m | 2hr | 3.3hr | 7hr | 10hr |
-| **Total no Optuna** | **25m** | **2.5hr** | **5-10hr** | **9-15hr** | **13-19hr** |
+| CPCV total (4 folds, CPU) | 12m | 2hr | 3.3hr | 7hr | 10hr |
+| **Total no Optuna (CPU)** | **25m** | **2.5hr** | **5-10hr** | **9-15hr** | **13-19hr** |
 
 ### Machine Assignments (UPDATED — local OOM forced cloud)
 
@@ -152,7 +185,7 @@ For each TF on cloud:
 
 1. **v3.2 NEVER completed training** — crashed on feature_name mismatch. No baseline exists.
 2. **max_bin=255** — controls EFB bundle size. max_bin=15 created 18x more bundles than needed.
-3. **GPU histogram fork proved 71x speedup** but hit EFB mismatch wall. CPU training at 73.9% is strong enough.
+3. **GPU histogram fork proved 71x speedup** — Bug 4 (EFB mapping) being debugged by 20 agents. GPU-or-nothing: NO CPU fallbacks.
 4. **GOSS/CEGB/quantized_grad** — all kill rare esoteric signals. REJECTED.
 5. **HMM regime weights 0.15 is a thesis violation** — crushes counter-trend esoteric signals by 85%.
 6. **Co-occurrence filter 8→3** — matches min_data_in_leaf=3 for 1d/1w.
@@ -196,11 +229,11 @@ For each TF on cloud:
 
 ### GPU Fork
 - v3.3/gpu_histogram_fork/ — full LightGBM fork with CUDA sparse histogram kernel
-- Phase 1 benchmark: 71x speedup proven
-- Phase 2-3: integrated, CSR bridge fixed, EFB mismatch identified
-- Phase 4: full GPU pipeline acceleration in progress (20 parallel agents)
-  - cuSPARSE SpGEMM (15-40x), GPU nonzero (3-5x), Numba prange binarize (10-20x), feature_hist_offsets fix (EFB re-enabled)
-  - Target: 15m pipeline 90-174h → 15-25h
+- Phase 1-3: COMPLETE (71x speedup, CSR bridge, DLL rebuilt)
+- Bug 4 (feature_hist_offsets EFB mapping): ACTIVE DEBUG — 20 parallel agents
+- GPU-or-nothing: once Bug 4 fixed, all TFs use GPU histograms
+- cuSPARSE SpGEMM (15-40x), GPU nonzero (3-5x), Numba prange binarize (10-20x)
+- Revised ETAs: 1w 10min, 1d 1hr, 15m 10.5hr (no Optuna); with Optuna: 1w 2hr, 1d 14hr, 15m 50hr
 
 ## GIT STATUS
 Branch: v3.3

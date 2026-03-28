@@ -36,7 +36,9 @@ if os.environ.get('V2_SKIP_GPU') != '1':
             os.environ['V2_SKIP_GPU'] = '1'
             print(f"[build_features_v2] GPU DISABLED — driver {_drv} (CUDA 13+). Using CPU mode.")
     except Exception:
-        pass  # nvidia-smi not available or parse error — assume CUDA 12 compatible
+        if os.environ.get('ALLOW_CPU', '0') != '1':
+            raise RuntimeError("GPU REQUIRED: nvidia-smi check failed. Set ALLOW_CPU=1 to force CPU mode.")
+        print("[WARNING] nvidia-smi check failed, running on CPU (ALLOW_CPU=1)", flush=True)
 
 # Force CuPy memory pool cleanup helper
 def _gpu_gc():

@@ -61,19 +61,24 @@ except Exception:
 
 # ── GPU setup (guarded by CUDA version) ──
 if _CUDA_MAJOR >= 13:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError("GPU REQUIRED: CUDA 13+ driver (580+) — CuPy would SEGFAULT. Set ALLOW_CPU=1 for CPU mode.")
     cp = None
     cusp = None
     GPU = False
-    print(f"[v2_cross_generator] GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy would SEGFAULT. Using CPU mode.")
+    print(f"[v2_cross_generator] ALLOW_CPU=1 — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy would SEGFAULT. Using CPU mode.")
 else:
     try:
         import cupy as cp
         import cupyx.scipy.sparse as cusp
         GPU = True
     except ImportError:
+        if os.environ.get('ALLOW_CPU', '0') != '1':
+            raise RuntimeError("GPU REQUIRED: CuPy not installed. Install CuPy or set ALLOW_CPU=1 for CPU mode.")
         cp = None
         cusp = None
         GPU = False
+        print("[v2_cross_generator] ALLOW_CPU=1 — CuPy not available, using CPU mode.")
 
 
 def log(msg):
@@ -595,19 +600,11 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
         # Skip if: CUDA 13+ detected, env var override, or CuPy unavailable.
         _skip_gpu = _CUDA_MAJOR >= 13 or os.environ.get('V2_SKIP_GPU') == '1'
         if GPU and not _skip_gpu:
-            try:
-                c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
-                    left_names, left_mat, r_names_chunk, right_mat_chunk,
-                    prefix, gpu_id, min_nonzero, max_features, total_feats,
-                    col_offset=current_offset
-                )
-            except Exception as e:
-                log(f"  GPU failed ({e}), falling back to CPU for chunk")
-                c_names, c_rows, c_cols, c_data, c_ncols = _cpu_cross_chunk(
-                    left_names, left_mat, r_names_chunk, right_mat_chunk,
-                    prefix, min_nonzero, max_features, total_feats,
-                    col_offset=current_offset
-                )
+            c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
+                left_names, left_mat, r_names_chunk, right_mat_chunk,
+                prefix, gpu_id, min_nonzero, max_features, total_feats,
+                col_offset=current_offset
+            )
         else:
             c_names, c_rows, c_cols, c_data, c_ncols = _cpu_cross_chunk(
                 left_names, left_mat, r_names_chunk, right_mat_chunk,

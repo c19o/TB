@@ -40,11 +40,16 @@ except Exception:
 
 # GPU acceleration — skip entirely on CUDA 13+ (binary incompat)
 if _CUDA_MAJOR >= 13:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError(
+            f"GPU REQUIRED: CUDA 13+ detected (driver 580+). Use a machine with CUDA 12.x driver. "
+            f"Set ALLOW_CPU=1 to force CPU mode."
+        )
     cp = None
     _HAS_GPU = False
     _N_GPUS = 0
     os.environ['V2_SKIP_GPU'] = '1'  # Signal to sub-modules (knn_feature_engine, etc.)
-    print(f"[feature_library] GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy/cuDF need CUDA 12.x. Using CPU mode.")
+    print(f"[feature_library] ALLOW_CPU=1 — GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy/cuDF need CUDA 12.x. Using CPU mode.")
 else:
     try:
         import cupy as cp
@@ -53,10 +58,15 @@ else:
         if _HAS_GPU:
             _gpu_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
             print(f"[feature_library] CuPy GPU: {_gpu_name} x{_N_GPUS}")
-    except (ImportError, Exception):
+    except (ImportError, Exception) as _cupy_err:
+        if os.environ.get('ALLOW_CPU', '0') != '1':
+            raise RuntimeError(
+                f"GPU REQUIRED: CuPy import failed ({_cupy_err}). Install CuPy or set ALLOW_CPU=1 to force CPU mode."
+            )
         cp = None
         _HAS_GPU = False
         _N_GPUS = 0
+        print(f"[feature_library] ALLOW_CPU=1 — CuPy unavailable ({_cupy_err}). Using CPU mode.")
 
 try:
     if _CUDA_MAJOR >= 13:
@@ -65,9 +75,14 @@ try:
     _HAS_CUDF = _HAS_GPU
     if _HAS_CUDF:
         print(f"[feature_library] cuDF available — GPU DataFrames enabled")
-except ImportError:
+except ImportError as _cudf_err:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError(
+            f"GPU REQUIRED: cuDF import failed ({_cudf_err}). Install cuDF or set ALLOW_CPU=1 to force CPU mode."
+        )
     cudf = None
     _HAS_CUDF = False
+    print(f"[feature_library] ALLOW_CPU=1 — cuDF unavailable ({_cudf_err}). Using pandas CPU mode.")
 
 try:
     from numba import njit, prange
@@ -90,8 +105,13 @@ try:
     from cuml.neighbors import KNeighborsClassifier as cuml_KNN
     _HAS_CUML = True
     print(f"[feature_library] cuML KNN available — GPU-accelerated KNN")
-except ImportError:
+except ImportError as _cuml_err:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError(
+            f"GPU REQUIRED: cuML import failed ({_cuml_err}). Install cuML or set ALLOW_CPU=1 to force CPU mode."
+        )
     _HAS_CUML = False
+    print(f"[feature_library] ALLOW_CPU=1 — cuML unavailable ({_cuml_err}). Using sklearn KNN fallback.")
 
 try:
     if _CUDA_MAJOR >= 13:
@@ -99,8 +119,13 @@ try:
     from cupyx.scipy.signal import convolve as cp_convolve
     _HAS_CP_CONV = True
     print(f"[feature_library] CuPy convolve available — GPU FFD")
-except ImportError:
+except ImportError as _cpconv_err:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError(
+            f"GPU REQUIRED: CuPy convolve import failed ({_cpconv_err}). Install CuPy or set ALLOW_CPU=1 to force CPU mode."
+        )
     _HAS_CP_CONV = False
+    print(f"[feature_library] ALLOW_CPU=1 — CuPy convolve unavailable ({_cpconv_err}). Using numpy convolve.")
 
 
 def _strip_tz(idx):
@@ -3779,8 +3804,11 @@ def _frac_diff_ffd(series, d, threshold=1e-5):
             del y_gpu, w_gpu, v_gpu, ones_gpu
             cp.get_default_memory_pool().free_all_blocks()
         except Exception as _e:
-            # Fallback to numpy
-            import logging; logging.getLogger('feature_library').warning(f"CuPy convolve failed, CPU fallback: {_e}")
+            if os.environ.get('ALLOW_CPU', '0') != '1':
+                raise RuntimeError(
+                    f"GPU REQUIRED: CuPy convolve failed ({_e}). Fix GPU or set ALLOW_CPU=1 to force CPU mode."
+                )
+            import logging; logging.getLogger('feature_library').warning(f"ALLOW_CPU=1 — CuPy convolve failed, CPU fallback: {_e}")
             result = np.convolve(y_clean, weights, mode='full')[:len(y)]
             valid_count = np.convolve(valid, np.ones(W), mode='full')[:len(y)]
     else:
