@@ -31,6 +31,7 @@ os.environ.setdefault('SAVAGE22_DB_DIR', '/workspace')
 os.environ.setdefault('SAVAGE22_V1_DIR', '/workspace')
 os.chdir('/workspace')
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = _SCRIPT_DIR  # v3.3 directory
 
 def _script(name):
     """Resolve script path — check CWD first, then script directory."""
