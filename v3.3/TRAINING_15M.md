@@ -1,62 +1,182 @@
 # 15M Training Guide — V3.3
-# **READY — All blockers resolved.** Int64 indptr fix applied (LightGBM PR #1719).
-# Row-partitioned boosting REJECTED (Perplexity-confirmed: kills rare signals).
-# THE HARDEST TIMEFRAME. Read every section. Another Claude session will use this.
-
-## Machine Requirements
-- **RAM:** 2TB+ **cgroup** (NOT host RAM — containers cap lower)
-- **Verify cgroup:** `cat /sys/fs/cgroup/memory/memory.limit_in_bytes` — must show >= 2,147,483,648,000 (2TB)
-  - Host may report 2TB but container caps at 1.33TB. **Always check cgroup, not free -g.**
-  - If cgroup shows `9223372036854775807` (max int64), there's no cgroup limit — use `free -g` instead.
-- **Cores:** 256+ (cross gen is multi-threaded, parallel CPCV needs cores)
-- **CPU Score:** 1200+ ideal (cores x base GHz). GPU REQUIRED.
-- **Disk:** 150GB+ free
-- **GPU:** REQUIRED (multi-GPU ideal). Largest dataset. GPU histogram fork designed for this.
-- **USER PICKS THIS MACHINE** from vast.ai lineup. Never auto-select.
-
-### Machine Recommendation: Cloud 2TB+ RAM, GPU REQUIRED, Score 1200+ ideal
-GPU is REQUIRED. Without GPU, CPCV takes 10 hrs and Optuna takes 25 hrs. Memmap needed for cross gen.
-- **Cloud option:** vast.ai or Lambda with multi-GPU (A100/H100), 2TB+ cgroup RAM, ~$3-4/hr.
-- **CPU Score 1200+ ideal** for cross gen and CPU-parallel Optuna search.
-- **Cost:** ~$65 without Optuna (CPU), ~$53 with Optuna (GPU), ~$150 with Optuna (CPU).
-- **USER PICKS THIS MACHINE.** Do NOT auto-select.
-
-### GPU vs CPU Per Step
-| Step | Engine | Reason |
-|------|--------|--------|
-| Feature build | GPU (cuDF) | Rolling/ewm on GPU. ~2 hrs. |
-| Cross gen | GPU (cuSPARSE + streaming) | ~1.5 hrs GPU vs 5.8 hrs CPU. Memmap needed. |
-| Optuna search | CPU (n_jobs=4) | CPU parallel search stage, GPU for final retrain only. |
-| Final CPCV | GPU (histogram fork) | ~294K rows = GPU maximum benefit. ~3 hrs GPU vs 10 hrs CPU. |
-| Trade optimizer | GPU | cuDF-accelerated parameter sweep. |
-
-### Optuna Machine Strategy
-- Same GPU machine for Optuna and CPCV. CPU Score 1200+ for search stage (n_jobs=4).
-- GPU for final retrain only (after search selects best config).
-- Warm-started from 1h: 50+30 trials. ~25 hrs CPU / ~7.5 hrs GPU.
-- Separate Optuna machine from training machine ONLY if parallelizing across TFs.
-- This is the LAST TF in the warm-start cascade (1w -> 1d -> 4h -> 1h -> 15m).
-
-### Revised ETAs (Machine: Score 1200+ CPU, multi-GPU A100/H100)
-| Stage | Time (CPU) | Time (GPU est.) | Status |
-|-------|-----------|----------------|--------|
-| Feature build | 2 hrs | 2 hrs | PENDING |
-| Cross gen (cuSPARSE + streaming) | 5.8 hrs | ~1.5 hrs | PENDING |
-| save_binary | 45 min | 45 min | PENDING |
-| CPCV (4 folds) | 10 hrs | ~3 hrs (GPU hist) | PENDING |
-| Optuna (50+30 warm, n_jobs=4, pruning) | ~25 hrs | ~7.5 hrs (GPU hist) | PENDING |
-| Meta + PBO + SHAP | 30 min | 30 min | PENDING |
-| **TOTAL (CPU)** | **~44 hrs ($150)** | | |
-| **TOTAL (GPU est.)** | | **~15 hrs ($53)** | |
-| **Without Optuna (CPU)** | **~19 hrs ($65)** | | |
+# THE HARDEST TIMEFRAME. 227K rows, 10M+ features, 150-220GB NPZ.
+# Read EVERY section. Another Claude session will use this as its sole reference.
+# Last in warm-start cascade: 1w -> 1d -> 4h -> 1h -> **15m**
 
 ---
 
-## Required Databases (ALL 16 — ZERO MISSING)
+## Machine Requirements
+
+- **RAM:** 1.5TB+ cgroup (NOT host RAM -- containers cap lower)
+- **Verify cgroup:** `cat /sys/fs/cgroup/memory/memory.limit_in_bytes` -- must show >= 1,610,612,736,000 (1.5TB)
+  - If cgroup shows `9223372036854775807` (max int64), there is no cgroup limit -- use `free -g` instead
+- **GPU:** REQUIRED. CUDA 12.x for full GPU acceleration
+  - If CUDA 13 (driver 580+): CPU only, 3-5x slower, still works with `ALLOW_CPU=1`
+- **Cores:** 128+ (cross gen multi-threaded, Optuna n_jobs=4)
+- **CPU Score:** 800+ (cores x base GHz). Higher = faster cross gen and Optuna search
+- **Disk:** 300GB+ free (NPZ alone is 150-220GB)
+- **USER PICKS THIS MACHINE** from vast.ai lineup. Never auto-select.
+
+### Why One Machine for Everything
+The NPZ file is 150-220GB. Transferring it between machines is impractical (30 min at 1 Gbps, 5 hrs at 100 Mbps). Pick a single cost-effective machine that runs cross gen + training + Optuna. Never plan to transfer the NPZ.
+
+---
+
+## GPU vs CPU Per Step
+
+| Step | Engine | Notes |
+|------|--------|-------|
+| Feature build | CPU (pandas) | cuDF if CUDA 12.x available, otherwise pandas. ~2-5 min. |
+| Cross gen | GPU + memmap | Per-type NPZ checkpointing. ~1.5-3 hrs GPU, ~6-8 hrs CPU. |
+| Optuna search | CPU (n_jobs=4) | 15% row subsample (227K -> ~34K). CPU parallel search. |
+| Final CPCV | GPU histogram fork | 3x faster than CPU at 227K rows. enable_bundle=False. |
+| Meta + PBO + SHAP | CPU | ~30 min. |
+| LSTM | Run locally (13900K + 3090) | Cloud H200 has weak CPU for DataLoader. |
+
+### GPU Histogram Fork
+The GPU histogram fork (`gpu_histogram_fork/`) provides `device_type="cuda_sparse"` for LightGBM. This is 3x faster than CPU for 227K rows because GPU histogram building parallelizes across the large dataset. The fork reads sparse CSR directly via `set_external_csr` -- no dense conversion needed.
+
+### CUDA Version Handling
+- **CUDA 12.x (driver 535-575):** Full GPU acceleration. cuDF, CuPy, GPU histogram fork all work.
+- **CUDA 13.0+ (driver 580+):** cuDF/CuPy SEGFAULT on CUDA 13. Auto-detected. Feature build falls back to pandas CPU. Training still works with `ALLOW_CPU=1` but is 3-5x slower. Prefer CUDA 12.x machines.
+
+---
+
+## Data Profile
+
+- **Rows:** ~227,000 (15m bars, 2017-11-01 to 2026, Binance BTC/USDT)
+- **Base features:** ~4,000+ cols after feature_library.py
+- **Cross features:** ~10M+ (min_nonzero=3)
+- **NPZ size:** 150-220GB on disk
+- **NNZ estimate:** ~20-30B (227K rows x 10M cols x ~1% density) -- massively exceeds int32 limit
+- **int64 indptr is the PRIMARY fix** for NNZ > 2^31. Row-partitioned boosting REJECTED.
+
+---
+
+## Triple-Barrier Labels (from feature_library.py)
+
+| Parameter | Value |
+|-----------|-------|
+| tp_atr_mult | 2.0 |
+| sl_atr_mult | 1.8 |
+| max_hold_bars | 32 |
+
+Asymmetric barriers fix 0% SHORT precision on upward-biased BTC.
+
+---
+
+## LightGBM Config (from config.py)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| min_data_in_leaf | 15 | TF_MIN_DATA_IN_LEAF['15m'] |
+| num_leaves | 511 | TF_NUM_LEAVES['15m'] -- deep trees viable at 227K rows |
+| max_bin | 255 | V3_LGBM_PARAMS (binary crosses get 2 bins regardless) |
+| CPCV | (6,2) = 15 splits | TF_CPCV_GROUPS['15m'] -- 5 unique paths, 67% train |
+| enable_bundle | False | MANDATORY for >1M features with >40K rows (EFB intractable) |
+| feature_pre_filter | False | CRITICAL -- True silently kills rare esoteric features |
+| is_enable_sparse | True | Sparse CSR fed directly, no dense conversion (would be 6.8TB) |
+
+### Why enable_bundle=False
+EFB (Exclusive Feature Bundling) scans all feature pairs for mutual exclusivity. At 10M+ features with 227K rows, this scan is intractable. Disabling it skips the bundle construction entirely. Binary features still train correctly -- they just get individual histogram bins instead of shared bundles. Training is slightly slower per tree but the Dataset construction phase drops from hours to minutes.
+
+### Dense vs Sparse
+At 227K rows x 10M features: dense = 227,000 x 10,000,000 x 4 bytes = **~8.5 TB**. Impossible. Stays sparse CSR. LightGBM trains directly on sparse with int64 indptr.
+
+---
+
+## CPCV Configuration
+
+- **(6,2):** 6 groups, 2 test groups per split
+- **Splits:** C(6,2) = 15
+- **Unique paths:** 5 (phi = (2/6) x 15 = 5)
+- **Train fraction:** 67% (4/6 groups per split)
+- **Sequential CPCV:** Parallel disabled for >1M features (pickle bottleneck). One fold at a time.
+- **Embargo/Purge:** max_hold_bars=32 used for purge window between train/test boundaries
+
+---
+
+## Optuna Configuration
+
+- **Warm-started from 1h** (last in cascade: 1w -> 1d -> 4h -> 1h -> 15m)
+- **Phase 1:** 30 trials (2 seeded + 8 random + 20 TPE), 2-fold CPCV, LR=0.15
+- **Row subsample:** 15% (227K -> ~34K rows) -- search only, final model uses ALL rows
+- **Validation gate:** Top 3 re-evaluated with 4-fold CPCV
+- **Final retrain:** Full (6,2) CPCV, 800 rounds, LR=0.03
+- **n_jobs:** Auto (total_cores // 8), or env `OPTUNA_N_JOBS`
+- **Engine:** CPU for search (row subsample makes GPU marginal). GPU for final retrain only.
+
+---
+
+## Environment Variables (15m-specific)
+
+```bash
+export V2_RIGHT_CHUNK=500     # Cross gen chunk size (500 is safe for 1.5TB+)
+export V2_BATCH_MAX=500       # Cap dense intermediate arrays per worker
+export ALLOW_CPU=1            # Only if CUDA 13 (no GPU fallback otherwise)
+## OMP_NUM_THREADS / NUMBA_NUM_THREADS — set dynamically by cloud_run_tf.py per phase
+```
+
+### Why V2_RIGHT_CHUNK=500
+At 227K rows, each right chunk materializes arrays of (227K x chunk_size x 4 bytes). RC=500 peaks at ~500-700GB on 1.5TB+. RC=200 is safer but slower. If RAM < 1.5TB, lower to RC=200.
+
+### min_nonzero=3
+Default in v2_cross_generator.py. Matches min_data_in_leaf logic for rare esoteric signals. Can override via `V2_MIN_CO_OCCURRENCE=3`.
+
+---
+
+## CRITICAL: NNZ int32 Overflow
+
+LightGBM sparse CSR uses int32 for `indptr` and `indices`. Max NNZ = 2^31 - 1 = 2,147,483,647.
+
+15m at 227K rows x 10M+ features has NNZ far exceeding this limit.
+
+### How ml_multi_tf.py handles it (v3.3):
+`_ensure_lgbm_sparse_dtypes()` applied after NPZ load AND after hstack:
+1. `indptr` cast to int64 -- handles cumulative NNZ values > 2^31
+2. `indices` cast to int32 -- column IDs (max ~10M, fits int32)
+3. LightGBM C API accepts int64 indptr since PR #1719 (2018)
+4. If NNZ > int32 max: logs info, forces sequential CPCV, training proceeds normally
+
+### Risk if int64 indptr not applied
+LightGBM trains on corrupted int32-overflowed sparse matrix. Model looks trained but predictions are garbage. There is NO error message -- completely silent.
+
+### Row-partitioned boosting: REJECTED
+Perplexity confirmed: row partitioning kills rare signals by splitting occurrence counts below min_data_in_leaf per chunk. 227K rows / 13 chunks = ~17K rows/chunk. Features firing 15 times globally = ~1.1 per chunk = below min_data_in_leaf=15. LightGBM NEVER splits on rare esoteric signals. **NEVER use row-partitioned boosting.**
+
+---
+
+## Cross Gen Checkpointing
+
+Cross gen at 15m takes 1.5-8 hours and produces a 150-220GB NPZ. If OOM kills the process at cross type 12, types 1-11 are recoverable from per-type checkpoint files.
+
+### How it works:
+- Each completed cross type saves: `_cross_checkpoint_15m_{prefix}.npz` + `_cross_checkpoint_15m_{prefix}_names.json`
+- On restart, existing checkpoints are loaded and only remaining cross types are computed
+- After all types complete, checkpoints are merged into `v2_crosses_BTC_15m.npz` and checkpoint files are cleaned up
+
+### Checkpoint files location:
+```
+/workspace/v3.3/_cross_checkpoint_15m_dx.npz        # Trend crosses
+/workspace/v3.3/_cross_checkpoint_15m_dx_names.json
+/workspace/v3.3/_cross_checkpoint_15m_ax.npz        # Astro crosses
+/workspace/v3.3/_cross_checkpoint_15m_ax_names.json
+... (one pair per cross type)
+```
+
+### If OOM during cross gen:
+1. Check `dmesg | tail -20` for "oom-kill"
+2. Lower V2_RIGHT_CHUNK (500 -> 200 -> 100)
+3. Restart -- checkpoints will resume from where it stopped
+4. Do NOT delete checkpoint files unless doing a full nuclear clean
+
+---
+
+## Required Databases (ALL 16 -- ZERO MISSING)
 
 **From project root (-> /workspace/):**
 ```
-btc_prices.db          # 1.3GB — BTC OHLCV 2010-2026
+btc_prices.db          # 1.3GB -- BTC OHLCV 2010-2026
 tweets.db              # tweet text + gematria
 news_articles.db       # news headlines
 astrology_full.db      # planetary positions
@@ -74,24 +194,24 @@ llm_cache.db           # LLM feature cache
 
 **From v3.3/ (-> /workspace/v3.3/):**
 ```
-multi_asset_prices.db  # 1.3GB — multi-asset data
+multi_asset_prices.db  # 1.3GB -- multi-asset data
 v2_signals.db          # DeFi TVL, BTC dominance, mining stats
 ```
 
 **Also required (non-DB):**
 ```
-kp_history_gfz.txt     # historical Kp index data
-astrology_engine.py     # must be in v3.3/ directory (feature_library.py imports it)
+kp_history_gfz.txt     # historical Kp index data (in /workspace/ or /workspace/v3.3/)
+astrology_engine.py    # must be in v3.3/ directory (feature_library.py imports it)
 ```
 
-### Verify Script (run BEFORE launching — ALL must say OK)
+### Verify Script (run BEFORE launching -- ALL must say OK)
 ```bash
 echo "=== DB Verification ==="
 FAIL=0
-for db in tweets.db news_articles.db astrology_full.db ephemeris_cache.db \
+for db in btc_prices.db tweets.db news_articles.db astrology_full.db ephemeris_cache.db \
   fear_greed.db sports_results.db space_weather.db macro_data.db \
   onchain_data.db funding_rates.db open_interest.db google_trends.db \
-  llm_cache.db btc_prices.db; do
+  llm_cache.db; do
   if [ -f /workspace/$db ] || [ -f /workspace/v3.3/$db ]; then
     echo "OK   $db"
   else
@@ -105,31 +225,39 @@ for db in multi_asset_prices.db v2_signals.db; do
     echo "MISS v3.3/$db"; FAIL=1
   fi
 done
-# Non-DB files
 [ -f /workspace/v3.3/kp_history_gfz.txt ] || [ -f /workspace/kp_history_gfz.txt ] && echo "OK   kp_history_gfz.txt" || { echo "MISS kp_history_gfz.txt"; FAIL=1; }
 [ -f /workspace/v3.3/astrology_engine.py ] && echo "OK   astrology_engine.py" || { echo "MISS astrology_engine.py"; FAIL=1; }
 echo ""
-if [ $FAIL -eq 1 ]; then echo "STOP: Missing files. Upload before launching."; else echo "ALL OK — safe to launch."; fi
+if [ $FAIL -eq 1 ]; then echo "STOP: Missing files. Upload before launching."; else echo "ALL OK -- safe to launch."; fi
 ```
 **If ANY says MISS -> STOP. Upload the missing file first. Missing DB = broken matrix = invalid model.**
 
 ---
 
-## Nuclear Clean (delete ALL old artifacts before fresh run)
+## Nuclear Clean (MANDATORY before first run)
+
+Delete ALL old artifacts. Old NPZs built with min_nonzero=8 produce fewer features. Old cross names JSON truncates column count. DELETE BOTH.
+
 ```bash
-cd /workspace && rm -f *.npz *.json *.pkl *.parquet *.log DONE_* RUNNING_* *.lock 2>/dev/null  # NOTE: no *.txt — would kill kp_history_gfz.txt
-cd /workspace/v3.3 && rm -f v2_crosses_*.npz v2_cross_names_*.json v2_base_*.parquet \
-  features_BTC_*.parquet features_*_all.json model_*.json platt_*.pkl cpcv_oos_*.pkl \
-  feature_importance_*.json shap_analysis_*.json validation_report_*.json meta_model_*.pkl \
-  ml_multi_tf_*.* optuna_configs_all.json lstm_*.pt DONE_* RUNNING_* *.lock 2>/dev/null
+cd /workspace && rm -f *.npz *.json *.pkl *.parquet *.log DONE_* RUNNING_* *.lock 2>/dev/null
+# NOTE: no *.txt -- would kill kp_history_gfz.txt
+cd /workspace/v3.3 && rm -f \
+  v2_crosses_*.npz v2_cross_names_*.json _cross_checkpoint_*.npz _cross_checkpoint_*_names.json \
+  v2_base_*.parquet features_BTC_*.parquet features_*_all.json \
+  model_*.json platt_*.pkl cpcv_oos_*.pkl \
+  feature_importance_*.json shap_analysis_*.json validation_report_*.json \
+  meta_model_*.pkl ml_multi_tf_*.* optuna_configs_all.json \
+  lstm_*.pt lgbm_dataset_*.bin DONE_* RUNNING_* *.lock 2>/dev/null
 echo '{"steps": {}, "version": "3.3"}' > pipeline_manifest.json
 echo 'Nuclear clean done'
 ```
-**Old NPZs built with min_nonzero=8 produce fewer features. Old cross names JSON truncates column count. DELETE BOTH.**
+
+**CRITICAL:** Both `v2_crosses_*.npz` AND `v2_cross_names_*.json` must be deleted together. Also delete checkpoint files (`_cross_checkpoint_*`) to avoid mixing old/new cross types.
 
 ---
 
 ## Verify Parquet Freshness
+
 ```bash
 python3 -c "
 import pandas as pd, os
@@ -139,118 +267,14 @@ if os.path.exists(p):
     print(f'Parquet: {len(df)} rows x {len(df.columns)} cols')
     print(f'Modified: {pd.Timestamp(os.path.getmtime(p), unit=\"s\")}')
 else:
-    print('No parquet found — will be built fresh')
+    print('No parquet found -- will be built fresh')
 "
 ```
 
 ---
 
-## Data Profile
-- **Rows:** ~293,980 (15m bars, 2017-11-01 to 2026). **Was 227,577 — started from 2019 instead of 2017.**
-- **Base features:** ~4,000+ cols after feature_library.py
-- **Cross features:** ~10M+ expected (min_nonzero=3)
-- **No pre-built NPZ** — full cross gen required from scratch
-- **NNZ estimate:** ~29B+ (293,980 rows x 10M cols x ~1% density) — **massively exceeds int32 limit**
-- **int64 indptr is the PRIMARY fix. Row-partitioned boosting is backup for extreme cases only.**
-- **Data range:** Binance BTC/USDT 15m from 2017-11-01 (download_btc.py via Binance global API)
-
----
-
-## CRITICAL: NNZ int32 Overflow Problem
-
-LightGBM's sparse CSR uses int32 for `indptr` and `indices` arrays. Maximum NNZ = 2^31 - 1 = 2,147,483,647.
-
-15m at 293,980 rows x 10M+ features will have NNZ far exceeding this limit.
-
-### How ml_multi_tf.py handles it (v3.3 — FIXED):
-`_ensure_lgbm_sparse_dtypes()` is applied after NPZ load AND after hstack:
-1. `indptr` cast to int64 — handles cumulative NNZ values > 2^31
-2. `indices` cast to int32 — column IDs (max ~10M, always fits int32)
-3. LightGBM C API accepts int64 indptr since PR #1719 (2018)
-4. If NNZ > int32 max: logs info, forces sequential CPCV, training proceeds normally
-5. Dense conversion will correctly skip (dense is 8.5TB, won't fit) → stays sparse
-6. `_predict_chunked()` handles IS predictions on large train sets
-
-### NO row-partitioned boosting (Perplexity-confirmed UNSAFE):
-- Row partitioning kills rare signals (dilutes occurrence counts below min_data_in_leaf)
-- Instead: full matrix, single training pass, int64 indptr for overflow safety
-
----
-
-## NNZ Overflow Handling (RESOLVED via int64 indptr)
-
-### Primary fix: int64 indptr
-`_ensure_lgbm_sparse_dtypes()` casts `indptr` to int64, which handles cumulative NNZ values > 2^31. LightGBM C API accepts int64 indptr since PR #1719 (2018). This is the PRIMARY fix applied to all TFs.
-
-### Row-partitioned boosting: BACKUP ONLY for extreme cases
-Row-partitioned `init_model` continuation is a backup for extreme NNZ cases where int64 indptr alone is insufficient. **WARNING:** Row partitioning dilutes rare signal occurrence counts below min_data_in_leaf, killing esoteric signals. Perplexity confirmed this risk. Use ONLY if int64 indptr fails at runtime.
-
-### Risk if int64 indptr not applied:
-LightGBM trains on corrupted int32-overflowed sparse matrix. Model looks trained but predictions are garbage. There is NO error message — it is completely silent.
-
----
-
-## Dense vs Sparse on 15m
-
-At 293,980 rows x 10M features:
-- **Dense:** 293,980 x 10,000,000 x 4 bytes = **~11 TB** -> IMPOSSIBLE. No machine has this.
-- **Sparse:** Stays as CSR. `is_enable_sparse=True` in LightGBM params (set automatically by ml_multi_tf.py since dense conversion fails).
-- **Consequence:** LightGBM trains on sparse CSR. This is SLOWER than dense (sparse serializes OpenMP histogram building). But it's the only option.
-- **EFB still works on sparse:** LightGBM's Exclusive Feature Bundling handles sparse binary features optimally. max_bin=255 allows maximum EFB compression (binary features always get 2 bins regardless of max_bin).
-
----
-
-## Environment Variables (15m-specific)
-```bash
-export V2_RIGHT_CHUNK=200     # Memory-safe chunking for cross gen (RC=500 OOM'd at 1892G on 2TB machine)
-export V2_BATCH_MAX=500       # Cap dense intermediate arrays in cross gen
-## OMP_NUM_THREADS / NUMBA_NUM_THREADS — set dynamically by cloud_run_tf.py per phase
-```
-
-### Why V2_RIGHT_CHUNK=200:
-RC=500 OOM'd at 1892G on 2TB machine (293,980 rows). RC=200 peaked at 574G (29% usage on 2TB).
-RC=300 estimated ~1100-1300G peak — possible but tight on 2TB, no margin for error. **RC=200 is the safe choice.**
-
-### Why V2_BATCH_MAX=500:
-Caps the number of feature pairs processed per batch in the parallel cross multiply. Each worker holds arrays of (N x BATCH x 4 bytes). At 293,980 rows x 500 pairs x 4 bytes = ~560MB per worker.
-
-### Cross gen thread cap:
-v2_cross_generator.py caps at 128 threads (line 654: `n_threads = min(_ram_limited, n_cpus, 128)`). RAM-limited: each worker's memory footprint is estimated and total workers capped to fit available RAM.
-
-### min_nonzero=3:
-Default in v2_cross_generator.py line 179: `MIN_CO_OCCURRENCE = 3`. This is correct — matches min_data_in_leaf=3. Preserves rare esoteric crosses. Can be overridden via env: `V2_MIN_CO_OCCURRENCE=3`.
-
-### min_data_in_leaf=15:
-Per `TF_MIN_DATA_IN_LEAF` in config.py -- higher than other TFs due to more rows. 15m has ~294K rows vs 5,727 for 1d, so rare signals still fire 100+ times even with leaf=15.
-
-### LightGBM Config (from config.py)
-
-| Parameter | Value | Source |
-|-----------|-------|--------|
-| min_data_in_leaf | 15 | TF_MIN_DATA_IN_LEAF['15m'] |
-| num_leaves | 127 | TF_NUM_LEAVES['15m'] |
-| max_bin | 255 | V3_LGBM_PARAMS (binary crosses always get 2 bins regardless) |
-| CPCV folds | (4,1) = 4 folds | TF_CPCV_GROUPS['15m'] |
-| save_binary | Not feasible | ~11TB dense matrix, stays sparse |
-
----
-
-## Pipeline Steps with Estimated Times
-
-| Step | What | Output | Est. Time | Notes |
-|------|------|--------|-----------|-------|
-| 1 | Feature build | features_BTC_15m.parquet | ~2-3 min | CPU pandas (no cuDF on cloud). ~4000 cols. |
-| 2 | Cross gen | v2_crosses_BTC_15m.npz | **3-8 hrs** | 294K rows, ~10M+ crosses. Bottleneck step. |
-| 3 | LightGBM CPCV | model_15m.json | **10 hrs** | 4 folds × 150 min. Sparse CSR + int64 indptr. Sequential CPCV. |
-| 4 | Optuna | optuna_configs_15m.json | **4-8 hrs** | 200 TPE trials, each on sparse CSR. |
-| 5 | Meta-labeling | meta_model_15m.pkl | ~30 min | Logistic regression on CPCV OOS predictions. |
-| 6 | LSTM | lstm_15m.pt + platt_15m.pkl | **Run locally** | 13900K + RTX 3090. Cloud H200 has weak CPU for DataLoader. |
-| 7 | PBO/Audit | validation_report_15m.json | ~10 min | PBO on CPCV OOS equity curves. |
-| **Total** | | | **13-19 hrs** | No Optuna. 4 folds (4,1). Production model identical regardless of fold count. See FOLD_STRATEGY.md. |
-
----
-
 ## Install Dependencies
+
 ```bash
 pip install -q lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy \
   pyarrow optuna hmmlearn numba tqdm pyyaml alembic cmaes colorlog sqlalchemy \
@@ -260,16 +284,112 @@ python -c "import pandas, numpy, scipy, sklearn, lightgbm, ephem, astropy, pyarr
 
 ---
 
+## Setup Script (Memory Optimizations)
+
+Run `setup.sh` before launching the pipeline. It configures:
+1. tcmalloc (google-perftools) -- 5-15% speedup from per-thread malloc caches
+2. Transparent Huge Pages -- 5-20% from reduced dTLB misses
+3. vm.swappiness=1 -- prevents kernel stealing hot pages
+4. NUMA topology detection -- binding recommendation for multi-socket machines
+5. vm.overcommit_memory=1 -- needed for large sparse CSR allocations
+
+```bash
+cd /workspace/v3.3 && bash setup.sh
+```
+
+Expected output: "ALL IMPORTS OK" at the end. If tcmalloc/numactl fail to install (no root in container), pip packages still install correctly.
+
+---
+
+## Pipeline Steps with Estimated Times
+
+| Step | What | Output | Est. Time (GPU) | Est. Time (CPU) |
+|------|------|--------|-----------------|-----------------|
+| 1 | Feature build | features_BTC_15m.parquet | ~2-5 min | ~5-10 min |
+| 2 | Cross gen (GPU + memmap, checkpointed) | v2_crosses_BTC_15m.npz | ~1.5-3 hrs | ~6-8 hrs |
+| 3 | Optuna search (15% subsample, n_jobs=4) | optuna_configs_all.json | ~2-4 hrs | ~4-8 hrs |
+| 4 | Final CPCV (GPU histogram fork) | model_15m.json | ~3-5 hrs | ~10-15 hrs |
+| 5 | Meta-labeling + PBO + SHAP | meta_model_15m.pkl + reports | ~30 min | ~30 min |
+| 6 | LSTM | lstm_15m.pt + platt_15m.pkl | **Run locally** | 13900K + 3090 |
+| **TOTAL (GPU, with Optuna)** | | | **~8-13 hrs** | |
+| **TOTAL (CPU, with Optuna)** | | | | **~22-32 hrs** |
+| **Without Optuna (GPU)** | | | **~5-9 hrs** | |
+
+---
+
 ## Launch Command
+
 ```bash
 cd /workspace/v3.3 && \
   export SAVAGE22_DB_DIR=/workspace && \
   export V30_DATA_DIR=/workspace/v3.3 && \
   export PYTHONUNBUFFERED=1 && \
-  export V2_RIGHT_CHUNK=200 && \
+  export V2_RIGHT_CHUNK=500 && \
   export V2_BATCH_MAX=500 && \
   nohup python -u cloud_run_tf.py --symbol BTC --tf 15m > /workspace/15m_log.txt 2>&1 &
 ```
+
+**All env vars explained:**
+- `SAVAGE22_DB_DIR=/workspace` -- where V1 DBs live (tweets.db, btc_prices.db, etc.)
+- `V30_DATA_DIR=/workspace/v3.3` -- where to read/write parquets, NPZs, models. MUST be v3.3, NOT v3.0!
+- `PYTHONUNBUFFERED=1` -- real-time log output (no buffering)
+- `V2_RIGHT_CHUNK=500` -- cross gen chunk size (lower to 200 if RAM < 1.5TB)
+- `V2_BATCH_MAX=500` -- cap dense intermediate arrays per worker
+
+---
+
+## Verification After Launch (first 30 lines)
+
+```bash
+sleep 30 && head -30 /workspace/15m_log.txt
+```
+
+Must see:
+- "All 16 databases present" or zero "MISS" lines
+- Row count: ~227,000
+- Feature count: ~4,000+ base cols
+- Correct paths: DB_DIR=/workspace, V30_DATA_DIR=/workspace/v3.3
+- No "WARNING: DB missing" for any esoteric DB
+
+---
+
+## Verify Cross Features After Cross Gen
+
+After cross gen completes and training starts:
+```bash
+grep -E "Sparse crosses loaded|cross.*cols|feature_cols.*len" /workspace/15m_log.txt
+```
+
+**Expected:** ~10M+ cross feature cols. If significantly less, old cross_names JSON may not have been deleted.
+
+```bash
+python3 -c "
+import scipy.sparse as sp, json, os
+X = sp.load_npz('/workspace/v3.3/v2_crosses_BTC_15m.npz')
+print(f'NPZ shape: {X.shape}')
+print(f'NNZ: {X.nnz:,}')
+print(f'NNZ > int32 max: {X.nnz > 2**31 - 1}')
+jp = '/workspace/v3.3/v2_cross_names_BTC_15m.json'
+if os.path.exists(jp):
+    names = json.load(open(jp))
+    print(f'JSON names: {len(names):,}')
+    if len(names) != X.shape[1]:
+        print(f'MISMATCH! NPZ has {X.shape[1]} cols but JSON has {len(names)} names. DELETE JSON and restart.')
+    else:
+        print('MATCH OK')
+"
+```
+
+---
+
+## Verify int64 indptr Applied
+
+After training starts, check the log:
+```bash
+grep -i "int64\|indptr\|ensure.*sparse.*dtype" /workspace/15m_log.txt
+```
+
+Must see confirmation that indptr was cast to int64. If missing, NNZ overflow causes SILENT corruption.
 
 ---
 
@@ -279,14 +399,15 @@ Cross gen is the most RAM-intensive step. Monitor continuously.
 
 ### Watch command (run in separate SSH session):
 ```bash
-watch -n 10 'echo "=== RAM ===" && free -g && echo "" && echo "=== Process ===" && ps aux | grep cloud_run_tf | grep -v grep && echo "" && echo "=== Cgroup ===" && cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null | awk "{printf \"Cgroup used: %.1f GB\n\", \$1/1073741824}"'
+watch -n 10 'echo "=== RAM ===" && free -g && echo "" && echo "=== Process ===" && ps aux | grep cloud_run_tf | grep -v grep && echo "" && echo "=== Cgroup ===" && cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null | awk "{printf \"Cgroup used: %.1f GB\n\", \$1/1073741824}" && echo "" && echo "=== Checkpoints ===" && ls -la /workspace/v3.3/_cross_checkpoint_15m_*.npz 2>/dev/null | wc -l && echo "completed cross types"'
 ```
 
 ### What to watch for:
 - RAM usage climbing past 80% of cgroup limit -> approaching OOM kill
-- If OOM killed, process just disappears — check `dmesg | tail -20` for "oom-kill"
+- If OOM killed, process disappears silently -- check `dmesg | tail -20` for "oom-kill"
 - Cross gen logs batch progress: `Parallel cross: N pairs, M batches, T threads`
-- If single-threaded (load avg ~1.0 on 256-core machine), something is wrong
+- Checkpoint count increasing = cross types completing successfully
+- If single-threaded (load avg ~1.0 on 128+ core machine), something is wrong
 
 ---
 
@@ -299,65 +420,188 @@ vast.ai machines die without warning. Download after EVERY critical step.
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/features_BTC_15m.parquet ./v3.3/
 ```
 
-### After cross gen (Step 2) — THIS IS THE BIG ONE:
+### After cross gen (Step 2) -- THIS IS THE BIG ONE:
 ```bash
+# NPZ is 150-220GB. Start download IMMEDIATELY when cross gen finishes.
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/v2_crosses_BTC_15m.npz ./v3.3/
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/v2_cross_names_BTC_15m.json ./v3.3/
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/v2_base_BTC_15m.parquet ./v3.3/
 ```
-**The NPZ can be 10-50GB. Start the download as soon as cross gen finishes. If the machine dies during training, you only lose training — cross gen is preserved.**
+**WARNING:** 150-220GB transfer. At 1 Gbps = ~30 min. At 100 Mbps = ~5 hrs. If machine dies during training, you only lose training -- cross gen is preserved locally.
 
-### After training (Step 3):
+**Alternative: download checkpoints incrementally** during cross gen:
+```bash
+# Check which checkpoints exist
+ssh -i ~/.ssh/vast_key -p {PORT} root@{HOST} "ls -lh /workspace/v3.3/_cross_checkpoint_15m_*.npz 2>/dev/null"
+```
+
+### After Optuna (Step 3):
+```bash
+scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/optuna_configs_all.json ./v3.3/
+```
+
+### After training (Step 4):
 ```bash
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/model_15m.json ./v3.3/
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/cpcv_oos_15m.pkl ./v3.3/
 ```
 
-### After Optuna (Step 4):
-```bash
-scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/optuna_configs_all.json ./v3.3/
-```
-
-### After meta-labeling (Step 5):
+### After meta-labeling + PBO (Step 5):
 ```bash
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/meta_model_15m.pkl ./v3.3/
-```
-
-### After PBO (Step 7):
-```bash
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/validation_report_15m.json ./v3.3/
+scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/feature_importance_*.json ./v3.3/
 ```
 
-### Download everything at once (if machine is still alive at the end):
+### Download everything at once (if machine is still alive):
 ```bash
-ssh -i ~/.ssh/vast_key -p {PORT} root@{HOST} "cd /workspace/v3.3 && tar czf /workspace/15m_results.tar.gz model_15m.json optuna_configs_all.json meta_model_15m.pkl cpcv_oos_15m.pkl validation_report_15m.json v2_crosses_BTC_15m.npz v2_cross_names_BTC_15m.json features_BTC_15m.parquet feature_importance_*.json 2>/dev/null"
+ssh -i ~/.ssh/vast_key -p {PORT} root@{HOST} "cd /workspace/v3.3 && tar czf /workspace/15m_results.tar.gz \
+  model_15m.json optuna_configs_all.json meta_model_15m.pkl cpcv_oos_15m.pkl \
+  validation_report_15m.json feature_importance_*.json \
+  v2_cross_names_BTC_15m.json features_BTC_15m.parquet 2>/dev/null"
 scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/15m_results.tar.gz ./v3.3/
+# NOTE: NPZ not included in tar (150-220GB). Download separately.
+scp -i ~/.ssh/vast_key -P {PORT} root@{HOST}:/workspace/v3.3/v2_crosses_BTC_15m.npz ./v3.3/
 ```
 
 ---
 
-## v3.2 Baseline
-**NONE.** 15m has never completed training in any previous version. The Texas machine session ended before 15m was attempted.
-
-Expected v3.3 targets (based on other TF patterns):
-- Accuracy: 55-58% (more noise at 15m, more rows help)
-- PBO: DEPLOY
-- This is the first-ever 15m model. Any validated result is a milestone.
-
----
-
-## Verification After Launch (first 30 lines)
+## Monitor Commands
 
 ```bash
-sleep 30 && head -30 /workspace/15m_log.txt
+# Live log tail
+tail -f /workspace/15m_log.txt
+
+# Check for errors
+grep -iE "error|traceback|fail|critical|exception" /workspace/15m_log.txt
+
+# Check pipeline progress (which step is running)
+grep -E "Step [0-9]|DONE|RUNNING|COMPLETE|Fold [0-9]" /workspace/15m_log.txt
+
+# Check system resources
+uptime && free -g && df -h /workspace
+
+# Check for OOM kills
+dmesg | tail -20 | grep -i oom
+
+# Check cross gen progress (checkpoint count)
+ls -la /workspace/v3.3/_cross_checkpoint_15m_*.npz 2>/dev/null
+
+# Check training fold progress
+grep -E "Fold [0-9]|fold.*complete|accuracy|int64" /workspace/15m_log.txt
+
+# Verify multi-threaded execution (load avg should be > cores x 0.3)
+uptime
+
+# Check process RSS
+ps aux | grep cloud_run_tf | grep -v grep | awk '{print $6/1024/1024 " GB RSS"}'
 ```
 
-Must see:
-- "All 16 databases present" or zero "MISS" lines
-- Row count: ~293,980
-- Feature count: ~4,000+ base cols
-- Correct paths: DB_DIR=/workspace, V30_DATA_DIR=/workspace/v3.3
-- No "WARNING: DB missing" for any esoteric DB
+---
+
+## Verify Multi-Threaded Training
+
+After CPCV training starts, check load average:
+```bash
+uptime
+```
+
+**Expected:** load avg > (total_cores x 0.3). For a 128-core machine, load avg > 38.
+If load avg is ~1.0, training is SINGLE-THREADED. Check:
+
+1. **is_enable_sparse mismatch:** 15m stays sparse (dense is 8.5TB). `is_enable_sparse=True` is correct. Sparse histogram builder works multi-core with EFB disabled.
+2. **OMP_NUM_THREADS not set:** LightGBM defaults to 1 thread without this.
+3. **enable_bundle still True:** If EFB is running on 10M+ features, it will appear hung. Verify `enable_bundle=False` in log.
+
+---
+
+## Optuna on Same Machine (MANDATORY for 15m)
+
+### Why Same Machine
+- NPZ is 150-220GB -- impractical to transfer
+- Optuna uses 15% row subsample (227K -> ~34K rows) for search -- much faster than full training
+- GPU for final retrain only (after search selects best config)
+- Warm-started from 1h: fewer trials needed than cold start
+
+### Required Files for Optuna
+All already on the machine after cross gen + training:
+```
+features_BTC_15m.parquet         # base features
+v2_crosses_BTC_15m.npz           # cross features (150-220GB -- already on disk)
+v2_cross_names_BTC_15m.json      # cross feature column names
+optuna_configs_1h.json           # warm-start cascade source (upload from 1h training)
+model_15m.json                   # trained model (warm-start seed, if available)
+All 16 .db files                 # already uploaded
+```
+
+### Upload 1h Optuna Results for Warm-Start
+```bash
+scp -i ~/.ssh/vast_key -P {PORT} ./v3.3/optuna_configs_1h.json root@{HOST}:/workspace/v3.3/
+```
+
+---
+
+## Deployment Steps (Step-by-Step)
+
+### Step 1: Pick Machine from vast.ai
+User picks personally. Filter criteria:
+```bash
+vastai search offers 'gpu_ram >= 24 cpu_cores_effective >= 128 cpu_ram >= 1500 reliability > 0.95 cuda_vers >= 12.0 cuda_vers < 13.0' -o 'dph'
+```
+Prefer: CUDA 12.x, 1.5TB+ RAM, 128+ cores, GPU (A100/H100/4090), high CPU Score (cores x GHz).
+
+### Step 2: SSH and Run Setup
+```bash
+SSH="ssh -i ~/.ssh/vast_key -o StrictHostKeyChecking=no"
+$SSH -p {PORT} root@{HOST} "mkdir -p /workspace/v3.3"
+```
+
+### Step 3: Upload Code + DBs
+```bash
+# Upload code tar
+scp -i ~/.ssh/vast_key -o StrictHostKeyChecking=no -P {PORT} /tmp/v33_code.tar.gz root@{HOST}:/workspace/
+$SSH -p {PORT} root@{HOST} "cd /workspace && tar xzf v33_code.tar.gz -C v3.3/"
+
+# Upload DB tar
+scp -i ~/.ssh/vast_key -o StrictHostKeyChecking=no -P {PORT} /tmp/v33_dbs.tar.gz root@{HOST}:/workspace/
+$SSH -p {PORT} root@{HOST} "cd /workspace && tar xzf v33_dbs.tar.gz && ln -sf /workspace/*.db /workspace/v3.3/"
+
+# Upload large DBs separately (btc_prices.db, multi_asset_prices.db)
+scp -i ~/.ssh/vast_key -P {PORT} "C:/Users/C/Documents/Savage22 Server/v3.3/btc_prices.db" root@{HOST}:/workspace/v3.3/
+scp -i ~/.ssh/vast_key -P {PORT} "C:/Users/C/Documents/Savage22 Server/v3.3/multi_asset_prices.db" root@{HOST}:/workspace/v3.3/
+$SSH -p {PORT} root@{HOST} "ln -sf /workspace/v3.3/btc_prices.db /workspace/ && ln -sf /workspace/v3.3/multi_asset_prices.db /workspace/"
+
+# Upload 1h Optuna config for warm-start cascade
+scp -i ~/.ssh/vast_key -P {PORT} "C:/Users/C/Documents/Savage22 Server/v3.3/optuna_configs_1h.json" root@{HOST}:/workspace/v3.3/
+```
+
+### Step 4: Run Setup Script
+```bash
+$SSH -p {PORT} root@{HOST} "cd /workspace/v3.3 && bash setup.sh"
+```
+
+### Step 5: Verify DBs
+Run the verify script from the "Required Databases" section above.
+
+### Step 6: Nuclear Clean
+Run the nuclear clean script above.
+
+### Step 7: Verify Parquet Freshness
+Run the parquet check above.
+
+### Step 8: Launch Pipeline
+Run the launch command above.
+
+### Step 9: Verify First 30 Lines
+```bash
+sleep 30 && $SSH -p {PORT} root@{HOST} "head -30 /workspace/15m_log.txt"
+```
+
+### Step 10: Monitor
+Run monitor commands in a separate SSH session. Check every 30 seconds during cross gen.
+
+### Step 11: Download After Each Step
+Follow the download commands above after each critical step completes.
 
 ---
 
@@ -366,79 +610,47 @@ Must see:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "WARNING: DB missing" in log | Missing database file | Upload the missing .db, re-run verify script |
-| OOM during cross gen | V2_RIGHT_CHUNK too large | Set V2_RIGHT_CHUNK=200 (lower to 100 if still OOMing on <2TB) |
+| OOM during cross gen | V2_RIGHT_CHUNK too large | Lower to 200 (or 100 if < 1.5TB RAM). Checkpoints preserved. |
 | "ModuleNotFoundError: astrology_engine" | astrology_engine.py not in v3.3/ | Copy from project root |
 | Feature count mismatch | Stale parquet from old feature_library.py | Delete features_BTC_15m.parquet, restart |
 | V30_DATA_DIR shows v3.0 path | Env var not set | Verify `export V30_DATA_DIR=/workspace/v3.3` |
 | NNZ overflow (silent corruption) | int32 indptr on >2B NNZ | Verify `_ensure_lgbm_sparse_dtypes()` applied. Check log for int64 indptr. |
-| Cross gen very slow (>12 hrs) | 294K rows x 10M+ crosses | Expected. Single-threaded sparse matmul bottleneck. Wait. |
-| LSTM crashes with NaN | Features have NaN not imputed for LSTM | Run LSTM locally (13900K + RTX 3090). ml_multi_tf.py imputes NaN->0 for LSTM. |
-| Process disappears silently | OOM kill | Check `dmesg tail -20 grep -i oom`. Lower RIGHT_CHUNK or rent bigger machine. |
+| Cross gen very slow (>12 hrs) | 227K rows x 10M+ crosses | Expected on CPU. GPU+memmap should be 1.5-3 hrs. Check GPU utilization. |
+| Process disappears silently | OOM kill | Check `dmesg | tail -20 | grep -i oom`. Lower RIGHT_CHUNK. Checkpoints safe. |
+| LSTM crashes with NaN | Features have NaN not imputed | Run LSTM locally (13900K + 3090). ml_multi_tf.py imputes NaN->0 for LSTM. |
+| enable_bundle hanging | EFB scan on 10M+ features | Verify enable_bundle=False in config/log. |
+| Single-threaded training (load ~1.0) | OMP_NUM_THREADS not set or enable_bundle=True | Check log for thread count. Verify enable_bundle=False. |
+| Cross names JSON truncated | Old JSON left over from previous run | Delete BOTH npz AND json, delete checkpoints, restart. |
+| Optuna missing warm-start | optuna_configs_1h.json not uploaded | Upload from 1h training results. |
 
 ---
 
-## BLOCKERS — ALL RESOLVED
+## v3.2 Baseline
 
-### BLOCKER 1: Row-Partitioned Incremental Boosting — **REJECTED**
-- Perplexity confirmed: row-partitioned `init_model` continuation KILLS rare signals
-- 294K rows / 13 chunks = ~22K rows/chunk → features firing 15 times globally → ~1.1 per chunk
-- Below min_data_in_leaf=15 → LightGBM NEVER splits on rare esoteric signals
-- **NEVER use row-partitioned boosting. It violates the matrix thesis.**
+**NONE.** 15m has never completed training in any previous version. This is the first-ever 15m model.
 
-### BLOCKER 2: NNZ Overflow Detection — **RESOLVED**
-- `_ensure_lgbm_sparse_dtypes()` enforces: indptr=int64 (handles NNZ > 2^31), indices=int32 (column IDs)
-- LightGBM PR #1719 (2018) fixed int64 indptr support in C API
-- If NNZ > int32 max: logs warning, forces sequential CPCV, training proceeds normally
-- Crash-loud assertion if column indices exceed int32 (would mean >2B features)
-
-### BLOCKER 3: scipy int64 — **RESOLVED**
-- `_ensure_lgbm_sparse_dtypes()` applied after NPZ load AND after hstack on ALL TFs
-- indptr always int64 (row pointers, values can exceed int32)
-- indices always int32 (column IDs, values < 10M, fits int32)
-- No conditional logic, one code path for all TFs
+Expected v3.3 targets (based on other TF patterns):
+- Accuracy: 55-58% (more noise at 15m, but 227K rows help generalization)
+- PBO: DEPLOY
+- Any validated result is a milestone.
 
 ---
 
-## OPTUNA DEPLOYMENT
+## LAUNCH CHECKLIST
 
-### Upload Size for Optuna
-- **Total upload: ~150-220 GB** (parquet + NPZ + cross_names JSON + all DBs)
-- **MUST run on same machine as training** — impractical to transfer 150-220 GB
-- NPZ alone is **142-213 GB** (293,980 rows x 10M+ features x ~1% density)
-- Warm-started from 1h: 50+30 trials (vs 100+50 cold)
-- **Pick a cost-effective machine that runs BOTH training + Optuna**
-
-### Optuna Timing
-- Optuna takes ~2-3x final training time (target after optimizations)
-- 15m CPCV = ~10 hrs CPU / ~3 hrs GPU, so Optuna = ~25 hrs CPU / ~7.5 hrs GPU
-- save_binary bridge eliminates redundant EFB construction (Dataset parsed once, reused across all trials)
-- This is the LAST TF in the warm-start cascade (1w -> 1d -> 4h -> 1h -> 15m)
-
-### If Running Optuna on a Separate Machine (DO NOT DO THIS)
-Would need to upload:
-```
-features_BTC_15m.parquet         # base feature parquet
-v2_crosses_BTC_15m.npz           # cross feature sparse matrix (142-213 GB!!!)
-v2_cross_names_BTC_15m.json      # cross feature column names
-lgbm_dataset_15m.bin             # save_binary output (if available — skips EFB rebuild)
-model_15m.json                   # trained model (warm-start seed)
-optuna_configs_1h.json           # 1h Optuna results (warm-start cascade source)
-All 16 .db files + kp_history_gfz.txt + astrology_engine.py
-v33_code.tar.gz                  # all v3.3/*.py code
-```
-Total: **~150-220 GB.** At 1 Gbps = ~30 min transfer. At 100 Mbps = ~5 hrs.
-**This is impractical. ALWAYS run Optuna on the same machine as training for 15m.**
-
----
-
-## LAUNCH CHECKLIST:
-1. Machine with 2TB+ cgroup rented (user picks — high CPU score, <$2/hr)
-2. All 16 DBs verified present
-3. Nuclear clean run
-4. Cross gen completes (~3-8 hrs) and NPZ is downloaded as backup
-5. First CPCV fold validates int64 indptr works (crash-loud if not)
+1. [ ] Machine with 1.5TB+ cgroup RAM rented (user picked, CUDA 12.x, GPU present)
+2. [ ] Setup script run (tcmalloc, THP, deps installed)
+3. [ ] All 16 DBs verified present (verify script shows zero MISS)
+4. [ ] Nuclear clean run (all old artifacts deleted)
+5. [ ] Parquet freshness verified (or no parquet = will build fresh)
+6. [ ] optuna_configs_1h.json uploaded (warm-start cascade)
+7. [ ] Environment variables set (V2_RIGHT_CHUNK=500, V2_BATCH_MAX=500)
+8. [ ] Pipeline launched with PYTHONUNBUFFERED=1
+9. [ ] First 30 lines verified (row count ~227K, all DBs present, correct paths)
+10. [ ] Memory monitoring active in separate SSH session
+11. [ ] Download plan ready for each step (cross gen NPZ is priority)
 
 ---
 
 ## STATUS
-**READY** — (4,1)=4 folds, no Optuna. Est. 13-19 hrs, ~$23-33. Single machine.
+**READY** -- (6,2)=15 splits, GPU histogram fork, Optuna warm-started from 1h. Single machine. User picks from vast.ai.

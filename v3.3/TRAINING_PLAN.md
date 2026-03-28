@@ -9,14 +9,14 @@ This is NOT a conventional trading bot. The edge is 2.9M+ sparse binary cross fe
 - **Cross features:** min_nonzero=3 (lowered from 8 to preserve rare esoteric signals)
 - **Deployment:** pip + SCP on vast.ai. No Docker.
 - **All 5 TFs in parallel** on separate machines, each with its own terminal session.
-- **CPCV: (4,1)=4 folds for ALL TFs** — production model identical regardless of fold count (trains on ALL data). See FOLD_STRATEGY.md.
-- **No Optuna for initial training** — fixed params, evaluate first, tune later if needed.
+- **CPCV per TF:** 1w/1d=(5,2)=10 splits, 4 PBO paths, 60% train. 4h/1h/15m=(6,2)=15 splits, 5 PBO paths, 67% train.
+- **Optuna:** Phase 1 + Validation Gate per TF. Cold trials: 1w=20, 1d/4h/1h=25, 15m=30. Warm trials: 15 (all downstream TFs).
 
 ## PER-TIMEFRAME TRAINING DOCS (updated 2026-03-28 — GPU fork + Optuna optimizations)
 - **TRAINING_1W.md** — LOCAL (13900K+3090). 64GB+ RAM. ~2 hrs w/Optuna, ~45 min without. $0.
 - **TRAINING_1D.md** — LOCAL or cheap cloud (128c, 256GB+). CPU faster than GPU. ~7 hrs w/Optuna ($12), ~2.5 hrs without ($4).
 - **TRAINING_4H.md** — Cloud 512GB+ RAM. GPU STARTS to help. ~5 hrs GPU ($13), ~13 hrs CPU ($22).
-- **TRAINING_1H.md** — Cloud 2TB+ RAM. GPU REQUIRED. ~10 hrs GPU ($35), ~30 hrs CPU ($102).
+- **TRAINING_1H.md** — Cloud 768GB-1TB+ RAM. GPU REQUIRED (CUDA 12.x). ~7 hrs GPU ($25), ~17 hrs CPU ($65). Same machine for Optuna (54GB upload impractical).
 - **TRAINING_15M.md** — Cloud 2TB+ RAM. GPU REQUIRED. Memmap for cross gen. ~15 hrs GPU ($53), ~44 hrs CPU ($150). User picks machine.
 
 ## COMPLETE DATABASE LIST (ALL REQUIRED — ZERO MISSING)
@@ -86,7 +86,7 @@ tar czf v33_dbs.tar.gz v3.3/*.db
 ALL esoteric DBs required: tweets, astrology, ephemeris, sports, space_weather, macro, onchain, funding, fear_greed, google_trends, news, open_interest, multi_asset_prices. Missing ANY = broken matrix = invalid model.
 
 ### min_nonzero=3 (not 8)
-Perplexity confirmed: 3 matches min_data_in_leaf=3. LightGBM's min_gain_to_split=2.0 guards against noise. Rare esoteric signals ARE the edge. Expected feature counts with min_nonzero=3:
+Perplexity confirmed: min_nonzero=3 is safe with min_data_in_leaf=5 (1w/1d) since min_gain_to_split=2.0 guards against noise. Rare esoteric signals ARE the edge. Expected feature counts with min_nonzero=3:
 - 1w: ~2.2M (was 1.1M at min_nonzero=8)
 - 1d: ~5-6M
 - 4h: ~3-4M
