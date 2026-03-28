@@ -495,7 +495,7 @@ Three single-threaded bottlenecks discovered on 512-core machine (only 1 core us
 - [x] Pip + SCP deployment (lightweight base image + pip install + SCP)
 
 ### Training (1W DONE, OPTIMIZATIONS PENDING)
-- [x] 1w — DONE. 71.9% accuracy, 2.2M features, 113MB model
+- [x] 1w — DONE. 77.64% accuracy (GPU=CPU verified), 2.2M features, 109MB model
 - [x] 1d cross gen — DONE. 6M features, artifacts downloaded
 - [ ] Implement OPTIMIZATION_PLAN.md before remaining training
 - [ ] Train 1d, 4h, 1h, 15m

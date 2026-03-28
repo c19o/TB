@@ -109,7 +109,7 @@ _build/LightGBM/
 - `v3.3/v2_crosses_BTC_1w.npz` — 818 rows × 2,195,129 features, 48M NNZ (FRESH, min_nonzero=3)
 - `v3.3/v2_cross_names_BTC_1w.json` — 2,195,129 feature names
 - `v3.3/features_BTC_1w.parquet` — 818 rows × 3,331 base features
-- All 16 DBs present locally
+- All 16+ DBs present locally
 
 ### Benchmark Results (measured on RTX 3090)
 | Data | CPU (scipy) | GPU (cuSPARSE) | Speedup |
@@ -152,8 +152,8 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 5. [DONE] Extended offset table (used vs total features) — bin 1 vs bin 0 resolved
 6. [DONE] Gradient ordering comments (raw, not ordered) — all comments corrected throughout .cu and .h
 7. [DONE] Atomic kernel multiclass stride fix (THE Bug 4 root cause) — `gradients[row * num_classes]` → `gradients[row]` (GBDT pre-slices per class)
-8. [NEXT] Integrate GPU path into ml_multi_tf.py for CPCV training
-9. [NEXT] Integrate into run_optuna_local.py for GPU Optuna
+8. [DONE] Integrate GPU path into ml_multi_tf.py for CPCV training
+9. [DONE] Integrate into run_optuna_local.py for GPU Optuna
 10. [NEXT] Deploy to cloud, verify on 1d/4h/1h/15m
 
 ## KEY FILES

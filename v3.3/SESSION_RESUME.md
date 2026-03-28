@@ -48,13 +48,13 @@
 | Asset | Status | Notes |
 |-------|--------|-------|
 | **1w NPZ** | COMPLETE | 2.2M features, parquet, cross names |
-| **1w model** | COMPLETE | model_1w.json (113MB), CPCV backup |
+| **1w model** | COMPLETE | model_1w.json (109MB), CPCV backup |
 | **1d base parquet** | COMPLETE | features_BTC_1d.parquet (10.7MB, 5,733×3,796) — ready for cloud upload |
 | **4h base parquet** | COMPLETE | features_BTC_4h.parquet (13.5MB, 8,794×3,904) — ready for cloud upload |
 | **1d cross gen** | DONE (cloud) | Inference artifacts exist: 4.69M cross names, base_cols, ctx_names, thresholds, cross_pairs.npz. Cross gen OOM'd locally but completed on cloud. |
 | **4h cross gen** | NOT STARTED | Must run on cloud (512GB+ RAM) |
 | **1h/15m** | NOT BUILT | Need feature build + cross gen on cloud |
-| **16 DBs** | IN PROJECT ROOT | ~3.3GB total, in project root (NOT v3.3/). 0 DBs in v3.3/ — must symlink or copy for cloud deploy |
+| **16+ DBs** | IN PROJECT ROOT | ~3.3GB total, in project root (NOT v3.3/). 0 DBs in v3.3/ — must symlink or copy for cloud deploy |
 
 ### Config & Code Changes (ALL APPLIED)
 - max_bin=255, min_data_in_bin=1, row subsample=1.0
@@ -72,7 +72,7 @@ No active cloud machines.
 
 ### What to Upload to Cloud
 1. **v33_cloud_code.tar.gz** — all `.py`, `.sh`, `.md`, config `.json` files from v3.3/
-2. **All 16 DBs** (~3.3GB total)
+2. **All 16+ DBs** (~3.3GB total)
 3. **features_BTC_1d.parquet** (10.7MB) — skip base feature rebuild on cloud
 4. **features_BTC_4h.parquet** (13.5MB) — skip base feature rebuild on cloud
 5. **astrology_engine.py** from project root (imported by feature_library.py)
@@ -209,7 +209,7 @@ Previous CPU estimates (for reference):
 ## ARTIFACTS IN v3.3/ DIRECTORY
 
 ### Models & Training Results
-- model_1w.json (113MB, 2.2M features, CPCV 77.64%, needs Optuna)
+- model_1w.json (109MB, 2.2M features, CPCV 77.64%, needs Optuna)
 - model_1w_cpcv_backup.json
 
 ### Pre-Built Base Feature Parquets (for cloud upload)
