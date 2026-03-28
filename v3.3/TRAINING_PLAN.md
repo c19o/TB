@@ -12,12 +12,12 @@ This is NOT a conventional trading bot. The edge is 2.9M+ sparse binary cross fe
 - **CPCV: (4,1)=4 folds for ALL TFs** — production model identical regardless of fold count (trains on ALL data). See FOLD_STRATEGY.md.
 - **No Optuna for initial training** — fixed params, evaluate first, tune later if needed.
 
-## PER-TIMEFRAME TRAINING DOCS
-- **TRAINING_1W.md** — 64GB+ RAM, ~30 min
-- **TRAINING_1D.md** — 256GB+ RAM, ~1.5 hrs, NPZ regen needed
-- **TRAINING_4H.md** — 256GB+ RAM, ~2 hrs, full cross gen
-- **TRAINING_1H.md** — 768GB+ RAM, ~5 hrs, NPZ regen, NO SUBSAMPLING
-- **TRAINING_15M.md** — 1.5TB+ cgroup, ~10-14 hrs, row-partitioned boosting
+## PER-TIMEFRAME TRAINING DOCS (updated 2026-03-28 — GPU fork + Optuna optimizations)
+- **TRAINING_1W.md** — LOCAL (13900K+3090). 64GB+ RAM. ~2 hrs w/Optuna, ~45 min without. $0.
+- **TRAINING_1D.md** — LOCAL or cheap cloud (128c, 256GB+). CPU faster than GPU. ~7 hrs w/Optuna ($12), ~2.5 hrs without ($4).
+- **TRAINING_4H.md** — Cloud 512GB+ RAM. GPU STARTS to help. ~5 hrs GPU ($13), ~13 hrs CPU ($22).
+- **TRAINING_1H.md** — Cloud 2TB+ RAM. GPU REQUIRED. ~10 hrs GPU ($35), ~30 hrs CPU ($102).
+- **TRAINING_15M.md** — Cloud 2TB+ RAM. GPU REQUIRED. Memmap for cross gen. ~15 hrs GPU ($53), ~44 hrs CPU ($150). User picks machine.
 
 ## COMPLETE DATABASE LIST (ALL REQUIRED — ZERO MISSING)
 ```
@@ -103,7 +103,7 @@ ProcessPoolExecutor parallelizes across folds. Dense data gets converted to CSR 
 cloud_run_tf.py skips cross gen if NPZ exists. Old NPZs (min_nonzero=8) produce fewer features. Old cross names JSON truncates the column count. DELETE BOTH before any fresh run.
 
 ### LightGBM is the ONLY backend
-v3.3 failed with XGBoost — 12% accuracy drop. LightGBM's EFB is architecturally critical for sparse binary cross features. No exceptions. No "XGBoost for 15m" workarounds. 15m uses row-partitioned incremental boosting to stay under int32 NNZ limit.
+v3.3 failed with XGBoost — 12% accuracy drop. LightGBM's EFB is architecturally critical for sparse binary cross features. No exceptions. No "XGBoost for 15m" workarounds. 15m uses int64 indptr (NOT row-partitioned boosting, which was REJECTED — kills rare signals).
 
 ### Dense conversion for speed
 LightGBM trains much faster on dense than sparse. Convert if RAM allows (dense_bytes < 70% available RAM). If not, keep sparse — parallel CPCV still works. Never subsample to fit dense.

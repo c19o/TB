@@ -3,10 +3,46 @@
 ## Machine Requirements
 - **RAM:** 2TB+ MINIMUM (cross gen peaked at 1871G/2003G — near OOM at both RC=500 and RC=300)
 - **Cores:** 256+ (LightGBM OpenMP threads + cross gen)
-- **CPU Score:** 500+
+- **CPU Score:** 1000+ recommended (cores x GHz). GPU REQUIRED for training.
 - **Disk:** 80GB+
 - **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=300` (MANDATORY — RC=500 peaked at 1871G/2003G, near OOM. RC=300 also near-OOM'd — NOT safe, just slightly better.)
 - **Training stays sparse** — dense would be ~2.3TB, won't fit. int64 indptr handles NNZ > 2^31.
+- **GPU:** REQUIRED (A100/H100 or multi-GPU). 75K rows = GPU sweet spot. 3.5x speedup.
+
+### Machine Recommendation: Cloud 2TB+ RAM, GPU REQUIRED
+GPU is REQUIRED for training at 75K rows. Without GPU, CPCV alone takes 7 hrs and Optuna takes 18 hrs.
+- **Cloud option:** vast.ai or Lambda with A100/H100, 2TB+ RAM, ~$3-4/hr.
+- **CPU Score 1000+ recommended.** Multi-GPU ideal for maximum throughput.
+- **Cost:** ~$37 without Optuna (CPU), ~$35 with Optuna (GPU), ~$102 with Optuna (CPU).
+- **NEVER subsample.** Subsampling code REMOVED. Rent bigger machine.
+
+### GPU vs CPU Per Step
+| Step | Engine | Reason |
+|------|--------|--------|
+| Feature build | GPU (cuDF) | Rolling/ewm on GPU. ~1 hr. |
+| Cross gen | GPU (cuSPARSE + streaming) | ~45 min GPU vs 2.3 hrs CPU. |
+| Optuna search | CPU (n_jobs=4) | CPU parallel search stage, GPU for final retrain only. |
+| Final CPCV | GPU (histogram fork) | ~75K rows = GPU sweet spot. ~2 hrs GPU vs 7 hrs CPU. |
+| Trade optimizer | GPU | cuDF-accelerated parameter sweep. |
+
+### Optuna Machine Strategy
+- Same GPU machine for Optuna and CPCV. CPU Score 1000+ for search stage (n_jobs=4).
+- GPU for final retrain only (after search selects best config).
+- Warm-started from 4h: 50+30 trials. ~18 hrs CPU / ~5.5 hrs GPU.
+- Separate Optuna machine from training machine ONLY if parallelizing across TFs.
+
+### Revised ETAs (Machine: Score 1000+ CPU, A100/H100 GPU)
+| Stage | Time (CPU) | Time (GPU est.) | Status |
+|-------|-----------|----------------|--------|
+| Feature build | 1 hr | 1 hr | PENDING |
+| Cross gen (cuSPARSE + streaming) | 2.3 hrs | ~45 min | PENDING |
+| save_binary | 30 min | 30 min | PENDING |
+| CPCV (4 folds) | 7 hrs | ~2 hrs (GPU hist) | PENDING |
+| Optuna (50+30 warm, n_jobs=4, pruning) | ~18 hrs | ~5.5 hrs (GPU hist) | PENDING |
+| Meta + PBO + SHAP | 20 min | 20 min | PENDING |
+| **TOTAL (CPU)** | **~30 hrs ($102)** | | |
+| **TOTAL (GPU est.)** | | **~10 hrs ($35)** | |
+| **Without Optuna (CPU)** | **~11 hrs ($37)** | | |
 
 ## CRITICAL: OLD MACHINE DESTROYED — DO NOT USE 33598910
 The 504GB machine subsampled from 75,405 to 13,243 rows (lost 24% of data). Subsampling code has been REMOVED from ml_multi_tf.py. If dense doesn't fit, training keeps sparse (slower but no data loss). **Rent 768GB+ machine to get dense speed with full matrix.**

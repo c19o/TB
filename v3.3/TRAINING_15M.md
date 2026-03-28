@@ -9,9 +9,46 @@
   - Host may report 2TB but container caps at 1.33TB. **Always check cgroup, not free -g.**
   - If cgroup shows `9223372036854775807` (max int64), there's no cgroup limit — use `free -g` instead.
 - **Cores:** 256+ (cross gen is multi-threaded, parallel CPCV needs cores)
-- **CPU Score:** 500+ (cores x base GHz)
+- **CPU Score:** 1200+ ideal (cores x base GHz). GPU REQUIRED.
 - **Disk:** 150GB+ free
+- **GPU:** REQUIRED (multi-GPU ideal). Largest dataset. GPU histogram fork designed for this.
 - **USER PICKS THIS MACHINE** from vast.ai lineup. Never auto-select.
+
+### Machine Recommendation: Cloud 2TB+ RAM, GPU REQUIRED, Score 1200+ ideal
+GPU is REQUIRED. Without GPU, CPCV takes 10 hrs and Optuna takes 25 hrs. Memmap needed for cross gen.
+- **Cloud option:** vast.ai or Lambda with multi-GPU (A100/H100), 2TB+ cgroup RAM, ~$3-4/hr.
+- **CPU Score 1200+ ideal** for cross gen and CPU-parallel Optuna search.
+- **Cost:** ~$65 without Optuna (CPU), ~$53 with Optuna (GPU), ~$150 with Optuna (CPU).
+- **USER PICKS THIS MACHINE.** Do NOT auto-select.
+
+### GPU vs CPU Per Step
+| Step | Engine | Reason |
+|------|--------|--------|
+| Feature build | GPU (cuDF) | Rolling/ewm on GPU. ~2 hrs. |
+| Cross gen | GPU (cuSPARSE + streaming) | ~1.5 hrs GPU vs 5.8 hrs CPU. Memmap needed. |
+| Optuna search | CPU (n_jobs=4) | CPU parallel search stage, GPU for final retrain only. |
+| Final CPCV | GPU (histogram fork) | ~294K rows = GPU maximum benefit. ~3 hrs GPU vs 10 hrs CPU. |
+| Trade optimizer | GPU | cuDF-accelerated parameter sweep. |
+
+### Optuna Machine Strategy
+- Same GPU machine for Optuna and CPCV. CPU Score 1200+ for search stage (n_jobs=4).
+- GPU for final retrain only (after search selects best config).
+- Warm-started from 1h: 50+30 trials. ~25 hrs CPU / ~7.5 hrs GPU.
+- Separate Optuna machine from training machine ONLY if parallelizing across TFs.
+- This is the LAST TF in the warm-start cascade (1w -> 1d -> 4h -> 1h -> 15m).
+
+### Revised ETAs (Machine: Score 1200+ CPU, multi-GPU A100/H100)
+| Stage | Time (CPU) | Time (GPU est.) | Status |
+|-------|-----------|----------------|--------|
+| Feature build | 2 hrs | 2 hrs | PENDING |
+| Cross gen (cuSPARSE + streaming) | 5.8 hrs | ~1.5 hrs | PENDING |
+| save_binary | 45 min | 45 min | PENDING |
+| CPCV (4 folds) | 10 hrs | ~3 hrs (GPU hist) | PENDING |
+| Optuna (50+30 warm, n_jobs=4, pruning) | ~25 hrs | ~7.5 hrs (GPU hist) | PENDING |
+| Meta + PBO + SHAP | 30 min | 30 min | PENDING |
+| **TOTAL (CPU)** | **~44 hrs ($150)** | | |
+| **TOTAL (GPU est.)** | | **~15 hrs ($53)** | |
+| **Without Optuna (CPU)** | **~19 hrs ($65)** | | |
 
 ---
 

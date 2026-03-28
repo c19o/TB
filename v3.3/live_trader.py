@@ -1027,16 +1027,16 @@ def run_trading_loop(mode='paper'):
                         pass
                     continue
                 # Warn if >80% of base features are NaN (cross features expected to be NaN pre-implementation)
-                _n_base_feats = sum(1 for fn in feat_names if not fn.startswith(('dx_', 'ax_', 'ex2_', 'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'cross_')))
-                _n_base_nan = sum(1 for i, fn in enumerate(feat_names) if not fn.startswith(('dx_', 'ax_', 'ex2_', 'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'cross_')) and np.isnan(X[0, i]))
+                _n_base_feats = sum(1 for fn in feat_names if not fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'cross_')))
+                _n_base_nan = sum(1 for i, fn in enumerate(feat_names) if not fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'cross_')) and np.isnan(X[0, i]))
                 if _n_base_feats > 0 and _n_base_nan / _n_base_feats > 0.80:
                     print(f"  WARNING: {_n_base_nan}/{_n_base_feats} base features are NaN ({_n_base_nan/_n_base_feats*100:.0f}%)")
 
                 # PHILOSOPHY GATE: Detect if cross features are missing at inference.
                 # Model was trained with sparse cross features (dx_*, ax_*, etc.).
                 # Running inference without them = degraded predictions.
-                _n_cross_missing = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')) and np.isnan(X[0, feat_names.index(fn)]))
-                _n_cross_total = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')))
+                _n_cross_missing = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')) and np.isnan(X[0, feat_names.index(fn)]))
+                _n_cross_total = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')))
                 if _n_cross_total > 0 and _n_cross_missing == _n_cross_total:
                     print(f"  HALTED: ALL {_n_cross_total} cross features are NaN — cannot predict without the matrix")
                     print(f"  Cross features are MANDATORY. Skipping {tf} prediction this bar.")

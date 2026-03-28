@@ -25,7 +25,7 @@ ARTIFACT_DIR = os.environ.get("V30_DATA_DIR", os.path.dirname(os.path.abspath(__
 
 # Cross type prefixes — must match v2_cross_generator.py gpu_batch_cross calls
 CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_',
-                  'mx_', 'vx_', 'asp_', 'mn_', 'pn_', 'rdx_')
+                  'mx_', 'vx_', 'asp_', 'mn_', 'pn_')
 
 
 def save_inference_artifacts(ctx_names, ctx_arrays, cross_names, df, tf, output_dir=None):

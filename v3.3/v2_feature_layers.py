@@ -980,7 +980,7 @@ def add_four_tier_binarization(df):
     """
     # Skip columns that are already binary, metadata, targets, or crosses
     skip_prefixes = ('doy_', 'dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_',
-                     'mx_', 'vx_', 'asp_', 'pn_', 'mn_', 'rdx_', 'tx_', 'px_',
+                     'mx_', 'vx_', 'asp_', 'pn_', 'mn_', 'tx_', 'px_',
                      'cross_', 'next_', 'target_', 'is_', 'has_', 'session_',
                      'kill_zone_', 'moon_in_', 'moon_fire', 'moon_earth',
                      'moon_air', 'moon_water')

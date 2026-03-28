@@ -425,6 +425,31 @@ Three single-threaded bottlenecks discovered on 512-core machine (only 1 core us
 - Corrected to max_bin=255: allows maximum EFB compression while binary features still get 2 bins
 - Lower max_bin only helps if you have continuous features with fine granularity — our crosses are binary, so it only hurts
 
+### Asymmetric Barriers Fix SHORT Precision (2026-03-28)
+- Symmetric 3x ATR on upward-biased BTC gives only 7% SHORT labels — model learns to never predict SHORT
+- Asymmetric barriers (1.5x ATR profit / 3x ATR stop for SHORT) rebalance label distribution
+- Without this, SHORT precision is 0% regardless of model quality
+
+### CPCV K=2 is Minimum for Real PBO (2026-03-28)
+- CPCV K=1 gives only 1 PBO path (useless — no combinatorial diversity)
+- K=2 is the minimum for real PBO with 4-9 paths depending on N folds
+- Previous runs with K=1 had no meaningful PBO validation
+
+### Targeted Crossing Eliminates 80% Noise (2026-03-28)
+- ALL x ALL crossing creates 80% noise features (e.g., RSI_high x RSI_low — meaningless)
+- Targeted crossing preserves matrix thesis while cutting feature count 50%
+- 4-tier binarization kept — only the crossing pairs are curated
+
+### Dataset.subset() is 1000x Faster Than reference= (2026-03-28)
+- Optuna trials using `reference=` re-parse the entire dataset each trial
+- `Dataset.subset()` reuses the parsed dataset with row indices — 1000x faster
+- Combined with PatientPruner and warm-start boosting, gives 10-20x total Optuna speedup
+
+### num_leaves=7 Was v3.2 Best (2026-03-28)
+- v3.2's best model used num_leaves=7
+- Our Optuna search floor of 15 excluded this value entirely
+- Lowered floor to 4 to capture shallow-tree optima
+
 ### NaN Semantics in Cross Features (2026-03-27)
 - Cross features are pure 0/1 after binarization — they contain NO NaN values
 - Structural zeros in sparse CSR = 0.0 = "feature OFF" = "conditions not simultaneously met" — this is CORRECT, not missing
@@ -493,6 +518,15 @@ Three single-threaded bottlenecks discovered on 512-core machine (only 1 core us
 - [x] Universal driver compat (_np() fix + CUDA 13 auto-detect)
 - [x] BTC DB merged: 2010-2026 full history (was 2019 only)
 - [x] Pip + SCP deployment (lightweight base image + pip install + SCP)
+
+### Architectural Upgrades (SESSION 2026-03-28)
+- [x] Asymmetric triple-barrier labels (fix 0% SHORT precision)
+- [x] CPCV K=2 for final evaluation (real PBO with 4-9 paths)
+- [x] Targeted crossing (50% fewer features, 4-tier kept)
+- [x] GPU histogram fork complete (78x SpMV, EFB compatible)
+- [x] Optuna 10-20x speedup (Dataset.subset, PatientPruner, warm-start)
+- [x] GPU-or-nothing (ALLOW_CPU=1 escape only)
+- [x] Per-TF training docs updated
 
 ### Training (1W DONE, OPTIMIZATIONS PENDING)
 - [x] 1w — DONE. 77.64% accuracy (GPU=CPU verified), 2.2M features, 109MB model

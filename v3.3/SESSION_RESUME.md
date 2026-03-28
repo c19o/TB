@@ -4,7 +4,7 @@
 
 ---
 
-## STATUS: OPTIMIZATIONS IMPLEMENTED — Ready for Cloud Deployment
+## STATUS: ALL ARCHITECTURAL DECISIONS IMPLEMENTED — Ready for Cloud Deployment
 
 **GPU-or-nothing policy**: NO CPU fallbacks anywhere in the pipeline. Every compute stage runs on GPU. Set `ALLOW_CPU=1` as escape hatch for local testing only — cloud deploys MUST use GPU.
 
@@ -17,6 +17,22 @@
 ---
 
 ## CURRENT STATE (2026-03-28)
+
+### Architectural Decisions — ALL IMPLEMENTED
+
+| # | Decision | Status | Details |
+|---|----------|--------|---------|
+| 1 | **Asymmetric barriers** | IMPLEMENTED | TP/SL split per TF. Each timeframe has independent take-profit and stop-loss thresholds. |
+| 2 | **CPCV K=2 for final eval** | IMPLEMENTED | K=2 CPCV used for final model evaluation. Optuna Stage 2 uses 4-fold for speed. |
+| 3 | **Targeted crossing** | IMPLEMENTED | ~50% fewer cross features generated. 4-tier binarization kept. Selective pairing reduces combinatorial explosion. |
+| 4 | **Optuna Stage 2: 4-fold** | IMPLEMENTED | Stage 2 refinement uses 4-fold CV (not K=2) for faster iteration during HPO search. |
+| 5 | **Nuclear clean: TF-specific filter** | FIXED | `cloud_run_tf.py` nuclear clean now uses TF-specific glob (e.g., `v2_crosses_*_{tf}.npz`) — no longer destroys other TFs' artifacts on restart. (Issue #4 from Known Issues) |
+| 6 | **Cross gen checkpoint** | IMPLEMENTED | Per-cross-type intermediate NPZ saves. If OOM at cross type 12/13, prior types preserved. (Issue #5 from Known Issues) |
+| 7 | **Model backup before overwrite** | IMPLEMENTED | `shutil.copy` to `model_{tf}_prev.json` before writing new model. (Issue #6 from Known Issues) |
+| 8 | **Accuracy floor** | IMPLEMENTED | Minimum accuracy threshold enforced — new model must beat floor or previous model is kept. |
+| 9 | **save_binary bridge** | IMPLEMENTED | LightGBM `save_binary()` cache for Dataset. Eliminates redundant binning on reload — instant Dataset reconstruction. |
+| 10 | **feature_fraction raised** | IMPLEMENTED | Range widened to 0.02-0.3 (was narrower). Allows Optuna to explore higher feature sampling for better signal coverage. |
+| 11 | **TF_NUM_LEAVES caps raised** | IMPLEMENTED | Per-TF num_leaves upper bounds increased to allow deeper trees where data supports it. |
 
 ### Optuna Optimizations — ALL IMPLEMENTED
 Five key optimizations applied to `run_optuna_local.py` and `config.py`:
@@ -68,9 +84,45 @@ Five key optimizations applied to `run_optuna_local.py` and `config.py`:
 - enable_bundle=False for 1h/15m
 - All TFs CPCV (4,1) = 4 folds
 - Optuna: parent Dataset reuse, round-level pruning, CPU parallel search, warm-start cascade, ES patience fix
+- Asymmetric TP/SL barriers per TF
+- CPCV K=2 for final eval, 4-fold for Optuna Stage 2
+- Targeted crossing (~50% reduction, 4-tier kept)
+- Nuclear clean TF-specific filter (Issue #4 FIXED)
+- Cross gen per-type checkpoint (Issue #5 FIXED)
+- Model backup before overwrite (Issue #6 FIXED)
+- Accuracy floor enforcement
+- save_binary Dataset cache bridge
+- feature_fraction range widened to 0.02-0.3
+- TF_NUM_LEAVES caps raised
 
 ### All Machines Destroyed
 No active cloud machines.
+
+---
+
+## KNOWN ISSUES — STATUS UPDATE
+
+Issues #4, #5, #6 from the original list are now FIXED (see Architectural Decisions above).
+
+### Remaining Issues
+
+| # | Issue | Severity | Files | Details |
+|---|-------|----------|-------|---------|
+| 1 | **Cross gen memmap NOT implemented** | CRITICAL | `v2_cross_generator.py` | 1h needs 1.2TB peak RAM, 15m needs 3TB+. CSR chunks accumulate in RAM with no disk flush. Need disk-backed CSR chunks (memmap or incremental NPZ flush) for 1h/15m. Without this, 1h/15m cross gen requires machines that may not exist at reasonable cost. |
+| 2 | **21 blanket try/except in feature_library.py** | HIGH | `feature_library.py` | Silently swallows esoteric feature computation errors. Violates "crash > silent degradation" rule. Need to audit each one and either: make it specific (catch only expected errors like missing DB columns) or add `ALLOW_CPU` guard. Silent failures = missing features = weaker model. |
+| 3 | **11 blanket try/except in astrology_engine.py** | HIGH | `astrology_engine.py` | Same issue as #2 for astrology features. Silent swallow means we never know if planetary calculations are failing. Must make exceptions specific or remove. |
+| 7 | **CPCV fold logic duplicated in 6 files** | MEDIUM | `ml_multi_tf.py`, `run_optuna_local.py`, `cloud_run_tf.py`, `backtest_validation.py`, `mini_train.py`, `leakage_check.py` | Same fold-splitting logic copy-pasted. Any fix to one file must be manually replicated in 5 others. Should be extracted to a shared `cpcv_utils.py` module. |
+| 8 | **Optuna missing HMM features** | MEDIUM | `run_optuna_local.py` | Optuna search trains WITHOUT HMM state columns, but the final training in `ml_multi_tf.py` INCLUDES them. This means Optuna optimizes hyperparams on a different feature set than what the final model sees — consistency gap that could cause suboptimal params. |
+| 9 | **CMA-ES sampler for Stage 2** | LOW | `run_optuna_local.py` | Recommended but not implemented. TPE is suboptimal for noisy CPCV objectives — CMA-ES handles noise better for continuous param search in Stage 2 (refinement). Would improve param convergence quality. |
+| 10 | **n_warmup_steps=30 may be too aggressive** | LOW | `run_optuna_local.py` | MedianPruner starts pruning after 30 steps. Crypto data is noisy — early validation scores are unreliable. Consider 50-100 warmup steps to avoid killing trials that would converge with more rounds. Risk: premature pruning of good trials. |
+
+### Priority Order for Remaining Fixes
+1. **#1** (memmap) — BLOCKING for 1h/15m deployment, most engineering effort
+2. **#2 + #3** (blanket try/except) — audit and fix together
+3. **#8** (HMM consistency) — fix before Optuna runs
+4. **#7** (CPCV dedup) — refactor, lower urgency but prevents future bugs
+5. **#9** (CMA-ES) — nice-to-have optimization
+6. **#10** (warmup steps) — tune after first Optuna run on real data
 
 ---
 
@@ -79,10 +131,11 @@ No active cloud machines.
 ### Crash Recovery
 | Component | Recovery Mechanism | Max Loss |
 |---|---|---|
-| **Cross gen** | Per-step NPZ checkpoints | 1 step (~30-60 min) |
+| **Cross gen** | Per-cross-type NPZ checkpoints (IMPLEMENTED) | 1 cross type (~5-15 min) |
 | **Optuna** | SQLite journal + RetryFailedTrialCallback | 1 trial |
 | **CPCV training** | LightGBM init_model (save every 100 trees) | 100 trees |
-| **Dataset construction** | save_binary() cache | 0 (instant reload) |
+| **Dataset construction** | save_binary() cache (IMPLEMENTED) | 0 (instant reload) |
+| **Model overwrite** | Auto-backup to model_{tf}_prev.json (IMPLEMENTED) | 0 (previous model preserved) |
 
 ### Matrix Thesis Compliance
 | Rule | Status | Verification |
@@ -95,6 +148,7 @@ No active cloud machines.
 | Row subsample=1.0 | PASS | OPTUNA_TF_ROW_SUBSAMPLE=1.0 for ALL TFs (thesis violation fixed) |
 | LightGBM only (no XGBoost) | PASS | EFB architecturally correct for sparse binary crosses |
 | GPU-or-nothing | PASS | CPU search for parallelism, GPU final retrain; no CPU fallback in production |
+| Accuracy floor enforced | PASS | New model must beat floor or rollback to previous |
 
 ### GPU-or-Nothing Verification
 | Pipeline Stage | GPU Status | Notes |
@@ -109,32 +163,43 @@ No active cloud machines.
 
 ---
 
-## REVISED ETAs WITH ALL OPTIMIZATIONS
+## REVISED ETAs WITH ALL OPTIMIZATIONS + ARCHITECTURAL CHANGES
 
-### Per-TF Training Times (with Optuna optimizations applied)
+### Per-TF Training Times — Machine A (CPU Score ~1000, RTX 5090)
 
-| TF | Training Only | Optuna (cold) | Optuna (warm-started) | Notes |
-|----|---------------|---------------|----------------------|-------|
-| **1w** | 10 min | ~1.5 hr | N/A (root TF) | Local 3090 OK |
-| **1d** | 1 hr | ~8 hr | ~4 hr (from 1w) | Cloud 256GB+ RAM |
-| **4h** | TBD | TBD | ~6 hr (from 1d) | Cloud 512GB+ RAM |
-| **1h** | TBD | TBD | TBD (from 4h) | Cloud 2TB+ RAM |
-| **15m** | 10.5 hr | ~30 hr | ~20 hr (from 1h) | Cloud 2TB+ RAM, user picks |
+| TF | Cross Gen | Optuna Stage 1 (4-fold) | Optuna Stage 2 (4-fold) | Final Eval (K=2 CPCV) | Total |
+|----|-----------|------------------------|------------------------|----------------------|-------|
+| **1w** | N/A (done) | ~45 min (cold, root) | ~30 min | ~10 min | ~1.5 hr |
+| **1d** | N/A (done) | ~2.5 hr (warm from 1w) | ~1.5 hr | ~30 min | ~4.5 hr |
+| **4h** | ~2 hr | ~3.5 hr (warm from 1d) | ~2 hr | ~45 min | ~8 hr |
+| **1h** | ~6 hr | ~6 hr (warm from 4h) | ~3 hr | ~1 hr | ~16 hr |
+| **15m** | ~12 hr | ~12 hr (warm from 1h) | ~6 hr | ~2 hr | ~32 hr |
 
-**Speedup breakdown** (vs original estimates):
+### Per-TF Training Times — Machine B (CPU Score ~1200, H100)
+
+| TF | Cross Gen | Optuna Stage 1 (4-fold) | Optuna Stage 2 (4-fold) | Final Eval (K=2 CPCV) | Total |
+|----|-----------|------------------------|------------------------|----------------------|-------|
+| **1w** | N/A (done) | ~35 min (cold, root) | ~25 min | ~8 min | ~1.1 hr |
+| **1d** | N/A (done) | ~2 hr (warm from 1w) | ~1.2 hr | ~25 min | ~3.5 hr |
+| **4h** | ~1.5 hr | ~2.8 hr (warm from 1d) | ~1.5 hr | ~35 min | ~6.5 hr |
+| **1h** | ~5 hr | ~5 hr (warm from 4h) | ~2.5 hr | ~50 min | ~13 hr |
+| **15m** | ~10 hr | ~10 hr (warm from 1h) | ~5 hr | ~1.5 hr | ~26.5 hr |
+
+### Key ETA Changes from Architectural Decisions
+- **Targeted crossing (-50% features)**: Cross gen ~30-40% faster, Optuna ~20% faster (fewer features to evaluate)
+- **Optuna Stage 2 uses 4-fold** (not K=2): Faster per-trial than K=2 would be for search — K=2 reserved for final eval only
+- **feature_fraction 0.02-0.3**: Wider search space may add ~10% more trials but finds better optima
+- **save_binary bridge**: Eliminates Dataset rebuild on restart — saves 15-30 min per restart event
+- **Accuracy floor**: May trigger 1-2 extra retrain cycles if floor not met — adds ~10% to total in worst case
+
+**Speedup breakdown** (vs original estimates, cumulative):
 - Dataset reuse: ~2x fewer minutes wasted on binning
 - Round-level pruning: ~30-40% of trials killed early
 - Warm-start: ~50% fewer trials (80 vs 150)
 - ES patience fix: ~50% fewer wasted rounds per trial
 - CPU parallel (128c machine): ~3-4x throughput on search stages
-- **Combined: ~3-5x faster Optuna overall**
-
-Previous estimates (for reference — BEFORE optimizations):
-| TF | No Optuna | With Optuna (200 trials, no optimizations) |
-|----|-----------|-------------------------------------------|
-| **1w** | 10 min | 5.5 hr |
-| **1d** | 1 hr | 14 hr |
-| **15m** | 10.5 hr | 75 hr |
+- Targeted crossing (-50% features): ~20-30% faster cross gen + training
+- **Combined: ~4-6x faster pipeline overall**
 
 ---
 
@@ -159,46 +224,18 @@ Previous estimates (for reference — BEFORE optimizations):
 
 ### Per-Machine Pipeline Steps
 For each TF on cloud:
-1. **Cross gen** — sparse matmul + batch crosses (RAM-intensive)
-2. **CPCV Training** — 4 folds, LightGBM sparse CSR
-3. **Optuna HPO** — warm-started (50+30 trials) or cold (100+50 trials)
-4. **Download artifacts** — model .json, cross names .json, optuna_configs .json, CPCV results, logs
+1. **Cross gen** — sparse matmul + batch crosses (RAM-intensive). Now with per-cross-type checkpoints.
+2. **CPCV Training (4-fold)** — LightGBM sparse CSR, save_binary cache for Dataset
+3. **Optuna HPO** — Stage 1: 4-fold CV search (warm-started 50+30 or cold 100+50). Stage 2: 4-fold CV refinement.
+4. **Final Eval** — K=2 CPCV for unbiased accuracy estimate. Accuracy floor check.
+5. **Model backup** — auto-saves `model_{tf}_prev.json` before overwrite
+6. **Download artifacts** — model .json, cross names .json, optuna_configs .json, CPCV results, logs
 
 ### Warm-Start Cascade Order (CRITICAL)
 ```
 1w (local, root) -> 1d (cloud) -> 4h (cloud) -> 1h (cloud) -> 15m (cloud)
 ```
 Each TF inherits best params from parent. Must train in order. Download `optuna_configs_{tf}.json` before starting next TF.
-
----
-
-## KNOWN ISSUES — MUST FIX BEFORE CLOUD DEPLOY
-
-These were flagged during audit but NOT yet fixed. Do NOT deploy until resolved.
-
-| # | Issue | Severity | Files | Details |
-|---|-------|----------|-------|---------|
-| 1 | **Cross gen memmap NOT implemented** | CRITICAL | `v2_cross_generator.py` | 1h needs 1.2TB peak RAM, 15m needs 3TB+. CSR chunks accumulate in RAM with no disk flush. Need disk-backed CSR chunks (memmap or incremental NPZ flush) for 1h/15m. Without this, 1h/15m cross gen requires machines that may not exist at reasonable cost. |
-| 2 | **21 blanket try/except in feature_library.py** | HIGH | `feature_library.py` | Silently swallows esoteric feature computation errors. Violates "crash > silent degradation" rule. Need to audit each one and either: make it specific (catch only expected errors like missing DB columns) or add `ALLOW_CPU` guard. Silent failures = missing features = weaker model. |
-| 3 | **11 blanket try/except in astrology_engine.py** | HIGH | `astrology_engine.py` | Same issue as #2 for astrology features. Silent swallow means we never know if planetary calculations are failing. Must make exceptions specific or remove. |
-| 4 | **cloud_run_tf.py nuclear clean bug** | HIGH | `cloud_run_tf.py` (lines 177-188) | On restart, deletes ALL `v2_crosses_*.npz` files — destroying the CURRENT TF's valid artifacts. Need TF-specific glob filter (e.g., `v2_crosses_*_{tf}.npz`) so restart only cleans the target TF, not artifacts from other completed TFs. |
-| 5 | **No checkpoint/resume for cross gen** | HIGH | `v2_cross_generator.py` | If OOM occurs at cross type 12 of 13, ALL prior work is lost. Need per-cross-type intermediate saves (flush completed cross type NPZs to disk before starting the next). Currently all-or-nothing. |
-| 6 | **No model backup before overwrite** | MEDIUM | `ml_multi_tf.py` | Overwrites `model_{tf}.json` without backing up the previous version. If new training produces a worse model, the old one is gone. Need `shutil.copy` to `model_{tf}_prev.json` before writing new model. |
-| 7 | **CPCV fold logic duplicated in 6 files** | MEDIUM | `ml_multi_tf.py`, `run_optuna_local.py`, `cloud_run_tf.py`, `backtest_validation.py`, `mini_train.py`, `leakage_check.py` | Same fold-splitting logic copy-pasted. Any fix to one file must be manually replicated in 5 others. Should be extracted to a shared `cpcv_utils.py` module. |
-| 8 | **Optuna missing HMM features** | MEDIUM | `run_optuna_local.py` | Optuna search trains WITHOUT HMM state columns, but the final training in `ml_multi_tf.py` INCLUDES them. This means Optuna optimizes hyperparams on a different feature set than what the final model sees — consistency gap that could cause suboptimal params. |
-| 9 | **CMA-ES sampler for Stage 2** | LOW | `run_optuna_local.py` | Recommended but not implemented. TPE is suboptimal for noisy CPCV objectives — CMA-ES handles noise better for continuous param search in Stage 2 (refinement). Would improve param convergence quality. |
-| 10 | **n_warmup_steps=30 may be too aggressive** | LOW | `run_optuna_local.py` | MedianPruner starts pruning after 30 steps. Crypto data is noisy — early validation scores are unreliable. Consider 50-100 warmup steps to avoid killing trials that would converge with more rounds. Risk: premature pruning of good trials. |
-
-### Priority Order for Fixing
-1. **#4** (nuclear clean bug) — quick fix, prevents data loss on restart
-2. **#5** (cross gen checkpoint) — prevents losing hours of work on OOM
-3. **#6** (model backup) — quick fix, prevents losing good models
-4. **#1** (memmap) — BLOCKING for 1h/15m deployment, most engineering effort
-5. **#2 + #3** (blanket try/except) — audit and fix together
-6. **#8** (HMM consistency) — fix before Optuna runs
-7. **#7** (CPCV dedup) — refactor, lower urgency but prevents future bugs
-8. **#9** (CMA-ES) — nice-to-have optimization
-9. **#10** (warmup steps) — tune after first Optuna run on real data
 
 ---
 
@@ -242,15 +279,15 @@ These were flagged during audit but NOT yet fixed. Do NOT deploy until resolved.
 
 ## TRAINING PLAN & COSTS
 
-### Per-TF Training Times — With All Optimizations (revised)
+### Per-TF Training Times — With All Optimizations + Architectural Changes
 
-| TF | Training | Optuna (warm) | Optuna (cold) | Total (warm) | Notes |
-|----|----------|--------------|---------------|-------------|-------|
-| **1w** | 10 min | N/A | ~1.5 hr | ~1.5 hr | Local 3090, root of cascade |
-| **1d** | 1 hr | ~4 hr | ~8 hr | ~5 hr | Cloud 256GB+ RAM |
-| **4h** | TBD | ~6 hr | TBD | ~8 hr est. | Cloud 512GB+ RAM |
-| **1h** | TBD | TBD | TBD | TBD | Cloud 2TB+ RAM |
-| **15m** | 10.5 hr | ~20 hr | ~30 hr | ~25 hr est. | Cloud 2TB+ RAM, user picks |
+| TF | Cross Gen | Optuna (warm, 4-fold) | Final Eval (K=2) | Total (Machine A ~1000) | Total (Machine B ~1200) |
+|----|-----------|----------------------|-------------------|------------------------|------------------------|
+| **1w** | Done | ~1.25 hr (cold) | ~10 min | ~1.5 hr | ~1.1 hr |
+| **1d** | Done | ~4 hr | ~30 min | ~4.5 hr | ~3.5 hr |
+| **4h** | ~2 hr | ~5.5 hr | ~45 min | ~8 hr | ~6.5 hr |
+| **1h** | ~6 hr | ~9 hr | ~1 hr | ~16 hr | ~13 hr |
+| **15m** | ~12 hr | ~18 hr | ~2 hr | ~32 hr | ~26.5 hr |
 
 ### Machine Assignments
 
@@ -280,6 +317,9 @@ These were flagged during audit but NOT yet fixed. Do NOT deploy until resolved.
 12. **Optuna was 73-81% of total pipeline time** — 5 optimizations implemented, estimated 3-5x speedup.
 13. **ES patience bug** — at lr=0.08, patience=125 but rounds=150, so ES almost never fired. Fixed with decoupled OPTUNA_SEARCH_ES_PATIENCE=30.
 14. **Warm-start cascade validated** — 1w->1d->4h->1h->15m. Parent params narrow search by +/-20%, reducing trials from 150 to 80.
+15. **Asymmetric barriers improve per-TF risk management** — TP/SL split allows each TF to optimize its own risk profile independently.
+16. **Targeted crossing reduces features ~50%** — selective pairing eliminates low-value crosses while keeping 4-tier binarization intact.
+17. **K=2 CPCV is unbiased for final eval** — but too slow for Optuna search. 4-fold for search, K=2 for final eval only.
 
 ---
 
