@@ -51,6 +51,8 @@ try:
     GPU_ARRAY = True
     print(f"[GPU] CuPy + CUDA detected — GPU arrays enabled")
 except ImportError:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError("GPU REQUIRED: CuPy not available for backtesting_audit. Set ALLOW_CPU=1 for CPU mode.")
     xp = np
     GPU_ARRAY = False
     print("[CPU] CuPy not available — using NumPy")

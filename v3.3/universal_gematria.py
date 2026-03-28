@@ -362,12 +362,16 @@ def gematria_gpu_batch(text_series, prefix='gem'):
     Falls back to CPU vectorized path if cuDF is unavailable.
     """
     if os.environ.get('V2_SKIP_GPU') == '1':
+        if os.environ.get('ALLOW_CPU', '0') != '1':
+            raise RuntimeError("GPU REQUIRED: V2_SKIP_GPU=1 but ALLOW_CPU not set in universal_gematria. Set ALLOW_CPU=1 for CPU mode.")
         return _gematria_cpu_vectorized(text_series, prefix)
     try:
         import cudf
         import cupy as cp
         return _gematria_gpu_cudf(text_series, prefix)
     except (ImportError, Exception):
+        if os.environ.get('ALLOW_CPU', '0') != '1':
+            raise RuntimeError("GPU REQUIRED: cuDF/CuPy unavailable in universal_gematria. Set ALLOW_CPU=1 for CPU mode.")
         return _gematria_cpu_vectorized(text_series, prefix)
 
 

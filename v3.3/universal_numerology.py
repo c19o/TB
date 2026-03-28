@@ -375,7 +375,8 @@ def digital_root_vec(arr):
                 x = cp.abs(arr).astype(cp.int64)
                 return cp.where(x == 0, cp.int32(0), (1 + (x - 1) % 9).astype(cp.int32))
         except ImportError:
-            pass
+            if os.environ.get('ALLOW_CPU', '0') != '1':
+                raise RuntimeError("GPU REQUIRED: CuPy unavailable in digital_root_vec. Set ALLOW_CPU=1 for CPU mode.")
     x = np.abs(np.asarray(arr, dtype=np.int64))
     return np.where(x == 0, 0, 1 + (x - 1) % 9).astype(np.int32)
 
@@ -389,7 +390,8 @@ def is_in_set_vec(arr, target_set):
                 targets_gpu = cp.asarray(sorted(target_set), dtype=cp.int64)
                 return cp.isin(arr.astype(cp.int64), targets_gpu).astype(cp.int32)
         except ImportError:
-            pass
+            if os.environ.get('ALLOW_CPU', '0') != '1':
+                raise RuntimeError("GPU REQUIRED: CuPy unavailable in is_in_set_vec. Set ALLOW_CPU=1 for CPU mode.")
     targets = np.array(sorted(target_set), dtype=np.int64)
     return np.isin(np.asarray(arr, dtype=np.int64), targets).astype(np.int32)
 
@@ -403,7 +405,8 @@ def price_contains_pattern_vec(prices, pattern_str):
                 # cuDF or pandas Series with .str accessor
                 return prices.astype(str).str.contains(pattern_str, regex=False).astype('int32')
         except ImportError:
-            pass
+            if os.environ.get('ALLOW_CPU', '0') != '1':
+                raise RuntimeError("GPU REQUIRED: cuDF unavailable in price_contains_pattern_vec. Set ALLOW_CPU=1 for CPU mode.")
     # Numpy fallback
     import pandas as pd
     s = pd.Series(prices).astype(str)

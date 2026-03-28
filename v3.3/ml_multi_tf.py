@@ -346,30 +346,10 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
     if 'histogram_pool_size' not in params:
         params['histogram_pool_size'] = 512
 
-    try:
-        booster = lgb.Booster(params, ds_train)
-        booster.set_external_csr(X_train_csr)
-    except Exception as e:
-        log(f"  WARNING: GPU sparse init failed ({e}), falling back to CPU")
-        # Revert to CPU training
-        cpu_params = dict(params)
-        cpu_params['device_type'] = 'cpu'
-        cpu_params.pop('histogram_pool_size', None)
-        cpu_params['force_col_wise'] = True
-        callbacks = [
-            lgb.early_stopping(early_stopping_rounds),
-            lgb.log_evaluation(log_period),
-        ]
-        if checkpoint_cb is not None:
-            callbacks.append(checkpoint_cb)
-        model = lgb.train(
-            cpu_params, ds_train,
-            num_boost_round=num_boost_round,
-            valid_sets=[ds_train, ds_val] if ds_val is not None else [ds_train],
-            valid_names=['train', 'val'] if ds_val is not None else ['train'],
-            callbacks=callbacks,
-        )
-        return model
+    # No CPU fallback — GPU-or-nothing
+    # If set_external_csr fails, crash loud
+    booster = lgb.Booster(params, ds_train)
+    booster.set_external_csr(X_train_csr)
 
     # Add validation set
     if ds_val is not None:
@@ -502,45 +482,37 @@ def _cpcv_split_worker(args_tuple):
         _gpu_params.pop('force_col_wise', None)
         if 'histogram_pool_size' not in _gpu_params:
             _gpu_params['histogram_pool_size'] = 512
-        try:
-            booster = lgb.Booster(_gpu_params, dtrain)
-            booster.set_external_csr(_X_csr_w)
-            booster.add_valid(dval, 'val')
-            best_score_w = None
-            best_iter_w = 0
-            best_model_str_w = None
-            _hb_w = None  # higher_better flag
-            for _ri in range(num_boost_round):
-                booster.update()
-                val_result = booster.eval_valid()
-                if val_result:
-                    _sc = val_result[0][2]
-                    if _hb_w is None:
-                        _hb_w = val_result[0][3]
-                        best_score_w = _sc
-                        best_iter_w = _ri + 1
-                        best_model_str_w = booster.model_to_string()
-                    elif (_hb_w and _sc > best_score_w) or (not _hb_w and _sc < best_score_w):
-                        best_score_w = _sc
-                        best_iter_w = _ri + 1
-                        best_model_str_w = booster.model_to_string()
-                    elif (_ri + 1) - best_iter_w >= _es_rounds_w:
-                        break
-            if best_model_str_w is not None:
-                model = lgb.Booster(model_str=best_model_str_w)
-            else:
-                model = booster
-            model.best_iteration = best_iter_w if best_iter_w > 0 else (_ri + 1)
-            del _X_csr_w
-        except Exception:
-            # GPU failed in worker — fall back to CPU
-            model = lgb.train(
-                params, dtrain,
-                num_boost_round=num_boost_round,
-                valid_sets=[dtrain, dval],
-                valid_names=['train', 'val'],
-                callbacks=[lgb.early_stopping(_es_rounds_w), lgb.log_evaluation(0)],
-            )
+        # No CPU fallback — GPU-or-nothing
+        # If set_external_csr fails, crash loud
+        booster = lgb.Booster(_gpu_params, dtrain)
+        booster.set_external_csr(_X_csr_w)
+        booster.add_valid(dval, 'val')
+        best_score_w = None
+        best_iter_w = 0
+        best_model_str_w = None
+        _hb_w = None  # higher_better flag
+        for _ri in range(num_boost_round):
+            booster.update()
+            val_result = booster.eval_valid()
+            if val_result:
+                _sc = val_result[0][2]
+                if _hb_w is None:
+                    _hb_w = val_result[0][3]
+                    best_score_w = _sc
+                    best_iter_w = _ri + 1
+                    best_model_str_w = booster.model_to_string()
+                elif (_hb_w and _sc > best_score_w) or (not _hb_w and _sc < best_score_w):
+                    best_score_w = _sc
+                    best_iter_w = _ri + 1
+                    best_model_str_w = booster.model_to_string()
+                elif (_ri + 1) - best_iter_w >= _es_rounds_w:
+                    break
+        if best_model_str_w is not None:
+            model = lgb.Booster(model_str=best_model_str_w)
+        else:
+            model = booster
+        model.best_iteration = best_iter_w if best_iter_w > 0 else (_ri + 1)
+        del _X_csr_w
     else:
         model = lgb.train(
             params, dtrain,
@@ -1170,6 +1142,10 @@ if __name__ == '__main__':
               log(f"  Forcing sequential CPCV ({_n_total_features:,} SPARSE features — pickle IPC bottleneck > training time)")
           # Dense data with >1M features: parallel OK (numpy arrays serialize fast, no pickle bottleneck)
 
+          if _use_gpu_sparse() and _use_parallel_splits:
+              _use_parallel_splits = False
+              log(f"  Forcing sequential CPCV (GPU Boosters can't run in parallel on same GPU)")
+
           if _use_parallel_splits:
               # ── Parallel CPCV path (CPU workers) ──
               # NOTE: per-fold HMM re-fitting is skipped in parallel mode (HMM fitted once before loop).
@@ -1571,6 +1547,11 @@ if __name__ == '__main__':
                               'completed_folds': list(_completed_folds),
                               'best_acc': best_acc,
                           }, _ckf)
+
+                  # Free GPU/CPU memory between sequential folds
+                  # (best_model_obj holds its own reference if this was the best fold)
+                  del model
+                  gc.collect()
 
           if not window_results:
               log(f"  SKIP -- no valid CPCV paths")

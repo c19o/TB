@@ -8,7 +8,7 @@
 
 **GPU-or-nothing policy**: NO CPU fallbacks anywhere in the pipeline. Every compute stage runs on GPU. Set `ALLOW_CPU=1` as escape hatch for local testing only — cloud deploys MUST use GPU.
 
-1w trained at 67.7% without Optuna. The 71.9% accuracy came from Optuna HPO — re-enabling it is critical. LightGBM GPU histogram Bug 4 (feature_hist_offsets EFB mapping) is being debugged by 20 parallel agents. Trade optimizer already GPU (CuPy), no changes needed.
+1w trained at 77.64% CPCV accuracy (GPU = CPU exact match verified). GPU histogram fork Phase 4 COMPLETE (Bug 4 fixed). Optuna HPO code is wired but never executed (empty optuna_configs_all.json) — re-enabling is critical for pushing accuracy higher. Trade optimizer already GPU (CuPy), no changes needed.
 
 ### TWO SEPARATE OPTIMIZERS IN OUR PIPELINE
 1. **LightGBM HPO** (`run_optuna_local.py`) — optimizes 10 LightGBM hyperparams (num_leaves, feature_fraction, learning_rate, lambdas, etc.). Objective: minimize mlogloss via CPCV. THIS is the 90% bottleneck (200 trials × 4-15 folds). **Being re-enabled — was the cause of 67.7% vs 71.9%.**
@@ -19,30 +19,27 @@
 ## CURRENT STATE (2026-03-28)
 
 ### GPU Histogram Fork — Bug 4 Debug (20 Parallel Agents)
-- **Phase 1 (standalone benchmark)**: COMPLETE — 71x speedup on real 1w data (RTX 3090)
+- **Phase 1 (standalone benchmark)**: COMPLETE — 99x standalone SpMV, 78x integrated (RTX 3090)
 - **Phase 2 (LightGBM integration)**: COMPLETE — Fork builds (42/42), `device_type="cuda_sparse"` accepted, GPU detected
 - **Phase 3 (CSR bridge)**: COMPLETE — CSR bridge fix applied, dangling pointer fixed, DLL rebuilt
-- **Bug 4 (feature_hist_offsets EFB mapping)**: ACTIVE DEBUG — 20 parallel agents working on it
-  - Extracts cumulative bin offset table from `share_state_`, uploads to GPU, remaps SpMV output indices in CUDA kernel
-  - Re-enables EFB bundling with GPU histograms (was BLOCKED in Phase 3)
-  - Once fixed: GPU histograms work end-to-end with EFB for all TFs
-- **Other Phase 4 components** (completed or in progress):
-  1. **cuSPARSE SpGEMM** replacing scipy sparse matmul in cross gen (15-40x speedup)
-  2. **GPU nonzero** replacing CPU `np.nonzero` (3-5x speedup)
-  3. **binarize_contexts vectorized with Numba prange** (10-20x speedup)
+- **Phase 4 (full GPU pipeline)**: COMPLETE — Bug 4 fixed, 10/10 rounds, EFB active
+  - cuSPARSE SpMV 78x faster (SpMV only; round-level ~equal to CPU on small 1w data)
+  - **GPU vs CPU accuracy: EXACT MATCH (77.64% on real labels, verified)**
+  - GPU benefit expected to grow on larger datasets (1d/4h/1h/15m)
 - **Location**: `v3.3/gpu_histogram_fork/` (isolated from main pipeline)
 - **Commit**: `0a94b4e` (latest)
 
-### LightGBM Optuna — Being Re-enabled
+### LightGBM Optuna — Code Wired But Never Executed
 - Optuna HPO was the difference between 67.7% (no Optuna) and 71.9% (with Optuna)
+- Code is wired in run_optuna_local.py + cloud_run_optuna.py, but **optuna_configs_all.json is empty `{}`** — no trials have been run
 - Re-enabling across all TFs is critical for target accuracy
 - 200 TPE trials, CPCV folds, mlogloss objective
 
 ### Training Status
 | TF | Status | Accuracy | Features | Notes |
 |----|--------|----------|----------|-------|
-| **1w** | DONE (needs Optuna) | CPCV 67.7% → target 71.9% | 2.2M | GPU histograms once Bug 4 fixed |
-| **1d** | BASE BUILT | — | 5,733×3,796 base | Cross gen OOM at 68GB locally. Needs 256GB+ RAM → CLOUD |
+| **1w** | DONE (needs Optuna) | CPCV 77.64% (GPU=CPU verified) | 2.2M | GPU histograms Phase 4 complete |
+| **1d** | CROSS GEN DONE | — | 4.69M crosses (from cloud) | Inference artifacts downloaded. Needs CPCV training |
 | **4h** | BASE BUILT | — | 8,794×3,904 base | Cross gen + training → CLOUD (512GB+ RAM needed) |
 | **1h** | NEEDS CLOUD | — | — | Separate cloud machine, 2TB+ RAM |
 | **15m** | NEEDS CLOUD | — | — | Separate cloud machine, 2TB+ RAM, user picks |
@@ -54,10 +51,10 @@
 | **1w model** | COMPLETE | model_1w.json (113MB), CPCV backup |
 | **1d base parquet** | COMPLETE | features_BTC_1d.parquet (10.7MB, 5,733×3,796) — ready for cloud upload |
 | **4h base parquet** | COMPLETE | features_BTC_4h.parquet (13.5MB, 8,794×3,904) — ready for cloud upload |
-| **1d cross gen** | FAILED LOCALLY | OOM at 68GB. Must run on cloud (256GB+ RAM) |
+| **1d cross gen** | DONE (cloud) | Inference artifacts exist: 4.69M cross names, base_cols, ctx_names, thresholds, cross_pairs.npz. Cross gen OOM'd locally but completed on cloud. |
 | **4h cross gen** | NOT STARTED | Must run on cloud (512GB+ RAM) |
 | **1h/15m** | NOT BUILT | Need feature build + cross gen on cloud |
-| **16 DBs** | READY | ~3.3GB total, all in v3.3 directory |
+| **16 DBs** | IN PROJECT ROOT | ~3.3GB total, in project root (NOT v3.3/). 0 DBs in v3.3/ — must symlink or copy for cloud deploy |
 
 ### Config & Code Changes (ALL APPLIED)
 - max_bin=255, min_data_in_bin=1, row subsample=1.0
@@ -129,13 +126,14 @@ For each TF on cloud:
 - `ALLOW_CPU=1` environment variable as escape hatch for local testing ONLY
 - Cloud deploys MUST use GPU — no ALLOW_CPU
 - Trade optimizer: already GPU (CuPy vectorized on 3090), no changes needed
-- LightGBM training: GPU histograms once Bug 4 is fixed
+- LightGBM training: GPU histograms Phase 4 COMPLETE (Bug 4 fixed)
 - Cross gen: cuSPARSE SpGEMM replacing scipy sparse matmul
 - Feature build: cuDF rolling/ewm (already GPU)
 
-### GPU Fork — Bug 4 Active (20 parallel agents)
-- Bug 4 (feature_hist_offsets EFB mapping) is the last blocker for GPU histograms
-- Once fixed: all TFs train with GPU histograms end-to-end
+### GPU Fork — Phase 4 COMPLETE
+- Bug 4 (feature_hist_offsets EFB mapping) FIXED. All 10 rounds trained, EFB active.
+- GPU vs CPU accuracy: exact match (77.64%). SpMV 78x faster, round-level ~equal on 1w.
+- Next: integrate into ml_multi_tf.py for CPCV, deploy to cloud for larger TFs.
 - See `v3.3/gpu_histogram_fork/GPU_SESSION_RESUME.md` for full details
 
 ### Revised ETAs with GPU Histograms
@@ -173,7 +171,7 @@ Previous CPU estimates (for reference):
 
 | TF | Where | Machine | Notes |
 |----|-------|---------|-------|
-| 1w | LOCAL | 13900K + 3090 | DONE (CPCV 67.7%, needs Optuna) |
+| 1w | LOCAL | 13900K + 3090 | DONE (CPCV 77.64%, needs Optuna) |
 | 1d | CLOUD | Machine A (512GB+, 64c+) | Base parquet pre-built locally, upload to skip rebuild |
 | 4h | CLOUD | Machine A (same, sequential) | Base parquet pre-built locally, upload to skip rebuild |
 | 1h | CLOUD | Machine B (2TB+, 128c+) | Full pipeline on cloud |
@@ -185,14 +183,14 @@ Previous CPU estimates (for reference):
 
 1. **v3.2 NEVER completed training** — crashed on feature_name mismatch. No baseline exists.
 2. **max_bin=255** — controls EFB bundle size. max_bin=15 created 18x more bundles than needed.
-3. **GPU histogram fork proved 71x speedup** — Bug 4 (EFB mapping) being debugged by 20 agents. GPU-or-nothing: NO CPU fallbacks.
+3. **GPU histogram fork proved 78x SpMV speedup** — Phase 4 COMPLETE, Bug 4 fixed. GPU = CPU accuracy (77.64%). GPU-or-nothing: NO CPU fallbacks.
 4. **GOSS/CEGB/quantized_grad** — all kill rare esoteric signals. REJECTED.
 5. **HMM regime weights 0.15 is a thesis violation** — crushes counter-trend esoteric signals by 85%.
 6. **Co-occurrence filter 8→3** — matches min_data_in_leaf=3 for 1d/1w.
 7. **enable_bundle=False for 1h/15m** — EFB conflict graph intractable at 10M features.
 8. **Cross features are pure 0/1** — structural zeros = feature OFF, not missing. No NaN after binarization.
 9. **We are in UNCHARTED TERRITORY** — no published work combines esoteric × TA at 2-10M sparse binary features.
-10. **1d cross gen OOM at 68GB locally** — needs 256GB+ RAM. Base features build fine (5,733×3,796).
+10. **1d cross gen OOM at 68GB locally** — completed on cloud. Inference artifacts (4.69M cross names) downloaded. Needs CPCV training.
 11. **4h estimated at 512GB+** — even more features than 1d, must go to cloud.
 
 ---
@@ -211,7 +209,7 @@ Previous CPU estimates (for reference):
 ## ARTIFACTS IN v3.3/ DIRECTORY
 
 ### Models & Training Results
-- model_1w.json (113MB, 2.2M features, CPCV 67.7%, needs Optuna)
+- model_1w.json (113MB, 2.2M features, CPCV 77.64%, needs Optuna)
 - model_1w_cpcv_backup.json
 
 ### Pre-Built Base Feature Parquets (for cloud upload)
@@ -229,10 +227,8 @@ Previous CPU estimates (for reference):
 
 ### GPU Fork
 - v3.3/gpu_histogram_fork/ — full LightGBM fork with CUDA sparse histogram kernel
-- Phase 1-3: COMPLETE (71x speedup, CSR bridge, DLL rebuilt)
-- Bug 4 (feature_hist_offsets EFB mapping): ACTIVE DEBUG — 20 parallel agents
-- GPU-or-nothing: once Bug 4 fixed, all TFs use GPU histograms
-- cuSPARSE SpGEMM (15-40x), GPU nonzero (3-5x), Numba prange binarize (10-20x)
+- Phase 1-4: ALL COMPLETE (78x SpMV speedup, Bug 4 fixed, EFB active, 77.64% accuracy = CPU match)
+- Next: integrate GPU path into ml_multi_tf.py for CPCV, deploy to cloud for larger TFs
 - Revised ETAs: 1w 10min, 1d 1hr, 15m 10.5hr (no Optuna); with Optuna: 1w 2hr, 1d 14hr, 15m 50hr
 
 ## GIT STATUS

@@ -264,21 +264,25 @@ def load_tf_data(tf_name):
             X_all.indices = X_all.indices.astype(np.int32)
         feature_cols = feature_cols + cross_cols
         # RAM check before dense conversion — avoid OOM
-        try:
-            import psutil
-            _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32 (data is downcast)
-            _avail_ram = psutil.virtual_memory().available
-            if _dense_bytes < _avail_ram * 0.7:
-                log.info(f"  Converting sparse→dense for multi-core Optuna ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
+        if _HAS_GPU_FORK and should_use_gpu(tf_name, X_all):
+            is_sparse = True  # Keep sparse for GPU path
+            log.info("  Keeping sparse for GPU fork")
+        else:
+            try:
+                import psutil
+                _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32 (data is downcast)
+                _avail_ram = psutil.virtual_memory().available
+                if _dense_bytes < _avail_ram * 0.7:
+                    log.info(f"  Converting sparse→dense for multi-core Optuna ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
+                    X_all = X_all.toarray()
+                    is_sparse = False
+                else:
+                    log.warning(f"  Dense would need {_dense_bytes/1e9:.1f}GB, only {_avail_ram/1e9:.0f}GB avail — keeping sparse")
+                    is_sparse = True
+            except ImportError:
+                log.info(f"  Converting sparse→dense for multi-core Optuna...")
                 X_all = X_all.toarray()
                 is_sparse = False
-            else:
-                log.warning(f"  Dense would need {_dense_bytes/1e9:.1f}GB, only {_avail_ram/1e9:.0f}GB avail — keeping sparse")
-                is_sparse = True
-        except ImportError:
-            log.info(f"  Converting sparse→dense for multi-core Optuna...")
-            X_all = X_all.toarray()
-            is_sparse = False
         log.info(f"  Combined: {X_all.shape[1]:,} features ({n_base} base + {len(cross_cols):,} crosses) [{'SPARSE' if is_sparse else 'DENSE'}]")
         del X_base_sparse, cross_matrix
     else:
@@ -482,8 +486,11 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                     callbacks=callbacks,
                 )
 
-            # OOS predictions
-            preds = model.predict(X_test)
+            # OOS predictions — GPU path uses num_iteration=best_iter to avoid overfitting trees
+            if use_gpu and sp_sparse.issparse(X_all):
+                preds = model.predict(X_test, num_iteration=best_iter)
+            else:
+                preds = model.predict(X_test)
             pred_labels = np.argmax(preds, axis=1)
             acc = accuracy_score(y_test, pred_labels)
             mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
@@ -498,9 +505,15 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             fold_sortinos.append(sortino)
 
             # Report intermediate value for pruning (after each fold)
-            trial.report(np.mean(fold_scores), fold_i)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+            try:
+                trial.report(np.mean(fold_scores), fold_i)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+            except optuna.TrialPruned:
+                del model
+                import gc
+                gc.collect()
+                raise
 
             del model, dtrain, dval, X_train, X_test
             import gc
@@ -680,7 +693,11 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
                 callbacks=[lgb.early_stopping(_es_patience_final), lgb.log_evaluation(0)],
             )
 
-        preds = model.predict(X_test)
+        # GPU path: use num_iteration=best_iter to avoid overfitting trees
+        if use_gpu and sp_sparse.issparse(X_all):
+            preds = model.predict(X_test, num_iteration=best_iter)
+        else:
+            preds = model.predict(X_test)
         pred_labels = np.argmax(preds, axis=1)
         acc = accuracy_score(y_test, pred_labels)
         prec_long = precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0)
@@ -748,6 +765,9 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
             log.warning(f"  GPU fork detection failed: {e}")
     if use_gpu:
         log.info(f"  GPU FORK: cuda_sparse enabled for Optuna trials")
+        if n_jobs > 1:
+            log.info("  GPU mode: forcing n_jobs=1 (concurrent GPU Boosters not supported)")
+            n_jobs = 1
     else:
         if _HAS_GPU_FORK and is_sparse:
             log.warning(f"  GPU fork available but not viable for {tf_name} — using CPU")

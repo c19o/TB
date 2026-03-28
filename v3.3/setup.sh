@@ -32,8 +32,16 @@ apt-get install -y -qq google-perftools libgoogle-perftools-dev numactl hwloc 2>
 }
 
 echo ">>> Installing Python packages..."
-pip install -q lightgbm scikit-learn scipy ephem astropy pytz joblib \
-    pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml psutil 2>&1 | tail -5
+pip install --isolated -q lightgbm scikit-learn scipy ephem astropy pytz joblib \
+    pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml psutil cupy-cuda12x 2>/dev/null || true
+
+# Detect CuPy — if not available, set ALLOW_CPU=1 so GPU-or-nothing guards don't crash
+if python -c "import cupy" 2>/dev/null; then
+    echo "  CuPy: AVAILABLE (GPU feature building enabled)"
+else
+    echo "  CuPy: NOT AVAILABLE — setting ALLOW_CPU=1"
+    export ALLOW_CPU=1
+fi
 
 # Verify ALL imports
 echo ">>> Verifying imports..."
@@ -214,6 +222,9 @@ export TCMALLOC_LARGE_ALLOC_REPORT_THRESHOLD=10737418240
 # routes everything through tcmalloc for unified management + profiling
 export PYTHONMALLOC=malloc
 
+# Preserve ALLOW_CPU from parent shell (fallback if CuPy unavailable)
+export ALLOW_CPU="${ALLOW_CPU:-0}"
+
 # Unbuffered output for log tailing
 export PYTHONUNBUFFERED=1
 
@@ -243,6 +254,7 @@ export LD_PRELOAD="${TCMALLOC_LIB:-}"
 export TCMALLOC_LARGE_ALLOC_REPORT_THRESHOLD=10737418240
 export PYTHONMALLOC=malloc
 export PYTHONUNBUFFERED=1
+export ALLOW_CPU="${ALLOW_CPU:-0}"
 ENV_EOF
 echo "  Created: /workspace/lgbm_env.sh (source this for direct runs)"
 

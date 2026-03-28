@@ -15,12 +15,12 @@ Read this file completely. Then read RESEARCH.md, ARCHITECTURE.md, and IMPLEMENT
 - GPU detected: RTX 3090, sm_86, 82 SMs, 24GB VRAM
 - `SetExternalCSR()` C API exists (LGBM_BoosterSetExternalCSR in c_api.cpp)
 - `booster.set_external_csr(X_csr)` Python method exists
-- cuSPARSE SpMV histogram benchmark: **99x speedup on real 2.2M features** (1.68ms vs 166.5ms)
+- cuSPARSE SpMV histogram benchmark: **99x speedup on real 2.2M features** (1.68ms vs 166.5ms) — Phase 1 standalone only; integrated Phase 4 result is 78x
 - All 2.2M feature NPZ rebuilt with min_nonzero=3 (downloaded from cloud)
 - Pre-built DLL at: `_build/LightGBM/lib_lightgbm.dll`
 - CSR bridge between C API global and tree learner instance (Phase 3 fix)
 - DLL rebuilt with ninja (build_utf8 directory)
-- CPU training works: **73.9% accuracy in 5 minutes for 1w** — GPU fork is a nice-to-have optimization, not a blocker
+- CPU training works: **77.64% accuracy** (GPU = CPU, exact match on real labels, verified). GPU fork is a nice-to-have optimization, not a blocker
 
 ### Phase 2 Bug (RESOLVED) — Init() Crash
 **Was:** `Init()` crashed before `set_external_csr()` could be called. Deferred upload fix applied in Phase 2.
@@ -62,13 +62,14 @@ The `interleave_grad_kernel` now uses `d_feature_hist_offsets_` to map SpMV feat
 All GPU histogram bugs resolved. 10/10 training rounds completed on 1w (2.2M features, EFB enabled).
 
 **Phase 4 Results:**
-- cuSPARSE SpMV: **78x faster** than CPU, 1.34e-14 relative error (machine precision)
-- Performance: 7.46s/round GPU vs ~7s/round CPU (histogram is only part of each round — split finding still CPU)
+- cuSPARSE SpMV: **78x faster** than CPU for SpMV only, 1.34e-14 relative error (machine precision)
+- Performance: 7.46s/round GPU vs ~7s/round CPU — SpMV is fast but round-level GPU is roughly equal to CPU on 1w (small dataset, split finding still CPU)
 - GPU memory: 87MB allocated, properly freed
 - All 10 training rounds completed successfully with EFB bundling active
+- **GPU vs CPU accuracy: EXACT MATCH (77.64% on real labels, verified)**
 
 ### Previous Decision (Phase 3): GPU Fork Was Deferred
-CPU training delivers 73.9% accuracy in 5 minutes for 1w. Phase 3 deferred GPU fork because the EFB histogram mismatch was blocking. Phase 4 now fixes this AND accelerates the full pipeline beyond just histograms.
+CPU training delivers 77.64% accuracy for 1w. Phase 3 deferred GPU fork because the EFB histogram mismatch was blocking. Phase 4 fixes the EFB mismatch — SpMV is 78x faster but round-level GPU is roughly equal to CPU on small 1w data (818 rows). GPU benefit grows with larger datasets (1d/4h/1h/15m).
 
 ### Build Environment (Windows 11, user's local machine)
 - CUDA Toolkit 12.6 at `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6`
@@ -90,7 +91,7 @@ CPU training delivers 73.9% accuracy in 5 minutes for 1w. Phase 3 deferred GPU f
 ### Files Modified in LightGBM Fork
 ```
 _build/LightGBM/
-  src/treelearner/cuda_sparse_hist_tree_learner.cu  (NEW — 1232 lines CUDA)
+  src/treelearner/cuda_sparse_hist_tree_learner.cu  (NEW — 1470 lines CUDA)
   src/treelearner/cuda_sparse_hist_tree_learner.h   (NEW — header)
   src/treelearner/tree_learner.cpp                  (EDIT — factory dispatch)
   src/io/config.cpp                                 (EDIT — cuda_sparse validation)
@@ -119,7 +120,7 @@ _build/LightGBM/
 
 ### Previous 1w Model Baselines
 - v3.3 cloud (CPCV, 2.2M features): 67.7% accuracy (4-fold avg, model failed to save due to _parent_ds bug)
-- v3.3 CPU (CPCV, 2.2M features): 73.9% accuracy in 5 minutes
+- v3.3 CPU (CPCV, 2.2M features): 77.64% accuracy (GPU = CPU exact match verified)
 - v3.2 (1.1M features): 71.9% accuracy (OLD model, stale NPZ)
 - v3.0 (658K features): unknown
 

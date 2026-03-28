@@ -149,6 +149,8 @@ def _to_gpu(df):
                 df.index = df.index.tz_localize(None)
             return cudf.from_pandas(df)
         except Exception as e:
+            if os.environ.get('ALLOW_CPU', '0') != '1':
+                raise RuntimeError(f"GPU REQUIRED: cuDF conversion failed ({e}) in _to_gpu(). Set ALLOW_CPU=1 for CPU mode.")
             import logging
             logging.getLogger('feature_library').warning(f"GPU FALLBACK: cuDF conversion failed ({e}), falling back to CPU pandas")
             return df
