@@ -321,9 +321,16 @@ void CUDASparseHistTreeLearner::Init(const Dataset* train_data,
     if (num_classes_ < 1) num_classes_ = 1;
 
     /* Total histogram bins — from the base class share_state_ which was
-     * initialized by SerialTreeLearner::Init() above. This accounts for
-     * EFB bundling: num_hist_total_bin() returns the actual number of
-     * bins after EFB (not raw feature count). */
+     * initialized by SerialTreeLearner::Init() above.
+     *
+     * With enable_bundle=False (REQUIRED for GPU SpMV):
+     *   total_hist_bins == n_features * 2  (2 bins per binary feature)
+     *   hist buffer == n_features * 4 doubles (grad+hess per bin)
+     *
+     * With EFB enabled (BROKEN for GPU SpMV):
+     *   total_hist_bins == ~23K (bundled), but SpMV produces n_features
+     *   results -> buffer overflow -> corrupted histograms.
+     */
     total_hist_bins_ = share_state_->num_hist_total_bin();
     hist_buf_elems_  = total_hist_bins_ * 2;  /* interleaved grad/hess */
 
@@ -331,6 +338,24 @@ void CUDASparseHistTreeLearner::Init(const Dataset* train_data,
               "%d classes, %lld hist bins",
               static_cast<long long>(n_rows_), n_features_,
               num_classes_, static_cast<long long>(total_hist_bins_));
+
+    /* Validate: with enable_bundle=False, total_hist_bins should equal
+     * n_features * 2 (each binary feature has 2 bins).  If EFB is still
+     * active, total_hist_bins << n_features and SpMV will overflow. */
+    int64_t expected_bins = static_cast<int64_t>(n_features_) * 2;
+    Log::Info("[CUDASparseHist] EFB check: total_hist_bins=%lld, "
+              "n_features*2=%lld, ratio=%.2f",
+              static_cast<long long>(total_hist_bins_),
+              static_cast<long long>(expected_bins),
+              static_cast<double>(total_hist_bins_) / std::max(1LL, expected_bins));
+
+    if (total_hist_bins_ < n_features_) {
+        Log::Fatal("[CUDASparseHist] FATAL: total_hist_bins (%lld) < n_features "
+                   "(%d). EFB is bundling features — GPU SpMV will overflow the "
+                   "histogram buffer! Set enable_bundle=False in lgb.Dataset() "
+                   "params to fix this.",
+                   static_cast<long long>(total_hist_bins_), n_features_);
+    }
 
     /* Initialize GPU resources */
     InitGPU();
