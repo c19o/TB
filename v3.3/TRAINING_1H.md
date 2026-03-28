@@ -394,6 +394,7 @@ grep -E "Fold [0-9]|fold.*complete|accuracy|split" /workspace/1h_log.txt
 | feature_pre_filter | False | CRITICAL -- True silently kills rare esoteric features |
 | is_enable_sparse | True | Stays sparse (dense = 2.3TB impossible) |
 | force_col_wise | True | Required for sparse CSR with EFB |
+| enable_bundle | False | EFB intractable at 7-8M features with 91K rows — skips bundle scan |
 | path_smooth | 2.0 | Regularization for sparse signal stability |
 | Barriers | tp=2.0 ATR, sl=1.5 ATR, max_hold=24 bars | TRIPLE_BARRIER_CONFIG['1h'] (asymmetric) |
 

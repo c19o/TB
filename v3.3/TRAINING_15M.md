@@ -99,9 +99,9 @@ At 227K rows x 10M features: dense = 227,000 x 10,000,000 x 4 bytes = **~8.5 TB*
 ## Optuna Configuration
 
 - **Warm-started from 1h** (last in cascade: 1w -> 1d -> 4h -> 1h -> 15m)
-- **Phase 1:** 30 trials (2 seeded + 8 random + 20 TPE), 2-fold CPCV, LR=0.15
+- **Cold:** Phase 1 (30 trials) + Validation Gate (top-3, 4-fold CPCV)
+- **Warm:** Phase 1 (15 trials) + Validation Gate (top-2, 4-fold CPCV)
 - **Row subsample:** 15% (227K -> ~34K rows) -- search only, final model uses ALL rows
-- **Validation gate:** Top 3 re-evaluated with 4-fold CPCV
 - **Final retrain:** Full (6,2) CPCV, 800 rounds, LR=0.03
 - **n_jobs:** Auto (total_cores // 8), or env `OPTUNA_N_JOBS`
 - **Engine:** CPU for search (row subsample makes GPU marginal). GPU for final retrain only.

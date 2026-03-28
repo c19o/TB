@@ -692,7 +692,7 @@ if __name__ == '__main__':
   _parser.add_argument('--boost-rounds', type=int, default=800, help='LightGBM num_boost_round (default 800)')
   _parser.add_argument('--n-groups', type=int, default=None, help='Override CPCV n_groups (default: per-TF)')
   _parser.add_argument('--search-mode', action='store_true', default=False,
-                        help='Use OPTUNA_SEARCH_CPCV_GROUPS for faster Optuna search trials')
+                        help='Use OPTUNA_PHASE1_CPCV_GROUPS for faster Optuna search trials')
   _parser.add_argument('--parallel-splits', action='store_true', default=False,
                         help='(legacy, now auto-detected) Kept for backward compat')
   _parser.add_argument('--no-parallel-splits', action='store_true', default=False,
@@ -999,8 +999,8 @@ if __name__ == '__main__':
               log(f"  CPCV override: n_groups={n_groups}, n_test=1 (--n-groups flag)")
           elif _args.search_mode:
               # Optuna search mode: fewer CPCV groups for faster evaluation
-              from config import OPTUNA_SEARCH_CPCV_GROUPS
-              n_groups = OPTUNA_SEARCH_CPCV_GROUPS
+              from config import OPTUNA_PHASE1_CPCV_GROUPS
+              n_groups = OPTUNA_PHASE1_CPCV_GROUPS
               n_test_groups = 1
               log(f"  CPCV search mode: n_groups={n_groups}, n_test=1 (--search-mode flag)")
           else:

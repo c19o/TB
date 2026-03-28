@@ -17,7 +17,7 @@ This is NOT a conventional trading bot. The edge is 2.9M+ sparse binary cross fe
 - **TRAINING_1D.md** — LOCAL or cheap cloud (128c, 256GB+). CPU faster than GPU. ~7 hrs w/Optuna ($12), ~2.5 hrs without ($4).
 - **TRAINING_4H.md** — Cloud 512GB+ RAM. GPU STARTS to help. ~5 hrs GPU ($13), ~13 hrs CPU ($22).
 - **TRAINING_1H.md** — Cloud 768GB-1TB+ RAM. GPU REQUIRED (CUDA 12.x). ~7 hrs GPU ($25), ~17 hrs CPU ($65). Same machine for Optuna (54GB upload impractical).
-- **TRAINING_15M.md** — Cloud 2TB+ RAM. GPU REQUIRED. Memmap for cross gen. ~15 hrs GPU ($53), ~44 hrs CPU ($150). User picks machine.
+- **TRAINING_15M.md** — Cloud 1.5TB+ RAM. GPU REQUIRED. Memmap for cross gen. ~15 hrs GPU ($53), ~44 hrs CPU ($150). User picks machine.
 
 ## COMPLETE DATABASE LIST (ALL REQUIRED — ZERO MISSING)
 ```

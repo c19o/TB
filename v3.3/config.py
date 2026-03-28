@@ -296,42 +296,47 @@ SHAP_N_SAMPLES = 10000        # High-confidence samples for SHAP analysis
 SHAP_TOP_N = 1000             # Top N features by |SHAP| to report
 SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_')
 
-# ── Optuna Optimizer Config (v3.3 — Perplexity-optimized for 2.9M features) ──
-# Per Perplexity: save_binary() + reduced rounds + 2-fold search = 8-9x speedup
-# All features stay in model. Only tuning HOW model uses them.
-OPTUNA_STAGE1_TRIALS = 100         # adequate for 10D TPE (10x dimensions)
-OPTUNA_STAGE2_TRIALS = 50          # narrowed ranges from S1 top-5 — fewer trials needed; full CPCV = 2x cost/trial
-# Warm-start: reduced trials for downstream TFs (inherit params from prior TF)
-OPTUNA_WARMSTART_STAGE1_TRIALS = 50   # 50+50 = 100 total when warm-started
-OPTUNA_WARMSTART_STAGE2_TRIALS = 30   # warm-start + narrowed ranges = even less exploration needed
-OPTUNA_N_STARTUP_TRIALS = 10       # random trials before TPE kicks in
+# ── Optuna v2: Phase 1 (rapid search) + Validation Gate ──
+# Phase 1: 2 seeded + 8 random + 15 TPE = 25 trials, 2-fold CPCV, fast LR
+# Validation Gate: top-3 re-evaluated with 4-fold CPCV, longer rounds
+# Final retrain: unchanged (full CPCV K=2, 800 rounds, LR=0.03)
 OPTUNA_SEED = 42
-OPTUNA_PRUNER = 'median'           # MedianPruner (Hyperband incompatible with CPCV — too few fold steps)
-OPTUNA_PRUNER_MIN_RESOURCE = 1     # min CPCV folds before pruning can kill a trial
-OPTUNA_PRUNER_REDUCTION_FACTOR = 3
-OPTUNA_SEARCH_LR = 0.08            # higher LR during search (faster convergence)
-OPTUNA_SEARCH_ROUNDS = 300         # WAS 150 — BUG: ES patience=125 at lr=0.08, so ES never fired with 150 rounds
-OPTUNA_SEARCH_ES_PATIENCE = 94     # max(50, int(75 * 0.1 / 0.08)) = 94 — gives rare esoteric features 50-100 rounds to appear in tree splits at LR=0.08
-OPTUNA_FINAL_LR = 0.03             # original LR for final model
-OPTUNA_FINAL_ROUNDS = 800          # full rounds for final model only
-OPTUNA_SEARCH_CPCV_GROUPS = 2      # 2-fold for search speed (Stage 1)
-OPTUNA_STAGE2_CPCV_GROUPS = 4      # Stage 2 uses 4-fold for speed (full K=2 only for final CPCV eval)
 
-# Per-TF Optuna trial overrides (smaller datasets = fewer useful trials, larger = more expensive per trial)
-OPTUNA_TF_STAGE1_TRIALS = {
-    '1w': 60, '1d': 100, '4h': 100, '1h': 100, '15m': 100,
-}
-OPTUNA_TF_STAGE2_TRIALS = {
-    '1w': 30, '1d': 50, '4h': 50, '1h': 50, '15m': 40,
-}
-OPTUNA_TF_N_STARTUP_TRIALS = {
-    '1w': 10, '1d': 10, '4h': 10, '1h': 10, '15m': 15,  # 15m higher variance needs more random warm-up
-}
-# Per-TF row subsample for Optuna search (1w too few rows to subsample)
+OPTUNA_PHASE1_TRIALS = 25              # 2 seeded + 8 random + 15 TPE
+OPTUNA_PHASE1_CPCV_GROUPS = 2          # 2-fold for speed
+OPTUNA_PHASE1_ROUNDS = 60              # max rounds (ES fires at ~30)
+OPTUNA_PHASE1_LR = 0.15                # 5x final LR for fast convergence
+OPTUNA_PHASE1_ES_PATIENCE = 15         # aggressive ES during search
+OPTUNA_PHASE1_N_STARTUP = 8            # random trials before TPE
+
+OPTUNA_VALIDATION_TOP_K = 3            # validate top-K from Phase 1
+OPTUNA_VALIDATION_CPCV_GROUPS = 4      # 4-fold validation
+OPTUNA_VALIDATION_ROUNDS = 200         # longer eval
+OPTUNA_VALIDATION_LR = 0.08            # closer to final LR
+OPTUNA_VALIDATION_ES_PATIENCE = 50     # patient for rare signals
+
+# Warm-start (downstream TFs)
+OPTUNA_WARMSTART_PHASE1_TRIALS = 15    # fewer trials needed
+OPTUNA_WARMSTART_VALIDATION_TOP_K = 2  # fewer validation runs
+
+# Row subsampling for search (final model always uses ALL rows)
 OPTUNA_TF_ROW_SUBSAMPLE = {
-    '1w': 1.0, '1d': 1.0, '4h': 1.0, '1h': 1.0, '15m': 1.0,  # ALL 1.0 — subsampling kills rare signals below min_data_in_leaf
+    '1w': 1.0,    # 818 rows — can't subsample
+    '1d': 1.0,    # 5733 rows — too small
+    '4h': 0.35,   # 23K → ~8K rows
+    '1h': 0.20,   # 91K → ~18K rows
+    '15m': 0.15,  # 227K → ~34K rows
 }
-OPTUNA_SEARCH_ROW_SUBSAMPLE = 1.0  # default fallback — subsampling kills rare signals
+
+# Per-TF overrides
+OPTUNA_TF_PHASE1_TRIALS = {
+    '1w': 20, '1d': 25, '4h': 25, '1h': 25, '15m': 30,
+}
+
+# Keep final retrain unchanged
+OPTUNA_FINAL_LR = 0.03
+OPTUNA_FINAL_ROUNDS = 800
+
 # n_jobs: env var override or auto
 OPTUNA_N_JOBS = int(os.environ.get('OPTUNA_N_JOBS', 0))  # 0 = auto (total_cores // 8)
 

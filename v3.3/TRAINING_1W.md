@@ -201,6 +201,9 @@ python -u v2_cross_generator.py --tf 1w --symbol BTC --save-sparse
 If GPU (RTX 3090) is available and CuPy is installed, it will use GPU SpGEMM (~4 min).
 If not, CPU fallback (~8 min). Both produce identical results.
 
+Cross gen uses **per-type NPZ checkpointing**: each cross type (dx, ax, etc.) saves a
+checkpoint file. If OOM kills the process, restart resumes from the last completed type.
+
 ### Verify Step 2
 
 ```bash
@@ -313,7 +316,7 @@ python -u run_optuna_local.py --tf 1w
 **What Optuna searches:**
 - num_leaves: [4, 31] (v3.2's best was num_leaves=7)
 - min_data_in_leaf: [3, 15]
-- feature_fraction: [0.01, 0.3]
+- feature_fraction: [0.02, 0.3] (lower bound 0.02, not 0.01)
 - feature_fraction_bynode: [0.1, 1.0]
 - bagging_fraction: [0.5, 1.0]
 - lambda_l1, lambda_l2: [0, 10]
@@ -323,6 +326,12 @@ python -u run_optuna_local.py --tf 1w
 
 **1W is the root of warm-start cascade.** It runs ALL trials cold (no parent params).
 Downstream TFs (1d, 4h, etc.) will inherit 1w's best params as seeded trials.
+
+**Optuna implementation details:**
+- **PatientPruner** wraps MedianPruner with patience=5 and min_delta=0.001 (5 stagnant reports = prune)
+- **Dataset.subset()** used for Optuna fold construction (1000x faster than `reference=` re-parsing)
+- **save_binary bridge:** Optuna saves `lgbm_dataset_1w.bin` via `save_binary()` which the final training step reuses (skips EFB rebuild)
+- **40% accuracy floor:** Model is NOT saved if CPCV mean accuracy < 40% (prevents garbage models)
 
 ### Verify Step 4
 
@@ -364,7 +373,7 @@ python -u ml_multi_tf.py --tf 1w --boost-rounds 800
 
 **What changes vs Step 3:**
 - LightGBM params come from `optuna_configs_1w.json` instead of config.py defaults
-- Old model backed up to `model_1w_prev.json` (if backup logic is in ml_multi_tf.py)
+- Old model backed up to `model_1w_cpcv_backup.json` automatically
 - Full CPCV with (5, 2) = 10 splits, K=2
 - Learning rate: 0.03 (final rate, not Optuna's 0.15 search rate)
 

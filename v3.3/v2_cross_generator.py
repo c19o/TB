@@ -1168,6 +1168,72 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     _total_collected = 0
 
+    # ── Per-cross-type checkpoint/resume ──
+    # Each completed cross type is saved as an individual NPZ + JSON checkpoint.
+    # On OOM at cross 12, types 1-11 are recoverable from checkpoint files.
+    import json as _json_mod
+    _ckpt_dir = out_dir
+    _ckpt_pattern = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*.npz')
+    _completed_prefixes = set()
+    _checkpoint_files = sorted(glob.glob(_ckpt_pattern))
+    if _checkpoint_files:
+        log(f"  Found {len(_checkpoint_files)} checkpoint(s), resuming...")
+        for _cf in _checkpoint_files:
+            _cf_base = os.path.basename(_cf)
+            # Pattern: _cross_checkpoint_{tf}_{prefix}.npz
+            _cf_prefix = _cf_base.replace(f'_cross_checkpoint_{tf}_', '').replace('.npz', '')
+            # Skip names json files that might match glob
+            if '_names' in _cf_prefix:
+                continue
+            _completed_prefixes.add(_cf_prefix)
+            # Load the CSR chunk
+            _resume_csr = sparse.load_npz(_cf)
+            _csr_chunks.append(_resume_csr)
+            # Load matching names
+            _cf_names_path = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{_cf_prefix}_names.json')
+            if os.path.exists(_cf_names_path):
+                with open(_cf_names_path, 'r') as _f:
+                    _resume_names = _json_mod.load(_f)
+                all_cross_names.extend(_resume_names)
+                _total_collected += len(_resume_names)
+                col_offset += _resume_csr.shape[1]
+                log(f"    Restored checkpoint: {_cf_prefix} ({_resume_csr.shape[1]:,} features, {len(_resume_names):,} names)")
+            else:
+                log(f"    WARNING: checkpoint {_cf_prefix} missing names file, skipping")
+                _csr_chunks.pop()
+                _completed_prefixes.discard(_cf_prefix)
+            del _resume_csr
+        gc.collect()
+        _malloc_trim()
+        log(f"  Resumed {len(_completed_prefixes)} cross type(s): {sorted(_completed_prefixes)}")
+        log(f"  Accumulated: {_total_collected:,} features so far")
+
+    def _save_checkpoint(cross_prefix):
+        """Save the last completed cross type's CSR chunk + names as a checkpoint file."""
+        if not _csr_chunks:
+            return
+        _last_chunk = _csr_chunks[-1]
+        _n_cols_this = _last_chunk.shape[1]
+        _these_names = all_cross_names[-_n_cols_this:]
+        _ckpt_npz = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}.npz')
+        _ckpt_names = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}_names.json')
+        sparse.save_npz(_ckpt_npz, _last_chunk)
+        with open(_ckpt_names, 'w') as _f:
+            _json_mod.dump([str(n) for n in _these_names], _f)
+        log(f"    Checkpoint saved: {cross_prefix} ({_n_cols_this:,} features)")
+
+    def _cleanup_checkpoints():
+        """Delete all checkpoint files after successful final save."""
+        _removed = 0
+        for _f in glob.glob(os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*.npz')):
+            os.remove(_f)
+            _removed += 1
+        for _f in glob.glob(os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*_names.json')):
+            os.remove(_f)
+            _removed += 1
+        if _removed:
+            log(f"  Cleaned up {_removed} checkpoint files")
+
     def _collect_cross(label, names, rows_list, cols_list, data_list, n_new_cols):
         """Convert cross type results to CSR. Handles both CSR-flushed and legacy COO paths."""
         nonlocal col_offset, _total_collected
@@ -1222,28 +1288,37 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         return max_crosses is not None and _total_collected >= max_crosses
 
     # ── Cross 1: DOY × ALL contexts ──
-    log("  Cross 1: DOY windows × ALL contexts...")
-    names, r, c, d, nc = gpu_batch_cross(doy_names, doy_arrays, ctx_names, ctx_arrays,
-                                          'dx', gpu_id=gpu_id, col_offset=col_offset,
-                                          max_features=_remaining())
-    _collect_cross('dx_', names, r, c, d, nc)
-    del names, r, c, d
-    gc.collect()
-    _malloc_trim()
+    if 'dx' in _completed_prefixes:
+        log("  Cross 1 (dx): SKIPPED (checkpoint)")
+    else:
+        log("  Cross 1: DOY windows × ALL contexts...")
+        names, r, c, d, nc = gpu_batch_cross(doy_names, doy_arrays, ctx_names, ctx_arrays,
+                                              'dx', gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('dx_', names, r, c, d, nc)
+        _save_checkpoint('dx')
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
 
     # ── Cross 2: Astro × TA ──
-    if not _at_limit() and astro_n and ta_n:
+    if 'ax' in _completed_prefixes:
+        log("  Cross 2 (ax): SKIPPED (checkpoint)")
+    elif not _at_limit() and astro_n and ta_n:
         log("  Cross 2: Astro × TA...")
         names, r, c, d, nc = gpu_batch_cross(astro_n, astro_a, ta_n, ta_a, 'ax',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('ax_', names, r, c, d, nc)
+        _save_checkpoint('ax')
         del names, r, c, d
         gc.collect()
         _malloc_trim()
 
     # ── Cross 3: Multi-astro combos × TA ──
-    if not _at_limit() and len(groups['astro']) >= 2 and ta_n:
+    if 'ax2' in _completed_prefixes:
+        log("  Cross 3 (ax2): SKIPPED (checkpoint)")
+    elif not _at_limit() and len(groups['astro']) >= 2 and ta_n:
         log("  Cross 3: Multi-astro combos × TA...")
         ax2_names, ax2_arrays = create_multi_signal_combos(groups['astro'], 'a2', max_pairs=50)
         if ax2_names:
@@ -1251,13 +1326,16 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                                   gpu_id=gpu_id, col_offset=col_offset,
                                                   max_features=_remaining())
             _collect_cross('ax2_', names, r, c, d, nc)
+            _save_checkpoint('ax2')
             del names, r, c, d
         del ax2_names, ax2_arrays
         gc.collect()
         _malloc_trim()
 
     # ── Cross 4: Multi-TA combos × DOY + astro ──
-    if not _at_limit() and len(groups['ta']) >= 2:
+    if 'ta2' in _completed_prefixes:
+        log("  Cross 4 (ta2): SKIPPED (checkpoint)")
+    elif not _at_limit() and len(groups['ta']) >= 2:
         log("  Cross 4: Multi-TA combos × DOY + astro...")
         ta2_names, ta2_arrays = create_multi_signal_combos(groups['ta'][:60], 'ta2', max_pairs=30)
         if ta2_names:
@@ -1267,13 +1345,16 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                                   'ta2', gpu_id=gpu_id, col_offset=col_offset,
                                                   max_features=_remaining())
             _collect_cross('ta2_', names, r, c, d, nc)
+            _save_checkpoint('ta2')
             del names, r, c, d, combined_n, combined_a
         del ta2_names, ta2_arrays
         gc.collect()
         _malloc_trim()
 
     # ── Cross 5: Esoteric × TA ──
-    if not _at_limit() and groups['esoteric'] and ta_n:
+    if 'ex2' in _completed_prefixes:
+        log("  Cross 5 (ex2): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['esoteric'] and ta_n:
         log("  Cross 5: Esoteric × TA...")
         eso_n = [s[0] for s in groups['esoteric']]
         eso_a = [s[1] for s in groups['esoteric']]
@@ -1281,12 +1362,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('ex2_', names, r, c, d, nc)
+        _save_checkpoint('ex2')
         del names, r, c, d
         gc.collect()
         _malloc_trim()
 
     # ── Cross 6: Space weather × TA (targeted — was ALL) ──
-    if not _at_limit() and groups['space_weather'] and ta_n:
+    if 'sw' in _completed_prefixes:
+        log("  Cross 6 (sw): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['space_weather'] and ta_n:
         log("  Cross 6: Space weather × TA...")
         sw_n = [s[0] for s in groups['space_weather']]
         sw_a = [s[1] for s in groups['space_weather']]
@@ -1294,12 +1378,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('sw_', names, r, c, d, nc)
+        _save_checkpoint('sw')
         del names, r, c, d
         gc.collect()
         _malloc_trim()
 
     # ── Cross 7: Session/HOD × TA+astro (targeted — was ALL) ──
-    if not _at_limit() and groups['session'] and (ta_n or astro_n):
+    if 'hod' in _completed_prefixes:
+        log("  Cross 7 (hod): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['session'] and (ta_n or astro_n):
         log("  Cross 7: Session × TA+astro...")
         hod_n = [s[0] for s in groups['session']]
         hod_a = [s[1] for s in groups['session']]
@@ -1309,12 +1396,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('hod_', names, r, c, d, nc)
+        _save_checkpoint('hod')
         del names, r, c, d, hod_right_n, hod_right_a
         gc.collect()
         _malloc_trim()
 
     # ── Cross 8: Macro × TA (targeted — was ALL) ──
-    if not _at_limit() and groups['macro'] and ta_n:
+    if 'mx' in _completed_prefixes:
+        log("  Cross 8 (mx): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['macro'] and ta_n:
         log("  Cross 8: Macro × TA...")
         mx_n = [s[0] for s in groups['macro']]
         mx_a = [s[1] for s in groups['macro']]
@@ -1322,12 +1412,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('mx_', names, r, c, d, nc)
+        _save_checkpoint('mx')
         del names, r, c, d
         gc.collect()
         _malloc_trim()
 
     # ── Cross 9: Volatility regime × TA+DOY (targeted — was ALL) ──
-    if not _at_limit() and groups['volatility'] and (ta_n or doy_names):
+    if 'vx' in _completed_prefixes:
+        log("  Cross 9 (vx): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['volatility'] and (ta_n or doy_names):
         log("  Cross 9: Volatility × TA+DOY...")
         vx_n = [s[0] for s in groups['volatility']]
         vx_a = [s[1] for s in groups['volatility']]
@@ -1337,12 +1430,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('vx_', names, r, c, d, nc)
+        _save_checkpoint('vx')
         del names, r, c, d, vx_right_n, vx_right_a
         gc.collect()
         _malloc_trim()
 
     # ── Cross 10: Planetary aspects × TA (targeted — was ALL) ──
-    if not _at_limit() and groups['aspect'] and ta_n:
+    if 'asp' in _completed_prefixes:
+        log("  Cross 10 (asp): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['aspect'] and ta_n:
         log("  Cross 10: Aspects × TA...")
         asp_n = [s[0] for s in groups['aspect']]
         asp_a = [s[1] for s in groups['aspect']]
@@ -1350,12 +1446,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('asp_', names, r, c, d, nc)
+        _save_checkpoint('asp')
         del names, r, c, d
         gc.collect()
         _malloc_trim()
 
     # ── Cross 11: Price numerology × TA (targeted — was ALL) ──
-    if not _at_limit() and groups['price_num'] and ta_n:
+    if 'pn' in _completed_prefixes:
+        log("  Cross 11 (pn): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['price_num'] and ta_n:
         log("  Cross 11: Price numerology × TA...")
         pn_n = [s[0] for s in groups['price_num']]
         pn_a = [s[1] for s in groups['price_num']]
@@ -1363,12 +1462,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('pn_', names, r, c, d, nc)
+        _save_checkpoint('pn')
         del names, r, c, d
         gc.collect()
         _malloc_trim()
 
     # ── Cross 12: Moon position × TA (targeted — was ALL) ──
-    if not _at_limit() and groups['moon'] and ta_n:
+    if 'mn' in _completed_prefixes:
+        log("  Cross 12 (mn): SKIPPED (checkpoint)")
+    elif not _at_limit() and groups['moon'] and ta_n:
         log("  Cross 12: Moon × TA...")
         mn_n = [s[0] for s in groups['moon']]
         mn_a = [s[1] for s in groups['moon']]
@@ -1376,6 +1478,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('mn_', names, r, c, d, nc)
+        _save_checkpoint('mn')
         del names, r, c, d
         gc.collect()
         _malloc_trim()
@@ -1496,6 +1599,9 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             os.remove(npz_path)
             raise
         atomic_save_json(cross_names, names_path)
+
+        # Final save succeeded — clean up per-cross-type checkpoints
+        _cleanup_checkpoints()
 
         size_mb = os.path.getsize(npz_path) / 1e6
         log(f"  Saved: {npz_path} ({size_mb:.1f} MB)")

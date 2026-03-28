@@ -157,14 +157,74 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 10. [DONE] Optuna optimizations: Dataset reuse, round-level pruning, CPU parallel search, warm-start cascade, ES patience fix
 11. [NEXT] Deploy to cloud, verify GPU fork on 1d/4h/1h/15m (larger datasets where GPU benefit grows)
 
-## OPTUNA INTEGRATION STATUS (2026-03-28)
-GPU fork is fully integrated into `run_optuna_local.py`:
-- **Search stages**: CPU parallel (n_jobs) — GPU not used during search to enable trial parallelism
-- **Final retrain**: GPU (cuda_sparse + set_external_csr) — single trial, maximum speed
-- **Dataset reuse**: Parent lgb.Dataset built once, EFB bins shared across all trials
-- **Round-level pruning**: Both CPU and GPU paths report val loss every 10 rounds to Optuna
-- **Warm-start cascade**: 1w->1d->4h->1h->15m, parent params narrow search by +/-20%
-- **ES patience fix**: OPTUNA_SEARCH_ES_PATIENCE=30 (decoupled from LR-scaled formula)
+## FULL PIPELINE STATUS (2026-03-28, end of session)
+
+### Optuna v2 Architecture (Phase 1 + Validation Gate)
+- **Phase 1**: 20-30 trials, 2-fold CPCV, 60 rounds max, LR=0.15, ES patience=15
+- **Validation Gate**: Top 2-3 configs, 4-fold CPCV, 200 rounds, LR=0.08
+- **Final retrain**: Full K=2 CPCV (10-15 splits), 800 rounds, LR=0.03
+- **Result**: Optuna takes 0.3-0.7× final training time (was 11× before)
+- **CPU for search** (n_jobs=4), GPU for final retrain only
+- **PatientPruner** (patience=5, min_delta=0.001) wrapping MedianPruner
+- **Dataset.subset()** for instant fold construction (1000× faster than reference=)
+- **Row subsampling** for search: 4h=35%, 1h=20%, 15m=15% (final always 100%)
+- **Warm-start cascade**: 1w(cold)→1d→4h→1h→15m (enqueue + narrowed ranges)
+
+### Targeted Crossing (50% fewer features, matrix intact)
+- Crosses 6-12: right side changed from ALL→TA (removes self-referential noise)
+- Cross 13 (rdx_): REMOVED (redundant with DOY×ALL)
+- 4-tier binarization: KEPT (user preference — different market conditions)
+- All base features preserved, all cross-group interactions preserved
+- Expected: ~1-3M features per TF (was 2-6M)
+
+### Asymmetric Triple-Barrier Labels
+- 1w: tp=3.5×ATR, sl=1.2×ATR, max_hold=4 (was symmetric 3×)
+- Fixes 0% SHORT precision (56 samples → ~160-200 expected)
+- Tie-break fix: both barriers same bar → closest wins
+- ALL old parquets deleted (stale symmetric labels)
+
+### CPCV K=2 for Final Evaluation
+- 1w/1d: (5,2) = 10 splits, 4 PBO paths
+- 4h/1h/15m: (6,2) = 15 splits, 5 PBO paths
+- Optuna search stays 2-fold (Phase 1) and 4-fold (Validation Gate)
+- Enables real Probability of Backtest Overfitting detection
+
+### Resilience
+- Cross gen checkpoint: per-type NPZ save + resume on OOM
+- Model backup: _prev.json before overwrite
+- Accuracy floor: 40% minimum before saving model
+- save_binary bridge: Optuna→training Dataset sharing
+- Nuclear clean: TF-specific filter (preserves current TF artifacts)
+- is_unbalance=True added to Optuna search for 1w/1d
+
+### Config Changes (from this session)
+- num_leaves caps raised: 1d=127, 4h=255, 1h=511, 15m=511
+- min_data_in_leaf: 1w/1d raised 3→5
+- min_sum_hessian_in_leaf: 1.5 (new adaptive guard)
+- path_smooth: 0.1→2.0 (dampen extreme leaf predictions)
+- feature_fraction: 0.02-0.3 range (was 0.01-0.1)
+- num_leaves floor: 4 (was 15, v3.2 best was 7)
+- bagging_fraction ceiling: 1.0 (was 0.95, v3.2 best was 0.953)
+- Embargo: max_hold_bars instead of 1% (71× too wide for 15m)
+
+### GPU vs CPU per TF (Score 1200 + RTX 5090)
+| TF | Rows | CPU/round | GPU/round | Winner |
+|----|------|-----------|-----------|--------|
+| 1w | 818 | 0.27s | 2.3s | CPU (8.5×) |
+| 1d | 5,733 | 1.25s | 2.5s | CPU (2×) |
+| 4h | 23K | 3.6s | 2.0s | GPU (1.8×) |
+| 1h | 91K | 15s | 3.0s | GPU (5×) |
+| 15m | 227K | 25s | 3.5s | GPU (7×) |
+
+### ETAs (Score 1200 + 5090, with Optuna)
+| TF | Optuna | Final CPCV | Total |
+|----|--------|-----------|-------|
+| 1w | 6 min | 9 min | 20 min |
+| 1d | 21 min | 42 min | 1.2 hr |
+| 4h | 31 min | 1.7 hr | 2.5 hr |
+| 1h | 49 min | 2.5 hr | 4.8 hr |
+| 15m | 58 min | 2.9 hr | 6.8 hr |
+| **All 5** | **2.8 hr** | **7.8 hr** | **15.3 hr** |
 
 ## KEY FILES
 - Binary cache: `v3.3/lgbm_dataset_1w.bin` (252MB, skips 4.5min EFB)
