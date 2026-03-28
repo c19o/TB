@@ -133,7 +133,23 @@ def _compute_sample_uniqueness(t0_arr, t1_arr, n_bars):
 
 
 def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
-                           max_hold_bars=None, embargo_pct=0.01):
+                          t0_arr=None, t1_arr=None, max_hold_bars=None,
+                          embargo_pct=0.01):
+    """Generate Combinatorial Purged Cross-Validation splits.
+
+    Args:
+        n_samples: total number of samples
+        n_groups: number of contiguous groups to split data into (default 6)
+        n_test_groups: number of groups used as test in each path (default 2)
+        t0_arr: event start indices (for purging). If None, uses sample index.
+        t1_arr: event end indices (for purging). If None, t0 + max_hold_bars.
+        max_hold_bars: maximum label horizon (for purging when t0/t1 not provided)
+        embargo_pct: fraction of samples to embargo after each test boundary
+
+    Returns:
+        list of (train_indices, test_indices) tuples, one per CPCV path
+    """
+    # Split into n_groups contiguous groups
     group_size = n_samples // n_groups
     groups = []
     for g in range(n_groups):
@@ -142,26 +158,57 @@ def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
         groups.append(np.arange(start, end))
 
     embargo_size = max(1, int(n_samples * embargo_pct))
+
+    # Generate all combinatorial test paths
     all_paths = list(combinations(range(n_groups), n_test_groups))
 
     splits = []
     for test_group_ids in all_paths:
+        # Test indices = union of selected groups
         test_idx = np.concatenate([groups[g] for g in test_group_ids])
+
+        # Train indices = all other groups
         train_group_ids = [g for g in range(n_groups) if g not in test_group_ids]
         train_idx = np.concatenate([groups[g] for g in train_group_ids])
 
-        # Embargo: remove training samples near test boundaries
-        if embargo_size > 0:
+        # --- Purging ---
+        # Remove training samples whose label window overlaps with any test sample
+        if t0_arr is not None and t1_arr is not None:
             test_min = test_idx.min()
             test_max = test_idx.max()
-            embargo_mask = np.ones(len(train_idx), dtype=bool)
-            for ti in range(len(train_idx)):
-                idx = train_idx[ti]
-                if abs(idx - test_min) < embargo_size or abs(idx - test_max) < embargo_size:
-                    embargo_mask[ti] = False
-            train_idx = train_idx[embargo_mask]
 
-        splits.append((train_idx, test_idx))
+            # For each training sample, check if its label window overlaps test range
+            # Label window of sample i = [t0_arr[i], t1_arr[i]]
+            # Purge if: t0_arr[train_i] <= test_max AND t1_arr[train_i] >= test_min
+            train_t0 = t0_arr[train_idx]
+            train_t1 = t1_arr[train_idx]
+            # Purge: label window overlaps with any test sample's time range
+            overlap = (train_t1 >= test_min) & (train_t0 <= test_max)
+            train_idx = train_idx[~overlap]
+        elif max_hold_bars is not None:
+            # Simple purge: remove training samples within max_hold_bars of test boundaries
+            test_set = set(test_idx)
+            test_boundaries = []
+            for g in test_group_ids:
+                test_boundaries.append(groups[g][0])   # start of test group
+                test_boundaries.append(groups[g][-1])   # end of test group
+
+            purge_mask = np.zeros(len(train_idx), dtype=bool)
+            for boundary in test_boundaries:
+                purge_mask |= (np.abs(train_idx - boundary) <= max_hold_bars)
+            train_idx = train_idx[~purge_mask]
+
+        # --- Embargo ---
+        # Remove training samples in embargo zone after each test group boundary
+        for g in test_group_ids:
+            test_end = groups[g][-1]
+            embargo_start = test_end + 1
+            embargo_end = test_end + embargo_size
+            embargo_mask = (train_idx >= embargo_start) & (train_idx <= embargo_end)
+            train_idx = train_idx[~embargo_mask]
+
+        if len(train_idx) > 0 and len(test_idx) > 0:
+            splits.append((train_idx, test_idx))
 
     return splits
 
@@ -430,7 +477,6 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             lambda_l2 = trial.suggest_float('lambda_l2', nr['lambda_l2'][0], nr['lambda_l2'][1], log=True)
             min_gain_to_split = trial.suggest_float('min_gain_to_split', nr['min_gain_to_split'][0], nr['min_gain_to_split'][1])
             max_depth = trial.suggest_int('max_depth', nr.get('max_depth', (4, 12))[0], nr.get('max_depth', (4, 12))[1])
-            learning_rate = trial.suggest_float('learning_rate', nr.get('learning_rate', (0.01, 0.1))[0], nr.get('learning_rate', (0.01, 0.1))[1], log=True)
         else:
             # Stage 1: Perplexity-validated wide ranges
             num_leaves = trial.suggest_int('num_leaves', 15, _tf_nl_cap)
@@ -442,7 +488,6 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             lambda_l2 = trial.suggest_float('lambda_l2', 0.1, 20.0, log=True)  # v3.2 best was 13.58
             min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.1, 5.0)  # lowered floor from 0.5
             max_depth = trial.suggest_int('max_depth', 4, 12)  # new (3.9)
-            learning_rate = trial.suggest_float('learning_rate', 0.01, 0.1, log=True)  # new (3.10)
         max_bin = 255  # LOCKED — controls EFB bundle size (254/bundle). Binary features still get 2 bins.
 
         # Build LightGBM params — start from V3_LGBM_PARAMS baseline (fix 3.11)
@@ -464,7 +509,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             'min_gain_to_split': min_gain_to_split,
             'max_bin': max_bin,
             'max_depth': max_depth,
-            'learning_rate': learning_rate if not search_lr else lr,
+            'learning_rate': lr,
             'seed': OPTUNA_SEED,
         })
 
@@ -599,7 +644,7 @@ def compute_narrow_ranges(study, top_k=5):
                      'feature_fraction_bynode', 'bagging_fraction',
                      'min_gain_to_split', 'max_depth']
     # Log-scale params: expand by 20% margin in LOG space (these use log=True in Optuna)
-    log_params = ['feature_fraction', 'lambda_l1', 'lambda_l2', 'learning_rate']
+    log_params = ['feature_fraction', 'lambda_l1', 'lambda_l2']
 
     for pname in linear_params:
         values = [t.params[pname] for t in top_trials if pname in t.params]
@@ -641,7 +686,7 @@ def compute_narrow_ranges(study, top_k=5):
 # Params that transfer across TFs (regularization/sampling — generalizes)
 _WARMSTART_TRANSFERABLE = [
     'feature_fraction', 'feature_fraction_bynode', 'bagging_fraction',
-    'lambda_l1', 'lambda_l2', 'min_gain_to_split', 'max_depth', 'learning_rate',
+    'lambda_l1', 'lambda_l2', 'min_gain_to_split', 'max_depth',
 ]
 # Params that are TF-specific (DO NOT inherit — capped by TF_NUM_LEAVES, TF_MIN_DATA_IN_LEAF)
 _WARMSTART_TF_SPECIFIC = ['num_leaves', 'min_data_in_leaf']
@@ -737,11 +782,6 @@ def compute_warmstart_ranges(parent_params, tf_name):
         lo, hi = ranges['min_gain_to_split']
         ranges['min_gain_to_split'] = (max(0.1, lo), min(5.0, hi))
 
-    # Clamp learning_rate to [0.01, 0.1]
-    if 'learning_rate' in ranges:
-        lo, hi = ranges['learning_rate']
-        ranges['learning_rate'] = (max(0.01, lo), min(0.1, hi))
-
     # TF-specific params: use standard wide ranges (NOT inherited)
     _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
     _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
@@ -796,23 +836,15 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         max_hold_bars=max_hold, embargo_pct=0.01,
     )
 
-    params = {
-        'objective': 'multiclass',
-        'num_class': 3,
-        'metric': 'multi_logloss',
-        'boosting_type': 'gbdt',
-        'device': 'cpu',
-        'force_col_wise': True,
+    params = V3_LGBM_PARAMS.copy()
+    params.update({
         'is_enable_sparse': is_sparse,  # match actual data format
-        'feature_pre_filter': False,   # CRITICAL: never filter rare features
         'verbosity': -1,
         'num_threads': 0,  # auto-detect via OpenMP
         'learning_rate': OPTUNA_FINAL_LR,
         'seed': OPTUNA_SEED,
         'bagging_freq': 1,
-        'min_data_in_bin': 1,  # allow bins with 1 sample (rare signals)
-        'path_smooth': 0.1,
-    }
+    })
     # Apply best Optuna params
     for k in ['num_leaves', 'min_data_in_leaf', 'feature_fraction',
               'feature_fraction_bynode', 'bagging_fraction',
