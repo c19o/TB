@@ -82,11 +82,22 @@ else
     BUILD_CMD="make -j$(nproc) _lightgbm"
 fi
 
-# Check source exists
+# Clone LightGBM if not present, then apply fork patches
 if [ ! -f "$BUILD_DIR/CMakeLists.txt" ]; then
-    echo "ERROR: CMakeLists.txt not found at $BUILD_DIR/CMakeLists.txt"
-    echo "  Make sure the LightGBM fork source is checked out in _build/LightGBM/"
-    exit 1
+    echo "  LightGBM source not found — cloning v4.6.0..."
+    git clone --depth 1 -b v4.6.0 https://github.com/microsoft/LightGBM.git "$BUILD_DIR"
+    cd "$BUILD_DIR" && git submodule update --init --recursive && cd "$SCRIPT_DIR"
+    echo "  Cloned + submodules initialized"
+fi
+
+# Apply ALL fork patches (12 modified files)
+PATCH_TAR="$SCRIPT_DIR/lgbm_fork_patches.tar.gz"
+if [ -f "$PATCH_TAR" ]; then
+    echo "  Applying fork patches from lgbm_fork_patches.tar.gz..."
+    tar xzf "$PATCH_TAR" -C "$BUILD_DIR"
+    echo "  Applied $(tar tzf "$PATCH_TAR" | wc -l) patched files"
+else
+    echo "  WARN: lgbm_fork_patches.tar.gz not found — using source tree as-is"
 fi
 
 # ============================================================
