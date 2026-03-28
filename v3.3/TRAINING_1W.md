@@ -343,6 +343,33 @@ dmesg | tail -20 | grep -i oom
 
 ---
 
+## OPTUNA DEPLOYMENT
+
+### Upload Size for Optuna
+- **Total upload: ~500 MB** (parquet + NPZ + cross_names JSON + all DBs)
+- Can run locally or on any machine (small upload, fast transfer)
+- **Root of warm-start cascade** — 1w must complete Optuna first (1w -> 1d -> 4h -> 1h -> 15m)
+
+### Optuna Timing
+- Optuna takes ~2-3x final training time (target after optimizations)
+- 1w training = ~13 min, so Optuna = ~1.5 hrs with 100+50 cold trials
+- save_binary bridge eliminates redundant EFB construction (Dataset parsed once, reused across all trials)
+
+### If Running Optuna on a Separate Machine
+Upload these files:
+```
+features_BTC_1w.parquet          # base feature parquet
+v2_crosses_BTC_1w.npz            # cross feature sparse matrix
+v2_cross_names_BTC_1w.json       # cross feature column names
+lgbm_dataset_1w.bin              # save_binary output (if available — skips EFB rebuild)
+model_1w.json                    # trained model (warm-start seed)
+All 16 .db files + kp_history_gfz.txt + astrology_engine.py
+v33_code.tar.gz                  # all v3.3/*.py code
+```
+Total: ~500 MB. Trivial to transfer.
+
+---
+
 ## Download Results When Done
 
 ```bash
