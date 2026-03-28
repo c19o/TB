@@ -247,7 +247,7 @@ V3_LGBM_PARAMS = {
     "min_gain_to_split": 2.0,
     "lambda_l1": 0.5,
     "lambda_l2": 3.0,
-    "feature_fraction": 0.05,
+    "feature_fraction": 0.1,
     "feature_fraction_bynode": 0.5,
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
@@ -272,22 +272,22 @@ TF_CLASS_WEIGHT = {
     '1w': 'balanced',
 }
 
-# Per-TF CPCV group settings (n_groups, n_test_groups)
+# Per-TF CPCV group settings (n_groups, n_test_groups) — FINAL evaluation (K=2)
 TF_CPCV_GROUPS = {
-    '1w': (4, 1),   # 4 folds — production model identical regardless of fold count (see FOLD_STRATEGY.md)
-    '1d': (4, 1),   # 4 folds
-    '4h': (4, 1),   # was (5,2)=10 folds — 4 folds saves 60% time, final model trains on ALL data anyway
-    '1h': (4, 1),   # was (6,2)=15 folds — 4 folds saves 73% time, 75K rows is plenty per fold
-    '15m': (4, 1),  # 4 folds — 294K rows, ~73K per test set
+    '1w': (5, 2),   # 10 splits, ~9 paths, 60% train
+    '1d': (5, 2),   # 10 splits, ~9 paths
+    '4h': (6, 2),   # 15 splits, 9 paths, 67% train
+    '1h': (6, 2),   # 15 splits, 9 paths
+    '15m': (6, 2),  # 15 splits, 9 paths
 }
 
-# Per-TF num_leaves caps (v3.2 1d best was 99, raised cap to 95)
+# Per-TF num_leaves caps (scaled with data size — larger TFs support deeper trees)
 TF_NUM_LEAVES = {
-    '1w': 31,
-    '1d': 95,
-    '4h': 63,
-    '1h': 63,
-    '15m': 127,
+    '1w': 31,    # 818 rows — small trees optimal
+    '1d': 127,   # 5.7K rows — moderate complexity
+    '4h': 255,   # 23K rows — can handle more complexity
+    '1h': 511,   # 91K rows — deep trees viable
+    '15m': 511,  # 227K rows — deep trees viable
 }
 
 # SHAP analysis config
@@ -313,7 +313,8 @@ OPTUNA_SEARCH_ROUNDS = 300         # WAS 150 — BUG: ES patience=125 at lr=0.08
 OPTUNA_SEARCH_ES_PATIENCE = 94     # max(50, int(75 * 0.1 / 0.08)) = 94 — gives rare esoteric features 50-100 rounds to appear in tree splits at LR=0.08
 OPTUNA_FINAL_LR = 0.03             # original LR for final model
 OPTUNA_FINAL_ROUNDS = 800          # full rounds for final model only
-OPTUNA_SEARCH_CPCV_GROUPS = 2      # 2-fold for search speed, 4+ for final
+OPTUNA_SEARCH_CPCV_GROUPS = 2      # 2-fold for search speed (Stage 1)
+OPTUNA_STAGE2_CPCV_GROUPS = 4      # Stage 2 uses 4-fold for speed (full K=2 only for final CPCV eval)
 
 # Per-TF Optuna trial overrides (smaller datasets = fewer useful trials, larger = more expensive per trial)
 OPTUNA_TF_STAGE1_TRIALS = {

@@ -6,9 +6,39 @@
 ## Machine Requirements
 - **RAM:** 64GB+ (dense matrix is ~6.1GB for 2.2M features x 818 rows)
 - **Cores:** 64+ (LightGBM parallel + 4 CPCV folds via ProcessPoolExecutor)
-- **CPU Score:** 200+ (cores x GHz). Training is fast, ~15-20 min total.
+- **CPU Score:** 120+ (cores x GHz). Training is fast, ~15-20 min total.
 - **Disk:** 30GB+
-- **GPU:** Not needed (LightGBM CPU-only for sparse/dense training)
+- **GPU:** RTX 3090 available but NOT needed (CPU Score 120 sufficient, 818 rows too few for GPU utilization)
+
+### Machine Recommendation: LOCAL (13900K + RTX 3090)
+**NO cloud needed.** 1w is the smallest dataset (818 rows). CPU trains in 13 min. Local 3090 available for GPU histogram fork but provides negligible benefit at this row count. Total pipeline ~2 hrs with Optuna, ~45 min without.
+
+### GPU vs CPU Per Step
+| Step | Engine | Reason |
+|------|--------|--------|
+| Feature build | GPU (cuDF) | Rolling/ewm on GPU. ~5 min. |
+| Cross gen | GPU (cuSPARSE SpGEMM) | 15 sec GPU vs 7 min CPU. DONE. |
+| Optuna search | CPU (n_jobs=4) | Too few rows for GPU utilization. 4 parallel TPE trials. |
+| Final CPCV | CPU | 818 rows = no GPU benefit. 13 min total. |
+| Trade optimizer | GPU | cuDF-accelerated parameter sweep. |
+
+### Optuna Machine Strategy
+- Run locally on 13900K. CPU Score 120 is sufficient for 818-row dataset.
+- n_jobs=4 workers (4 parallel Optuna trials). Each trial trains on 818 rows = fast.
+- Warm-start: 1w is the ROOT of the cascade (1w -> 1d -> 4h -> 1h -> 15m). Run 100+50 cold trials.
+- No separate Optuna machine needed. Same local machine handles everything.
+
+### Revised ETAs (local 13900K + 3090)
+| Stage | Time | Status |
+|-------|------|--------|
+| Feature build | 5 min | DONE |
+| Cross gen (cuSPARSE SpGEMM) | 15 sec | DONE |
+| save_binary | 30 sec | DONE |
+| CPCV (4 folds, dense) | 13 min | DONE (77.64% acc) |
+| Optuna (100+50 cold, n_jobs=4, pruning+ES fix) | ~1.5 hrs | PENDING |
+| Meta + PBO + SHAP | 8 min | PENDING |
+| **TOTAL** | **~2 hrs ($0)** | |
+| **Without Optuna** | **~45 min ($0)** | |
 
 ---
 

@@ -19,7 +19,40 @@ With 6M features, parallel CPCV via ProcessPoolExecutor is a TRAP:
 - **FIX NEEDED:** For 1M+ features, stay sparse OR train CPCV sequentially (no ProcessPoolExecutor)
 - Perplexity confirmed: sparse histogram is O(2 × NNZ), efficient for 99% sparse binary crosses
 - LightGBM docs warn: num_threads > 64 on < 10K rows causes poor scaling
-- **GPU:** Not needed (LightGBM CPU-only for sparse/dense training)
+
+### Machine Recommendation: LOCAL or cheap cloud (128c, 256GB+ RAM)
+CPU training faster than GPU at 5,733 rows. Marginal GPU benefit. ~$4 without Optuna, ~$12 with.
+- **Local option:** 13900K + 3090 IF you have 256GB+ RAM. Otherwise rent cheap cloud.
+- **Cloud option:** vast.ai 128c CPU machine, ~$1.75/hr. No GPU needed for training.
+- **GPU:** Not needed (LightGBM CPU-only for sparse/dense training at this row count)
+
+### GPU vs CPU Per Step
+| Step | Engine | Reason |
+|------|--------|--------|
+| Feature build | GPU (cuDF) | Rolling/ewm on GPU. ~15 min. |
+| Cross gen | GPU (cuSPARSE SpGEMM) | 10 min GPU. DONE (6M features). |
+| Optuna search | CPU (n_jobs=4) | 5,733 rows = marginal GPU benefit. 4 parallel TPE trials on CPU. |
+| Final CPCV | CPU | Sparse + sequential. ~2 hrs (~30 min/fold). |
+| Trade optimizer | GPU | cuDF-accelerated parameter sweep. |
+
+### Optuna Machine Strategy
+- CPU-heavy machine (128+ cores, no GPU needed for Optuna). CPU Score 1000+ ideal.
+- n_jobs=4 workers. Each trial trains on sparse CSR with 5,733 rows.
+- Warm-started from 1w: 50+30 trials (vs 100+50 cold). ~4 hrs.
+- Same machine for Optuna and training (no need to separate).
+- Separate Optuna machine only if parallelizing across TFs (run 1d Optuna while 4h cross gen runs elsewhere).
+
+### Revised ETAs (Machine A: 128c CPU, Score 1000+)
+| Stage | Time | Status |
+|-------|------|--------|
+| Feature build | 15 min | PENDING |
+| Cross gen (cuSPARSE SpGEMM) | 10 min | DONE (6M features) |
+| save_binary | 5 min (~0.9-1.2GB file) | PENDING |
+| CPCV (4 folds, sparse seq) | 2 hrs (~30 min/fold) | PENDING |
+| Optuna (50+30 warm, n_jobs=4, pruning+ES fix) | ~4 hrs | PENDING |
+| Meta + PBO + SHAP | 15 min | PENDING |
+| **TOTAL** | **~7 hrs ($12)** | |
+| **Without Optuna** | **~2.5 hrs ($4)** | |
 
 ---
 

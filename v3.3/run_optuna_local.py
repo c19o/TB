@@ -80,7 +80,7 @@ from config import (
     OPTUNA_FINAL_LR, OPTUNA_FINAL_ROUNDS,
     OPTUNA_SEARCH_CPCV_GROUPS, OPTUNA_SEARCH_ROW_SUBSAMPLE,
     OPTUNA_TF_ROW_SUBSAMPLE,
-    OPTUNA_N_JOBS, TF_CPCV_GROUPS,
+    OPTUNA_N_JOBS, TF_CPCV_GROUPS, OPTUNA_STAGE2_CPCV_GROUPS,
     OPTUNA_TF_STAGE1_TRIALS, OPTUNA_TF_STAGE2_TRIALS, OPTUNA_TF_N_STARTUP_TRIALS,
 )
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
@@ -492,7 +492,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             # Stage 1: Perplexity-validated wide ranges
             num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
             min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(1, _tf_mdil - 2), _tf_mdil + 20)
-            feature_fraction = trial.suggest_float('feature_fraction', 0.01, 0.1, log=True)  # log-scaled — 0.01 = ~3 trees/feature @ 300 rounds
+            feature_fraction = trial.suggest_float('feature_fraction', 0.02, 0.3, log=True)  # log-scaled — wider range for targeted crossing (~1-3M features)
             feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.2, 0.8)
             bagging_fraction = trial.suggest_float('bagging_fraction', 0.5, 1.0)
             lambda_l1 = trial.suggest_float('lambda_l1', 0.01, 1.0, log=True)  # capped at 1.0 (was 10.0)
@@ -766,10 +766,10 @@ def compute_warmstart_ranges(parent_params, tf_name):
         lo, hi = ranges['max_depth']
         ranges['max_depth'] = (max(4, lo), min(12, hi))
 
-    # Clamp feature_fraction to [0.01, 0.1]
+    # Clamp feature_fraction to [0.02, 0.3]
     if 'feature_fraction' in ranges:
         lo, hi = ranges['feature_fraction']
-        ranges['feature_fraction'] = (max(0.01, lo), min(0.1, hi))
+        ranges['feature_fraction'] = (max(0.02, lo), min(0.3, hi))
 
     # Clamp feature_fraction_bynode to [0.2, 0.8]
     if 'feature_fraction_bynode' in ranges:
@@ -1183,8 +1183,9 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
         log.warning("  No completed trials for stage 2 narrowing, skipping")
         return None
 
-    n_groups_full, n_test_full = TF_CPCV_GROUPS.get(tf_name, (4, 1))
-    log.info(f"\n  STAGE 2{_ws_tag}: {s2_trials} trials, {n_groups_full} CPCV groups (full), "
+    # Stage 2: use 4-fold for speed (full K=2 only for final CPCV eval)
+    n_groups_full, n_test_full = OPTUNA_STAGE2_CPCV_GROUPS, 1
+    log.info(f"\n  STAGE 2{_ws_tag}: {s2_trials} trials, {n_groups_full} CPCV groups (4-fold speed), "
              f"100% rows, lr={OPTUNA_SEARCH_LR}")
     log.info(f"  Narrowed ranges: {json.dumps({k: v for k, v in narrow_ranges.items() if k != 'max_bin'}, indent=4, default=str)}")
 

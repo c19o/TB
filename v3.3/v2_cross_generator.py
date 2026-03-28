@@ -26,7 +26,7 @@ Usage:
   python v2_cross_generator.py --tf 1h --save-sparse
 """
 
-import os, time, argparse, warnings, gc
+import os, time, argparse, warnings, gc, glob
 import ctypes
 try:
     _libc = ctypes.cdll.LoadLibrary("libc.so.6")
@@ -1150,6 +1150,14 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     doy_names, doy_arrays = create_doy_windows(df)
     log(f"    {len(doy_names)} DOY windows")
 
+    # ── Pre-extract TA and astro arrays for targeted crossing ──
+    # Crosses 6-12 use targeted right-sides (TA, TA+astro, TA+DOY) instead of ALL contexts.
+    # Extract once here so they're available to all cross types.
+    ta_n = [s[0] for s in groups['ta']] if groups['ta'] else []
+    ta_a = [s[1] for s in groups['ta']] if groups['ta'] else []
+    astro_n = [s[0] for s in groups['astro']] if groups['astro'] else []
+    astro_a = [s[1] for s in groups['astro']] if groups['astro'] else []
+
     # ── Accumulate sparse CSR chunks + column names across all cross types ──
     # PERF: Convert each cross type to CSR immediately instead of accumulating
     # one massive COO. hstack of small CSR matrices is much faster than
@@ -1224,12 +1232,8 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     _malloc_trim()
 
     # ── Cross 2: Astro × TA ──
-    if not _at_limit() and groups['astro'] and groups['ta']:
+    if not _at_limit() and astro_n and ta_n:
         log("  Cross 2: Astro × TA...")
-        astro_n = [s[0] for s in groups['astro']]
-        astro_a = [s[1] for s in groups['astro']]
-        ta_n = [s[0] for s in groups['ta']]
-        ta_a = [s[1] for s in groups['ta']]
         names, r, c, d, nc = gpu_batch_cross(astro_n, astro_a, ta_n, ta_a, 'ax',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
@@ -1239,12 +1243,10 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         _malloc_trim()
 
     # ── Cross 3: Multi-astro combos × TA ──
-    if not _at_limit() and len(groups['astro']) >= 2 and groups['ta']:
+    if not _at_limit() and len(groups['astro']) >= 2 and ta_n:
         log("  Cross 3: Multi-astro combos × TA...")
         ax2_names, ax2_arrays = create_multi_signal_combos(groups['astro'], 'a2', max_pairs=50)
         if ax2_names:
-            ta_n = [s[0] for s in groups['ta']]
-            ta_a = [s[1] for s in groups['ta']]
             names, r, c, d, nc = gpu_batch_cross(ax2_names, ax2_arrays, ta_n, ta_a, 'ax2',
                                                   gpu_id=gpu_id, col_offset=col_offset,
                                                   max_features=_remaining())
@@ -1259,8 +1261,8 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         log("  Cross 4: Multi-TA combos × DOY + astro...")
         ta2_names, ta2_arrays = create_multi_signal_combos(groups['ta'][:60], 'ta2', max_pairs=30)
         if ta2_names:
-            combined_n = doy_names + [s[0] for s in groups['astro']]
-            combined_a = doy_arrays + [s[1] for s in groups['astro']]
+            combined_n = doy_names + astro_n
+            combined_a = doy_arrays + astro_a
             names, r, c, d, nc = gpu_batch_cross(ta2_names, ta2_arrays, combined_n, combined_a,
                                                   'ta2', gpu_id=gpu_id, col_offset=col_offset,
                                                   max_features=_remaining())
@@ -1271,12 +1273,10 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         _malloc_trim()
 
     # ── Cross 5: Esoteric × TA ──
-    if not _at_limit() and groups['esoteric'] and groups['ta']:
+    if not _at_limit() and groups['esoteric'] and ta_n:
         log("  Cross 5: Esoteric × TA...")
         eso_n = [s[0] for s in groups['esoteric']]
         eso_a = [s[1] for s in groups['esoteric']]
-        ta_n = [s[0] for s in groups['ta']]
-        ta_a = [s[1] for s in groups['ta']]
         names, r, c, d, nc = gpu_batch_cross(eso_n, eso_a, ta_n, ta_a, 'ex2',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
@@ -1285,12 +1285,12 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 6: Space weather × ALL ──
-    if not _at_limit() and groups['space_weather']:
-        log("  Cross 6: Space weather × ALL contexts...")
+    # ── Cross 6: Space weather × TA (targeted — was ALL) ──
+    if not _at_limit() and groups['space_weather'] and ta_n:
+        log("  Cross 6: Space weather × TA...")
         sw_n = [s[0] for s in groups['space_weather']]
         sw_a = [s[1] for s in groups['space_weather']]
-        names, r, c, d, nc = gpu_batch_cross(sw_n, sw_a, ctx_names, ctx_arrays, 'sw',
+        names, r, c, d, nc = gpu_batch_cross(sw_n, sw_a, ta_n, ta_a, 'sw',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('sw_', names, r, c, d, nc)
@@ -1298,25 +1298,27 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 7: Session/HOD × ALL (intraday only) ──
-    if not _at_limit() and groups['session']:
-        log("  Cross 7: Session × ALL contexts...")
+    # ── Cross 7: Session/HOD × TA+astro (targeted — was ALL) ──
+    if not _at_limit() and groups['session'] and (ta_n or astro_n):
+        log("  Cross 7: Session × TA+astro...")
         hod_n = [s[0] for s in groups['session']]
         hod_a = [s[1] for s in groups['session']]
-        names, r, c, d, nc = gpu_batch_cross(hod_n, hod_a, ctx_names, ctx_arrays, 'hod',
+        hod_right_n = ta_n + astro_n
+        hod_right_a = ta_a + astro_a
+        names, r, c, d, nc = gpu_batch_cross(hod_n, hod_a, hod_right_n, hod_right_a, 'hod',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('hod_', names, r, c, d, nc)
-        del names, r, c, d
+        del names, r, c, d, hod_right_n, hod_right_a
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 8: Macro × ALL ──
-    if not _at_limit() and groups['macro']:
-        log("  Cross 8: Macro × ALL contexts...")
+    # ── Cross 8: Macro × TA (targeted — was ALL) ──
+    if not _at_limit() and groups['macro'] and ta_n:
+        log("  Cross 8: Macro × TA...")
         mx_n = [s[0] for s in groups['macro']]
         mx_a = [s[1] for s in groups['macro']]
-        names, r, c, d, nc = gpu_batch_cross(mx_n, mx_a, ctx_names, ctx_arrays, 'mx',
+        names, r, c, d, nc = gpu_batch_cross(mx_n, mx_a, ta_n, ta_a, 'mx',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('mx_', names, r, c, d, nc)
@@ -1324,25 +1326,27 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 9: Volatility regime × ALL ──
-    if not _at_limit() and groups['volatility']:
-        log("  Cross 9: Volatility × ALL contexts...")
+    # ── Cross 9: Volatility regime × TA+DOY (targeted — was ALL) ──
+    if not _at_limit() and groups['volatility'] and (ta_n or doy_names):
+        log("  Cross 9: Volatility × TA+DOY...")
         vx_n = [s[0] for s in groups['volatility']]
         vx_a = [s[1] for s in groups['volatility']]
-        names, r, c, d, nc = gpu_batch_cross(vx_n, vx_a, ctx_names, ctx_arrays, 'vx',
+        vx_right_n = ta_n + list(doy_names)
+        vx_right_a = ta_a + list(doy_arrays)
+        names, r, c, d, nc = gpu_batch_cross(vx_n, vx_a, vx_right_n, vx_right_a, 'vx',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('vx_', names, r, c, d, nc)
-        del names, r, c, d
+        del names, r, c, d, vx_right_n, vx_right_a
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 10: Planetary aspects × ALL ──
-    if not _at_limit() and groups['aspect']:
-        log("  Cross 10: Aspects × ALL contexts...")
+    # ── Cross 10: Planetary aspects × TA (targeted — was ALL) ──
+    if not _at_limit() and groups['aspect'] and ta_n:
+        log("  Cross 10: Aspects × TA...")
         asp_n = [s[0] for s in groups['aspect']]
         asp_a = [s[1] for s in groups['aspect']]
-        names, r, c, d, nc = gpu_batch_cross(asp_n, asp_a, ctx_names, ctx_arrays, 'asp',
+        names, r, c, d, nc = gpu_batch_cross(asp_n, asp_a, ta_n, ta_a, 'asp',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('asp_', names, r, c, d, nc)
@@ -1350,12 +1354,12 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 11: Price numerology × ALL ──
-    if not _at_limit() and groups['price_num']:
-        log("  Cross 11: Price numerology × ALL contexts...")
+    # ── Cross 11: Price numerology × TA (targeted — was ALL) ──
+    if not _at_limit() and groups['price_num'] and ta_n:
+        log("  Cross 11: Price numerology × TA...")
         pn_n = [s[0] for s in groups['price_num']]
         pn_a = [s[1] for s in groups['price_num']]
-        names, r, c, d, nc = gpu_batch_cross(pn_n, pn_a, ctx_names, ctx_arrays, 'pn',
+        names, r, c, d, nc = gpu_batch_cross(pn_n, pn_a, ta_n, ta_a, 'pn',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('pn_', names, r, c, d, nc)
@@ -1363,12 +1367,12 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 12: Moon position × ALL ──
-    if not _at_limit() and groups['moon']:
-        log("  Cross 12: Moon × ALL contexts...")
+    # ── Cross 12: Moon position × TA (targeted — was ALL) ──
+    if not _at_limit() and groups['moon'] and ta_n:
+        log("  Cross 12: Moon × TA...")
         mn_n = [s[0] for s in groups['moon']]
         mn_a = [s[1] for s in groups['moon']]
-        names, r, c, d, nc = gpu_batch_cross(mn_n, mn_a, ctx_names, ctx_arrays, 'mn',
+        names, r, c, d, nc = gpu_batch_cross(mn_n, mn_a, ta_n, ta_a, 'mn',
                                               gpu_id=gpu_id, col_offset=col_offset,
                                               max_features=_remaining())
         _collect_cross('mn_', names, r, c, d, nc)
@@ -1376,21 +1380,10 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         gc.collect()
         _malloc_trim()
 
-    # ── Cross 13: Regime-aware DOY (3x) ──
-    if _at_limit():
-        log("  Cross 13: SKIPPED (max_crosses reached)")
-    else:
-        log("  Cross 13: Regime-aware DOY (3x)...")
-        reg_names, reg_arrays = create_regime_doy(doy_names, doy_arrays, df)
-        if reg_names:
-            names, r, c, d, nc = gpu_batch_cross(reg_names, reg_arrays, ctx_names, ctx_arrays,
-                                                  'rdx', gpu_id=gpu_id, col_offset=col_offset,
-                                                  max_features=_remaining())
-            _collect_cross('rdx_', names, r, c, d, nc)
-            del names, r, c, d
-        del reg_names, reg_arrays
-        gc.collect()
-        _malloc_trim()
+    # ── Cross 13: REMOVED — Regime-aware DOY was redundant with dx_ (Cross 1) ──
+    # Regime DOY crossed ALL contexts, but dx_ already crosses DOY × ALL.
+    # The regime segmentation (bull/bear/neutral) added noise without unique signal.
+    # Kept create_regime_doy() function intact in case needed for future experiments.
 
     # ── Save inference artifacts (for live cross computation) ──
     if len(all_cross_names) > 0:
@@ -1412,7 +1405,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             traceback.print_exc()
 
     # ── Free context arrays — no longer needed ──
-    del ctx_names, ctx_arrays, doy_names, doy_arrays, groups
+    del ctx_names, ctx_arrays, doy_names, doy_arrays, groups, ta_n, ta_a, astro_n, astro_a
     gc.collect()
     _malloc_trim()
 

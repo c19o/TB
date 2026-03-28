@@ -4906,11 +4906,11 @@ def _bars_since_event(event_series: pd.Series) -> pd.Series:
 # ============================================================
 
 TRIPLE_BARRIER_CONFIG = {
-    '15m': {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 32},
-    '1h':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 24},
-    '4h':  {'tp_atr_mult': 2.5, 'sl_atr_mult': 2.5, 'max_hold_bars': 16},
-    '1d':  {'tp_atr_mult': 3.0, 'sl_atr_mult': 3.0, 'max_hold_bars': 10},
-    '1w':  {'tp_atr_mult': 3.0, 'sl_atr_mult': 3.0, 'max_hold_bars': 6},
+    '15m': {'tp_atr_mult': 2.0, 'sl_atr_mult': 1.8, 'max_hold_bars': 32},
+    '1h':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 1.5, 'max_hold_bars': 24},
+    '4h':  {'tp_atr_mult': 3.0, 'sl_atr_mult': 1.5, 'max_hold_bars': 12},
+    '1d':  {'tp_atr_mult': 3.5, 'sl_atr_mult': 1.5, 'max_hold_bars': 8},
+    '1w':  {'tp_atr_mult': 3.5, 'sl_atr_mult': 1.2, 'max_hold_bars': 4},
 }
 
 
@@ -4954,11 +4954,23 @@ def _triple_barrier_label_kernel(c, h, l, atr, tp_mult, sl_mult, max_hold):
             continue
         hit = False
         for j in range(i + 1, end_bar + 1):
-            if h[j] >= tp_price:
+            tp_hit = h[j] >= tp_price
+            sl_hit = l[j] <= sl_price
+            if tp_hit and sl_hit:
+                # Both barriers hit same bar — assign based on which is closer
+                tp_dist = h[j] - tp_price
+                sl_dist = sl_price - l[j]
+                if tp_dist <= sl_dist:
+                    labels[i] = 2.0  # LONG — TP closer to barrier
+                else:
+                    labels[i] = 0.0  # SHORT — SL closer to barrier
+                hit = True
+                break
+            elif tp_hit:
                 labels[i] = 2.0  # LONG
                 hit = True
                 break
-            if l[j] <= sl_price:
+            elif sl_hit:
                 labels[i] = 0.0  # SHORT
                 hit = True
                 break

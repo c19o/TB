@@ -1792,16 +1792,29 @@ if __name__ == '__main__':
           # KNN features kept unconditionally — LightGBM decides via tree splits, not us
 
           # Save model + feature list (must include HMM overlay names for inference)
-          # Atomic save: write to temp then rename (prevents corrupt model on crash)
-          _model_path = f'{DB_DIR}/model_{tf_name}.json'
-          _model_tmp = _model_path + '.tmp'
-          final_model.save_model(_model_tmp)
-          os.replace(_model_tmp, _model_path)
-          _feat_path = f'{DB_DIR}/features_{tf_name}_all.json'
-          _feat_tmp = _feat_path + '.tmp'
-          with open(_feat_tmp, 'w') as f:
-              json.dump(_final_feature_cols, f, indent=2)
-          os.replace(_feat_tmp, _feat_path)
+          # Accuracy floor — don't save a model worse than random
+          ACCURACY_FLOOR = 0.40  # 3-class random = 33%, floor at 40%
+          if final_acc < ACCURACY_FLOOR:
+              log(f"  ACCURACY BELOW FLOOR: {final_acc:.3f} < {ACCURACY_FLOOR}. "
+                  f"Model NOT saved. Check Optuna params or data.")
+              # Don't save the model, but do save the checkpoint for debugging
+          else:
+              # Atomic save: write to temp then rename (prevents corrupt model on crash)
+              _model_path = f'{DB_DIR}/model_{tf_name}.json'
+              if os.path.exists(_model_path):
+                  import shutil
+                  _backup_path = _model_path.replace('.json', '_prev.json')
+                  shutil.copy2(_model_path, _backup_path)
+                  log(f"  Backed up previous model to {_backup_path}")
+              _model_tmp = _model_path + '.tmp'
+              final_model.save_model(_model_tmp)
+              os.replace(_model_tmp, _model_path)
+              _feat_path = f'{DB_DIR}/features_{tf_name}_all.json'
+              _feat_tmp = _feat_path + '.tmp'
+              with open(_feat_tmp, 'w') as f:
+                  json.dump(_final_feature_cols, f, indent=2)
+              os.replace(_feat_tmp, _feat_path)
+              log(f"  Model saved: {_model_path} (accuracy: {final_acc:.3f})")
 
           log(f"\n  {elapsed()} Platt calibration (per-class)...")
           from sklearn.linear_model import LogisticRegression

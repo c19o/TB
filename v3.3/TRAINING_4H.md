@@ -1,11 +1,47 @@
 # 4H Training Guide
 
 ## Machine Requirements
-- **RAM:** 1.5-2TB MINIMUM (1TB OOM'd, 2TB worked at RC=500 — peaked 1213GB)
+- **RAM:** 512GB+ (1TB OOM'd at RC=2000, 2TB worked at RC=500 peaked 1213GB. RC=500 on 512GB+ should work.)
 - **Cores:** 128+ (parallel CPCV + cross gen)
-- **CPU Score:** 400+
+- **CPU Score:** 1000+ recommended (cores x GHz). GPU STARTS to help at this row count.
 - **Disk:** 50GB+
 - **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=500` (MANDATORY — auto=2000 OOM'd on 1TB. RC=500 peaked 1213GB on 2TB machine)
+- **GPU:** Recommended (A100/H100). ~17K rows = enough for GPU histogram saturation.
+
+### Machine Recommendation: Cloud 512GB+ RAM, GPU recommended
+GPU STARTS to help at 17K rows. 3-5x speedup on CPCV/Optuna with GPU histogram fork.
+- **Cloud option:** vast.ai or Lambda with A100/H100, 512GB+ RAM, ~$2-3/hr.
+- **CPU Score 1000+ recommended** for cross gen and CPU-parallel Optuna.
+- **Cost:** ~$8 without Optuna (CPU), ~$13 with Optuna (GPU), ~$22 with Optuna (CPU).
+
+### GPU vs CPU Per Step
+| Step | Engine | Reason |
+|------|--------|--------|
+| Feature build | GPU (cuDF) | Rolling/ewm on GPU. ~30 min. |
+| Cross gen | GPU (cuSPARSE SpGEMM) | 10-15 min GPU vs 36 min CPU. |
+| Optuna search | CPU (n_jobs=4) | CPU parallel search, GPU for final retrain only. |
+| Final CPCV | GPU (histogram fork) | ~17K rows = GPU sweet spot. ~1 hr GPU vs 3.3 hrs CPU. |
+| Trade optimizer | GPU | cuDF-accelerated parameter sweep. |
+
+### Optuna Machine Strategy
+- CPU-heavy machine (128+ cores, CPU Score 1000+). GPU optional for Optuna (final retrain uses GPU).
+- n_jobs=4 workers for search stage. Each trial trains on ~17K rows.
+- Warm-started from 1d: 50+30 trials. ~8 hrs CPU / ~3 hrs GPU.
+- Same machine for Optuna and training. No need to separate.
+- For max speed: use GPU machine (A100/H100) for both Optuna final retrain and CPCV.
+
+### Revised ETAs (Machine: Score 1000+ CPU, A100/H100 GPU)
+| Stage | Time (CPU) | Time (GPU est.) | Status |
+|-------|-----------|----------------|--------|
+| Feature build | 30 min | 30 min | PENDING |
+| Cross gen (cuSPARSE SpGEMM) | 36 min | 10-15 min | PENDING |
+| save_binary | 15 min | 15 min | PENDING |
+| CPCV (4 folds) | 3.3 hrs | ~1 hr (GPU hist) | PENDING |
+| Optuna (50+30 warm, n_jobs=4, pruning) | ~8 hrs | ~3 hrs (GPU hist) | PENDING |
+| Meta + PBO + SHAP | 15 min | 15 min | PENDING |
+| **TOTAL (CPU)** | **~13 hrs ($22)** | | |
+| **TOTAL (GPU est.)** | | **~5 hrs ($13)** | |
+| **Without Optuna (CPU)** | **~5 hrs ($8)** | | |
 
 ## Required Databases (ALL 16 — ZERO MISSING)
 ```
