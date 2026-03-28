@@ -7,7 +7,7 @@ Read this file completely. Then read RESEARCH.md, ARCHITECTURE.md, and IMPLEMENT
 
 ---
 
-## STATUS: PHASE 3 — CSR Bridge Fix Applied, Ready for GPU Training Verification
+## STATUS: PHASE 3 — BLOCKED on EFB Histogram Offset Mapping
 
 ### What Works
 - LightGBM fork builds successfully (42/42 objects + linking)
@@ -20,11 +20,12 @@ Read this file completely. Then read RESEARCH.md, ARCHITECTURE.md, and IMPLEMENT
 - Pre-built DLL at: `_build/LightGBM/lib_lightgbm.dll`
 - CSR bridge between C API global and tree learner instance (Phase 3 fix)
 - DLL rebuilt with ninja (build_utf8 directory)
+- CPU training works: **73.9% accuracy in 5 minutes for 1w** — GPU fork is a nice-to-have optimization, not a blocker
 
 ### Phase 2 Bug (RESOLVED) — Init() Crash
 **Was:** `Init()` crashed before `set_external_csr()` could be called. Deferred upload fix applied in Phase 2.
 
-### Phase 3 Bugs (BOTH FIXED)
+### Phase 3 Bugs
 
 **1. CSR Bridge Bug (FIXED):**
 The C API stored CSR in a global struct (`g_external_csr`) but the tree learner only checked its own member variable (`has_external_csr_`). The global was set by `LGBM_BoosterSetExternalCSR()` but the tree learner's `ConstructHistograms()` never read from it.
@@ -36,7 +37,31 @@ The C API stored CSR in a global struct (`g_external_csr`) but the tree learner 
 
 **Fix:** Store as Booster instance attributes (`self._external_csr_indptr`, `self._external_csr_indices`) so they live as long as the Booster object.
 
-**3. Build Note:** `lightgbm.exe` target doesn't link `c_api` symbols — must build `_lightgbm` target (DLL) only.
+**3. enable_bundle=False (APPLIED but INSUFFICIENT):**
+Disabling EFB bundling was attempted to make feature IDs map 1:1 to histogram bins. However, LightGBM still has a feature-to-bin offset mapping even with `enable_bundle=False` — constant/unused features get 0 bins, others get 2 (for binary features). The SpMV output is indexed by raw feature ID, but the histogram buffer is indexed by cumulative bin offsets.
+
+**4. EFB Histogram Offset Mismatch (BLOCKED):**
+This is DEEPER than expected. Even without bundling, LightGBM's histogram buffer layout uses cumulative bin offsets, not raw feature indices. The mapping works as follows:
+- Feature 0 (constant, 0 bins) → offset 0
+- Feature 1 (binary, 2 bins) → offset 0
+- Feature 2 (constant, 0 bins) → offset 2
+- Feature 3 (binary, 2 bins) → offset 2
+- ...and so on for 2.2M features
+
+The SpMV kernel writes gradients to `histogram[feature_id]`, but LightGBM expects them at `histogram[cumulative_bin_offset[feature_id]]`. Without this remapping, gradient/hessian values land in the wrong histogram bins, producing garbage splits.
+
+**The fix would require:**
+1. Extracting the `feature_hist_offsets` array from LightGBM's `share_state_` (the cumulative bin offset table)
+2. Uploading it to GPU memory
+3. Using it in the CUDA kernel to remap the SpMV output index before writing to the histogram buffer
+4. Keeping this array synchronized across boosting iterations (features may be dropped/rebinned)
+
+This is a significant kernel rewrite, not a simple patch.
+
+**5. Build Note:** `lightgbm.exe` target doesn't link `c_api` symbols — must build `_lightgbm` target (DLL) only.
+
+### Decision: GPU Fork Deferred
+CPU training delivers 73.9% accuracy in 5 minutes for 1w. The GPU fork would speed up histogram construction but is not needed to produce trading models. All timeframes will be trained via the CPU pipeline first. GPU fork can be revisited after all TF models are trained and verified for live trading.
 
 ### Build Environment (Windows 11, user's local machine)
 - CUDA Toolkit 12.6 at `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6`
@@ -87,6 +112,7 @@ _build/LightGBM/
 
 ### Previous 1w Model Baselines
 - v3.3 cloud (CPCV, 2.2M features): 67.7% accuracy (4-fold avg, model failed to save due to _parent_ds bug)
+- v3.3 CPU (CPCV, 2.2M features): 73.9% accuracy in 5 minutes
 - v3.2 (1.1M features): 71.9% accuracy (OLD model, stale NPZ)
 - v3.0 (658K features): unknown
 
@@ -109,28 +135,14 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 
 ---
 
-## NEXT STEPS (in order)
+## NEXT STEPS
 
-1. **Verify GPU training works** — the binary cache exists (252MB), use --from-cache:
-   ```bash
-   cd v3.3/gpu_histogram_fork
-   python -u train_1w_cached.py --from-cache
-   ```
-
-2. **Run real-label test** — compare to 73.91% CPU baseline:
-   ```bash
-   python -u test_1w_end_to_end.py
-   ```
-
-3. **Build 1d features locally** (need DBs)
-
-4. **Build 4h features locally**
-
-5. **Train 1d and 4h locally**
-
-6. **Verify all models good for trading**
-
-7. **THEN rent cloud** for 1h (one machine) and 15m (separate machine)
+1. [DONE] CSR bridge fix — global-to-instance bridge in ConstructHistograms()
+2. [DONE] Dangling pointer fix — store CSR arrays as Booster instance attributes
+3. [DONE] enable_bundle=False — applied but does not solve the offset mapping problem
+4. [BLOCKED] feature_hist_offsets mapping needed for GPU histograms — requires extracting cumulative bin offset table from share_state_, uploading to GPU, and remapping SpMV output indices in the CUDA kernel. Significant kernel rewrite.
+5. [DECISION] CPU training works at 73.9% accuracy in 5 minutes for 1w — GPU fork deferred to after all TF models are trained and verified for live trading
+6. **Current focus: train all TFs via CPU pipeline, verify models for trading**
 
 ## KEY FILES
 - Binary cache: `v3.3/lgbm_dataset_1w.bin` (252MB, skips 4.5min EFB)
@@ -138,4 +150,4 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 - Fork DLL: `_build/LightGBM/lib_lightgbm.dll`
 - Must go to BOTH: `site-packages/lightgbm/bin/` AND `site-packages/lightgbm/lib/`
 - Training script: `gpu_histogram_fork/train_1w_cached.py`
-- NO CPU FALLBACK — GPU or fix it
+- CPU training script: `v3.3/cloud_run_tf.py` (production pipeline)
