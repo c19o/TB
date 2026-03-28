@@ -9,7 +9,34 @@
 - feature_pre_filter=False always. The model decides via tree splits, not us.
 - LightGBM + EFB is architecturally correct for sparse binary cross features.
 
-## WHY V3.3 IS SLOWER THAN V3.2
+## CURRENT BOTTLENECK ANALYSIS (2026-03-28)
+
+### Completed Optimizations
+1. **GPU histogram fork: COMPLETE** — 78x SpMV speedup via CUDA sparse histogram kernel. 77.64% accuracy on 1w matches CPU exactly. Model validated: GPU=CPU parity confirmed.
+2. **Cross gen GPU acceleration: COMPLETE** — cuSPARSE SpGEMM replaces scipy sparse matmul. Pre-filter + GPU batch crosses fully operational.
+3. **LightGBM sparse CSR training: VALIDATED** — EFB bundles 2.2M features into ~23K histograms with max_bin=255.
+
+### Bottleneck Shift: Optuna is Now #1
+With cross gen and histogram computation optimized, **Optuna hyperparameter search is now 73-81% of total pipeline time** across all timeframes. This is the new primary optimization target.
+
+| TF | Cross Gen | Training (CPCV) | Optuna | Optuna % of Total |
+|----|-----------|-----------------|--------|-------------------|
+| 1w | 15 sec | 13 min | 5.5 hrs | 81% |
+| 1d | 10 min | 2 hrs | 13.5 hrs | 78% |
+| 4h | 36 min | 3.3 hrs | 25 hrs | 76% |
+| 1h | 2.3 hrs | 7 hrs | 52 hrs | 73% |
+| 15m | 5.8 hrs | 10 hrs | 75 hrs | 73% |
+
+### GPU vs CPU Recommendation Per TF
+| TF | Rows | Features | Recommendation | Reason |
+|----|------|----------|---------------|--------|
+| 1w | 818 | 2.2M | **CPU** (64c vast.ai) | Too few rows for GPU utilization. CPU trains in 13 min. |
+| 1d | 5,733 | 6M | **CPU** (128c vast.ai) | Marginal GPU benefit. CPU CPCV 2 hrs is acceptable. |
+| 4h | ~23K | 6M+ | **GPU** (A100/H100) | Enough rows for GPU histogram saturation. 3-5x speedup. |
+| 1h | ~90K | 10M+ | **GPU** (multi-GPU) | Large row count + feature count = GPU sweet spot. |
+| 15m | ~227K | 10M+ | **GPU** (multi-GPU) | Largest dataset. GPU histogram fork designed for this. |
+
+### WHY V3.3 IS SLOWER THAN V3.2
 1. **3-10x more features**: min_nonzero=3 (was 8) → 2.2M-6M features (was 658K)
 2. **More BTC data**: 2010-2026 (was 2019-2026) → 5733 rows on 1d (was ~3500)
 3. **Sequential CPCV**: >1M features forces sequential (parallel = 400GB pickle bottleneck)
@@ -118,6 +145,27 @@
 - **GOSS**: EXCLUDED. Drops rows where rare esoteric signals fire during "easy" periods. With 5733 rows, 73% chance all 3 rare-signal rows discarded per tree. Zero speed benefit at this row count.
 - **RF**: EXCLUDED. No sequential error correction.
 - **Safety**: RISKY. Include DART as option but expect gbdt to win most trials.
+
+### 2G. Optuna Optimization (NEW — #1 BOTTLENECK, under investigation)
+- **Problem**: Optuna is 73-81% of total pipeline time. 200 trials x 4 CPCV folds x fold_time = massive.
+- **Ideas under investigation**:
+  - **Warm-starting from cheaper TFs**: Train Optuna on 1w/1d first, use best params as Optuna prior for 4h/1h/15m. Reduces effective trials needed on expensive TFs.
+  - **Reduce trial count for large TFs**: 200 trials on 1w ($2), but 50-100 warm-started trials on 1h/15m may be sufficient.
+  - **Parallel Optuna with constant_liar** (Phase 2C): n_jobs=4 gives ~3.2x speedup (not 4x due to constant_liar overhead).
+  - **WilcoxonPruner inter-fold** (Phase 2D): Prune bad trials after fold 2 instead of running all 4 folds. ~30-40% trial speedup.
+  - **Optuna on GPU for 4h+**: GPU histogram fork makes each trial faster. Combined with parallel trials = multiplicative speedup.
+  - **SQLite journal for crash recovery**: Optuna SQLite DB + RetryFailedTrialCallback. Machine death loses at most 1 trial, not all progress.
+- **NOT investigated yet**: Optuna CMA-ES sampler (may converge faster than TPE for high-dim), successive halving.
+- **Status**: Research phase. No implementation yet.
+
+### 2H. Multi-GPU Support (NEW — under research)
+- **Problem**: Single GPU underutilized on 1w/1d (too few rows). Multi-GPU could parallelize Optuna trials.
+- **Architecture options**:
+  - **Trial-level parallelism**: Each GPU runs a separate Optuna trial. 4 GPUs = 4 concurrent trials. Simplest.
+  - **Data-parallel training**: LightGBM's GPU learner doesn't natively support multi-GPU. Would need custom NCCL-based histogram aggregation.
+  - **Hybrid**: Trial-level for Optuna (easy), data-parallel for single large training runs (hard).
+- **Hardware targets**: 4xA100 (vast.ai ~$4/hr), 8xH100 (Lambda ~$20/hr).
+- **Status**: Research phase. Trial-level parallelism is the likely first implementation.
 
 ---
 
@@ -344,104 +392,111 @@
 
 ---
 
-## TRAINING TIME ESTIMATES (per TF, per stage, with optimizations)
+## TRAINING TIME ESTIMATES (per TF, per stage — updated 2026-03-28)
+**GPU histogram fork + cuSPARSE cross gen now complete. Optuna dominates all TFs.**
 
-### 1W — vast.ai 64c, $0.30/hr
-| Stage | Time |
-|-------|------|
-| Feature build | 5 min |
-| Cross gen (bitpacked) | 15 sec |
-| save_binary | 30 sec |
-| CPCV (4 folds, dense) | 13 min |
-| Optuna (200 trials, n_jobs=4) | 5.5 hrs |
-| Meta + PBO + SHAP | 8 min |
-| **TOTAL** | **6.5 hrs ($2)** |
-| **Without Optuna** | **45 min ($0.25)** |
+### 1W — vast.ai 64c CPU, $0.30/hr (GPU NOT needed — too few rows)
+| Stage | Time | Status |
+|-------|------|--------|
+| Feature build | 5 min | DONE |
+| Cross gen (cuSPARSE SpGEMM) | 15 sec | DONE |
+| save_binary | 30 sec | DONE |
+| CPCV (4 folds, dense) | 13 min | DONE (77.64% acc) |
+| Optuna (200 trials, n_jobs=4) | 5.5 hrs | PENDING |
+| Meta + PBO + SHAP | 8 min | PENDING |
+| **TOTAL** | **6.5 hrs ($2)** | |
+| **Without Optuna** | **45 min ($0.25)** | |
 
-### 1D — vast.ai 128c, ~$1.75/hr
-| Stage | Time |
-|-------|------|
-| Feature build | 15 min |
-| Cross gen (Numba intersection) | 10 min |
-| save_binary | 5 min (~0.9-1.2GB file) |
-| CPCV (4 folds, sparse seq) | 2 hrs (~30 min/fold, REVIEW CORRECTED from 25 min) |
-| Optuna (200 trials, n_jobs=4) | 13.5 hrs (~120 effective fold-units × 30 min / 4) |
-| Meta + PBO + SHAP | 15 min |
-| **TOTAL** | **16 hrs ($28)** |
-| **Without Optuna** | **2.5 hrs ($4)** |
+### 1D — vast.ai 128c CPU, ~$1.75/hr (GPU marginal benefit)
+| Stage | Time | Status |
+|-------|------|--------|
+| Feature build | 15 min | PENDING |
+| Cross gen (cuSPARSE SpGEMM) | 10 min | DONE (6M features) |
+| save_binary | 5 min (~0.9-1.2GB file) | PENDING |
+| CPCV (4 folds, sparse seq) | 2 hrs (~30 min/fold) | PENDING |
+| Optuna (200 trials, n_jobs=4) | 13.5 hrs | PENDING |
+| Meta + PBO + SHAP | 15 min | PENDING |
+| **TOTAL** | **16 hrs ($28)** | |
+| **Without Optuna** | **2.5 hrs ($4)** | |
 
-### 4H — GCP c3-highmem-176, ~$1.70/hr spot
-| Stage | Time |
-|-------|------|
-| Feature build | 30 min |
-| Cross gen (Numba intersection) | 36 min |
-| save_binary | 15 min |
-| CPCV (4 folds, sparse seq) | 3.3 hrs (~50 min/fold, REVIEW CORRECTED from 43 min) |
-| Optuna (200 trials, n_jobs=4) | 25 hrs (~120 × 50 min / 4) |
-| Meta + PBO + SHAP | 15 min |
-| **TOTAL** | **30 hrs ($51)** |
-| **Without Optuna** | **5 hrs ($9)** |
+### 4H — GPU recommended (A100/H100), ~$2-3/hr
+| Stage | Time (CPU) | Time (GPU est.) | Status |
+|-------|-----------|----------------|--------|
+| Feature build | 30 min | 30 min | PENDING |
+| Cross gen (cuSPARSE SpGEMM) | 36 min | 10-15 min | PENDING |
+| save_binary | 15 min | 15 min | PENDING |
+| CPCV (4 folds) | 3.3 hrs | ~1 hr (GPU hist) | PENDING |
+| Optuna (200 trials, n_jobs=4) | 25 hrs | ~8 hrs (GPU hist) | PENDING |
+| Meta + PBO + SHAP | 15 min | 15 min | PENDING |
+| **TOTAL (CPU)** | **30 hrs ($51)** | | |
+| **TOTAL (GPU est.)** | | **~10 hrs ($25)** | |
+| **Without Optuna (CPU)** | **5 hrs ($9)** | | |
 
-### 1H — GCP c3d-highmem-360, ~$3.40/hr spot (REVIEW CORRECTED from $6.37)
-| Stage | Time |
-|-------|------|
-| Feature build | 1 hr |
-| Cross gen (Numba + streaming) | 2.3 hrs |
-| save_binary | 30 min |
-| CPCV (4 folds, sparse seq) | 7 hrs (~104 min/fold) |
-| Optuna (200 trials, n_jobs=4) | 52 hrs (~120 × 104 min / 4) |
-| Meta + PBO + SHAP | 20 min |
-| **TOTAL** | **63 hrs ($214)** |
-| **Without Optuna** | **11 hrs ($37)** |
+### 1H — GPU recommended (multi-GPU ideal), ~$3-4/hr
+| Stage | Time (CPU) | Time (GPU est.) | Status |
+|-------|-----------|----------------|--------|
+| Feature build | 1 hr | 1 hr | PENDING |
+| Cross gen (cuSPARSE + streaming) | 2.3 hrs | ~45 min | PENDING |
+| save_binary | 30 min | 30 min | PENDING |
+| CPCV (4 folds) | 7 hrs | ~2 hrs (GPU hist) | PENDING |
+| Optuna (200 trials, n_jobs=4) | 52 hrs | ~15 hrs (GPU hist) | PENDING |
+| Meta + PBO + SHAP | 20 min | 20 min | PENDING |
+| **TOTAL (CPU)** | **63 hrs ($214)** | | |
+| **TOTAL (GPU est.)** | | **~20 hrs ($70)** | |
+| **Without Optuna (CPU)** | **11 hrs ($37)** | | |
 
-### 15M — GCP c3d-highmem-360, ~$3.40/hr spot (REVIEW CORRECTED from $6.37)
-| Stage | Time |
-|-------|------|
-| Feature build | 2 hrs |
-| Cross gen (Numba + streaming) | 5.8 hrs |
-| save_binary | 45 min |
-| CPCV (4 folds, sparse seq) | 10 hrs (~150 min/fold, REVIEW CORRECTED from 174) |
-| Optuna (200 trials, n_jobs=4) | 75 hrs (~120 × 150 min / 4) |
-| Meta + PBO + SHAP | 30 min |
-| **TOTAL** | **94 hrs ($320)** |
-| **Without Optuna** | **19 hrs ($65)** |
+### 15M — GPU required (multi-GPU), ~$3-4/hr
+| Stage | Time (CPU) | Time (GPU est.) | Status |
+|-------|-----------|----------------|--------|
+| Feature build | 2 hrs | 2 hrs | PENDING |
+| Cross gen (cuSPARSE + streaming) | 5.8 hrs | ~1.5 hrs | PENDING |
+| save_binary | 45 min | 45 min | PENDING |
+| CPCV (4 folds) | 10 hrs | ~3 hrs (GPU hist) | PENDING |
+| Optuna (200 trials, n_jobs=4) | 75 hrs | ~22 hrs (GPU hist) | PENDING |
+| Meta + PBO + SHAP | 30 min | 30 min | PENDING |
+| **TOTAL (CPU)** | **94 hrs ($320)** | | |
+| **TOTAL (GPU est.)** | | **~30 hrs ($105)** | |
+| **Without Optuna (CPU)** | **19 hrs ($65)** | | |
 
-### BUDGET OPTIONS (REVIEW CORRECTED — GCP spot ~$3.40/hr not $6.37)
-| Strategy | Total Cost | Total Time (parallel) |
-|----------|-----------|----------------------|
-| All 5 TFs, NO Optuna | **$115** | **19 hrs** |
-| + Optuna 1w/1d only (200 trials) | **$147** | **19 hrs** (Optuna runs after) |
-| + Optuna 4h (200 trials) | **$198** | **30 hrs** |
-| + Optuna 1h (200 trials) | **$412** | **63 hrs** |
-| + Optuna 15m (200 trials) | **$732** | **94 hrs** |
-| All 5 TFs, full Optuna | **$615** | **94 hrs** |
+### BUDGET OPTIONS (updated 2026-03-28 — includes GPU estimates for 4h+)
+| Strategy | CPU Cost | GPU Cost (est.) | Time (parallel) |
+|----------|---------|----------------|-----------------|
+| All 5 TFs, NO Optuna | **$115** | **$75** | **19 hrs (CPU) / 8 hrs (GPU)** |
+| + Optuna 1w/1d only (200 trials) | **$147** | **$110** | **19 hrs** |
+| + Optuna 4h (200 trials) | **$198** | **$135** | **30 hrs (CPU) / 10 hrs (GPU)** |
+| + Optuna 1h (200 trials) | **$412** | **$205** | **63 hrs (CPU) / 20 hrs (GPU)** |
+| + Optuna 15m (200 trials) | **$732** | **$310** | **94 hrs (CPU) / 30 hrs (GPU)** |
+| All 5 TFs, full Optuna | **$615** | **$310** | **94 hrs (CPU) / 30 hrs (GPU)** |
 
 ---
 
-## IMPLEMENTATION ORDER
+## IMPLEMENTATION ORDER (updated 2026-03-28)
 
-### Weekend 1: Core optimizations + CPCV training ($115)
-1. Implement Numba sorted-index intersection (Phase 1A)
-2. Implement adaptive RIGHT_CHUNK (Phase 1C)
-3. Implement parent Dataset + .subset() (Phase 2A)
-4. Apply LightGBM param fixes (Phase 3A-3E)
-5. Apply OS tuning to setup.sh (Phase 4)
-6. Train ALL 5 TFs with CPCV only (no Optuna)
+### COMPLETED
+- [x] GPU histogram fork (78x SpMV, CUDA sparse kernel) — Phase 2 custom
+- [x] Cross gen GPU acceleration (cuSPARSE SpGEMM) — Phase 1 custom
+- [x] 1w training: 77.64% accuracy, 2.2M features, GPU=CPU verified
+- [x] 1d cross gen: 6M features, artifacts downloaded
+- [x] LightGBM param fixes: max_bin=255, path_smooth=0.1, max_conflict_rate removed (Phase 3A-3C)
+- [x] OS tuning in setup.sh: tcmalloc, THP, vm.swappiness (Phase 4)
 
-### Weekend 2: Optuna for cheap TFs ($7)
-7. Implement parallel Optuna + WilcoxonPruner (Phase 2C-2D)
-8. Run Optuna on 1w (200 trials, 6.5 hrs, $2)
-9. Run Optuna on 1d (200 trials, 13 hrs, $5)
-10. Warm-start 4h/1h/15m Optuna with best params from 1w/1d
+### NEXT: Optuna optimization (NEW #1 bottleneck — 73-81% of pipeline)
+1. Implement parallel Optuna + WilcoxonPruner (Phase 2C-2D)
+2. Implement warm-starting from 1w params (Phase 2G)
+3. Run Optuna on 1w (200 trials, 5.5 hrs, $2) — CPU
+4. Run Optuna on 1d (200 trials, 13 hrs, $5) — CPU
+5. Evaluate GPU histogram fork for 4h+ Optuna trials (Phase 2H)
 
-### Weekend 3+: Optuna for expensive TFs
-11. Run Optuna on 4h (50-200 trials, $45)
-12. Run Optuna on 1h (50-100 trials, warm-started, $100-376)
-13. Run Optuna on 15m (50 trials, warm-started, $160-637)
+### THEN: Train remaining TFs
+6. Train 1d with best Optuna params — CPU 128c
+7. Train 4h — GPU (A100) if GPU histogram validated, else CPU 176c
+8. Train 1h — GPU (multi-GPU if available)
+9. Train 15m — GPU (multi-GPU required)
+10. Warm-start 4h/1h/15m Optuna from 1w/1d best params
 
 ### Post-training:
-14. Feature importance pipeline (Phase 8A)
-15. GBDT+LR calibration (Phase 8B)
-16. Used-features-only inference (Phase 6A)
-17. Pruned model deployment (Phase 6B)
-18. Retraining schedule setup (Phase 8D)
+11. Feature importance pipeline (Phase 8A)
+12. GBDT+LR calibration (Phase 8B)
+13. Used-features-only inference (Phase 6A)
+14. Pruned model deployment (Phase 6B)
+15. Retraining schedule setup (Phase 8D)

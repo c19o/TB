@@ -69,13 +69,15 @@ except ImportError:
 from config import (
     V3_LGBM_PARAMS, TF_MIN_DATA_IN_LEAF, V30_DATA_DIR,
     OPTUNA_STAGE1_TRIALS, OPTUNA_STAGE2_TRIALS,
+    OPTUNA_WARMSTART_STAGE1_TRIALS, OPTUNA_WARMSTART_STAGE2_TRIALS,
     OPTUNA_N_STARTUP_TRIALS, OPTUNA_SEED,
     OPTUNA_PRUNER, OPTUNA_PRUNER_MIN_RESOURCE, OPTUNA_PRUNER_REDUCTION_FACTOR,
-    OPTUNA_SEARCH_LR, OPTUNA_SEARCH_ROUNDS,
+    OPTUNA_SEARCH_LR, OPTUNA_SEARCH_ROUNDS, OPTUNA_SEARCH_ES_PATIENCE,
     OPTUNA_FINAL_LR, OPTUNA_FINAL_ROUNDS,
     OPTUNA_SEARCH_CPCV_GROUPS, OPTUNA_SEARCH_ROW_SUBSAMPLE,
     OPTUNA_TF_ROW_SUBSAMPLE,
     OPTUNA_N_JOBS, TF_CPCV_GROUPS,
+    OPTUNA_TF_STAGE1_TRIALS, OPTUNA_TF_STAGE2_TRIALS, OPTUNA_TF_N_STARTUP_TRIALS,
 )
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 
@@ -442,8 +444,12 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
                                reference=dtrain, free_raw_data=False if use_gpu else True)
 
-            # MC-4: scale early stopping inversely with LR — esoteric signals need 800+ trees at low LR
-            _es_patience = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+            # MC-4: search trials use fast ES patience (OPTUNA_SEARCH_ES_PATIENCE=30);
+            # final retrain uses LR-scaled patience for esoteric signals needing 800+ trees
+            if search_lr:
+                _es_patience = OPTUNA_SEARCH_ES_PATIENCE  # fast cutoff during search
+            else:
+                _es_patience = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
 
             if use_gpu and sp_sparse.issparse(X_train_es):
                 # GPU fork path: manual Booster loop with set_external_csr
@@ -575,6 +581,149 @@ def compute_narrow_ranges(study, top_k=5):
         ranges['min_data_in_leaf'] = (max(1, int(ranges['min_data_in_leaf'][0])), max(2, int(ranges['min_data_in_leaf'][1])))
 
     return ranges
+
+
+# ============================================================
+# WARM-START: Cross-TF param inheritance
+# ============================================================
+# Params that transfer across TFs (regularization/sampling — generalizes)
+_WARMSTART_TRANSFERABLE = [
+    'feature_fraction', 'feature_fraction_bynode', 'bagging_fraction',
+    'lambda_l1', 'lambda_l2', 'min_gain_to_split', 'max_depth', 'learning_rate',
+]
+# Params that are TF-specific (DO NOT inherit — capped by TF_NUM_LEAVES, TF_MIN_DATA_IN_LEAF)
+_WARMSTART_TF_SPECIFIC = ['num_leaves', 'min_data_in_leaf']
+
+# TF cascade order: each TF inherits from the one before it
+_TF_WARMSTART_PARENT = {
+    '1d': '1w',
+    '4h': '1d',
+    '1h': '4h',
+    '15m': '1h',
+}
+
+
+def load_warmstart_params(tf_name):
+    """Load best params from the parent TF's Optuna config (if available).
+    Returns (parent_params_dict, parent_tf_name) or (None, None) if not available.
+    """
+    parent_tf = _TF_WARMSTART_PARENT.get(tf_name)
+    if parent_tf is None:
+        return None, None
+
+    parent_config_path = os.path.join(PROJECT_DIR, f'optuna_configs_{parent_tf}.json')
+    if not os.path.exists(parent_config_path):
+        return None, None
+
+    with open(parent_config_path) as f:
+        parent_config = json.load(f)
+
+    parent_params = parent_config.get('best_params', {})
+    if not parent_params:
+        return None, None
+
+    return parent_params, parent_tf
+
+
+def compute_warmstart_ranges(parent_params, tf_name):
+    """Compute narrowed search ranges from parent TF's best params.
+
+    Transferable params get ±20% range. TF-specific params use their
+    standard wide ranges (num_leaves, min_data_in_leaf).
+    """
+    from config import TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES
+
+    ranges = {}
+
+    for pname in _WARMSTART_TRANSFERABLE:
+        if pname not in parent_params:
+            continue
+        val = parent_params[pname]
+        if isinstance(val, int):
+            margin = max(int(abs(val) * 0.2), 1)
+            lo = max(1, val - margin)
+            hi = val + margin
+            ranges[pname] = (lo, hi)
+        else:
+            # Float: ±20%, clamped to sensible minimums
+            lo = max(val * 0.8, 0.001)
+            hi = val * 1.2
+            ranges[pname] = (lo, hi)
+
+    # Clamp max_depth to valid range
+    if 'max_depth' in ranges:
+        lo, hi = ranges['max_depth']
+        ranges['max_depth'] = (max(4, lo), min(12, hi))
+
+    # Clamp feature_fraction to [0.005, 0.1]
+    if 'feature_fraction' in ranges:
+        lo, hi = ranges['feature_fraction']
+        ranges['feature_fraction'] = (max(0.005, lo), min(0.1, hi))
+
+    # Clamp feature_fraction_bynode to [0.2, 0.8]
+    if 'feature_fraction_bynode' in ranges:
+        lo, hi = ranges['feature_fraction_bynode']
+        ranges['feature_fraction_bynode'] = (max(0.2, lo), min(0.8, hi))
+
+    # Clamp bagging_fraction to [0.5, 0.95]
+    if 'bagging_fraction' in ranges:
+        lo, hi = ranges['bagging_fraction']
+        ranges['bagging_fraction'] = (max(0.5, lo), min(0.95, hi))
+
+    # Clamp lambda_l1 to [0.01, 1.0]
+    if 'lambda_l1' in ranges:
+        lo, hi = ranges['lambda_l1']
+        ranges['lambda_l1'] = (max(0.01, lo), min(1.0, hi))
+
+    # Clamp lambda_l2 to [0.1, 20.0]
+    if 'lambda_l2' in ranges:
+        lo, hi = ranges['lambda_l2']
+        ranges['lambda_l2'] = (max(0.1, lo), min(20.0, hi))
+
+    # Clamp min_gain_to_split to [0.1, 5.0]
+    if 'min_gain_to_split' in ranges:
+        lo, hi = ranges['min_gain_to_split']
+        ranges['min_gain_to_split'] = (max(0.1, lo), min(5.0, hi))
+
+    # Clamp learning_rate to [0.01, 0.1]
+    if 'learning_rate' in ranges:
+        lo, hi = ranges['learning_rate']
+        ranges['learning_rate'] = (max(0.01, lo), min(0.1, hi))
+
+    # TF-specific params: use standard wide ranges (NOT inherited)
+    _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
+    _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
+    ranges['num_leaves'] = (15, _tf_nl_cap)
+    ranges['min_data_in_leaf'] = (max(1, _tf_mdil - 2), _tf_mdil + 10)
+
+    # max_bin: LOCKED at 255
+    ranges['max_bin'] = [255]
+
+    return ranges
+
+
+def build_warmstart_enqueue_params(parent_params, tf_name):
+    """Build a param dict suitable for study.enqueue_trial() from parent TF params.
+
+    Transferable params are copied directly. TF-specific params use the
+    TF's default values (mid-range).
+    """
+    from config import TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES
+
+    enqueue = {}
+
+    # Copy transferable params
+    for pname in _WARMSTART_TRANSFERABLE:
+        if pname in parent_params:
+            enqueue[pname] = parent_params[pname]
+
+    # TF-specific: use sensible defaults (not inherited)
+    _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
+    _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
+    enqueue['num_leaves'] = min(_tf_nl_cap, max(15, _tf_nl_cap // 2))
+    enqueue['min_data_in_leaf'] = _tf_mdil
+
+    return enqueue
 
 
 # ============================================================
@@ -744,8 +893,15 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
 # ============================================================
 # MAIN SEARCH FOR ONE TF
 # ============================================================
-def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
-    """Run two-stage Optuna search + final retrain for one timeframe."""
+def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
+    """Run two-stage Optuna search + final retrain for one timeframe.
+
+    Args:
+        warmstart: If True, load best params from parent TF and use them to:
+                   (1) seed the study with enqueue_trial
+                   (2) narrow stage 1 ranges to parent ±20%
+                   (3) reduce trial counts (50+50 instead of 100+100)
+    """
     log.info(f"\n{'='*70}")
     log.info(f"OPTUNA SEARCH: {tf_name.upper()}")
     log.info(f"{'='*70}")
@@ -778,6 +934,33 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         else:
             log.info(f"  GPU fork: not available, using CPU")
 
+    # ── Warm-start: load parent TF params if available ──
+    warmstart_params = None
+    warmstart_ranges = None
+    warmstart_parent_tf = None
+    is_warmstarted = False
+
+    if warmstart:
+        warmstart_params, warmstart_parent_tf = load_warmstart_params(tf_name)
+        if warmstart_params is not None:
+            warmstart_ranges = compute_warmstart_ranges(warmstart_params, tf_name)
+            is_warmstarted = True
+            log.info(f"  WARM-START from {warmstart_parent_tf.upper()}: inheriting {len([p for p in _WARMSTART_TRANSFERABLE if p in warmstart_params])}/{len(_WARMSTART_TRANSFERABLE)} transferable params")
+            log.info(f"  Warm-start ranges: {json.dumps({k: v for k, v in warmstart_ranges.items() if k != 'max_bin'}, indent=4, default=str)}")
+        else:
+            log.info(f"  No warm-start available for {tf_name} (no parent TF config found)")
+
+    # Determine trial counts: per-TF override > warm-start override > global default
+    if is_warmstarted:
+        s1_trials = OPTUNA_WARMSTART_STAGE1_TRIALS
+        s2_trials = OPTUNA_WARMSTART_STAGE2_TRIALS
+    else:
+        s1_trials = OPTUNA_TF_STAGE1_TRIALS.get(tf_name, OPTUNA_STAGE1_TRIALS)
+        s2_trials = OPTUNA_TF_STAGE2_TRIALS.get(tf_name, OPTUNA_STAGE2_TRIALS)
+
+    # Per-TF startup trials (15m needs more random warm-up due to higher variance)
+    _tf_startup = OPTUNA_TF_N_STARTUP_TRIALS.get(tf_name, OPTUNA_N_STARTUP_TRIALS)
+
     # Create pruner
     if OPTUNA_PRUNER == 'hyperband':
         pruner = HyperbandPruner(
@@ -786,14 +969,14 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         )
     else:
         pruner = MedianPruner(
-            n_startup_trials=OPTUNA_N_STARTUP_TRIALS,
+            n_startup_trials=_tf_startup,
             n_warmup_steps=2,
         )
 
     # Sampler with fixed seed for reproducibility
     sampler = optuna.samplers.TPESampler(
         seed=OPTUNA_SEED,
-        n_startup_trials=OPTUNA_N_STARTUP_TRIALS,
+        n_startup_trials=_tf_startup,
         multivariate=True,
         group=True,
     )
@@ -811,8 +994,15 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         load_if_exists=True,
     )
 
-    # ── STAGE 1: Coarse search with subsample + fewer CPCV ──
-    log.info(f"\n  STAGE 1: {OPTUNA_STAGE1_TRIALS} trials, {OPTUNA_SEARCH_CPCV_GROUPS} CPCV groups, "
+    # Enqueue warm-start params as first trial (TPE evaluates this before exploring)
+    if is_warmstarted:
+        enqueue_params = build_warmstart_enqueue_params(warmstart_params, tf_name)
+        study.enqueue_trial(enqueue_params)
+        log.info(f"  Enqueued warm-start trial: {enqueue_params}")
+
+    # ── STAGE 1: Coarse search (narrowed if warm-started) ──
+    _ws_tag = " [WARM-START]" if is_warmstarted else ""
+    log.info(f"\n  STAGE 1{_ws_tag}: {s1_trials} trials, {OPTUNA_SEARCH_CPCV_GROUPS} CPCV groups, "
              f"{OPTUNA_SEARCH_ROW_SUBSAMPLE:.0%} row subsample, lr={OPTUNA_SEARCH_LR}")
     stage1_start = time.time()
 
@@ -828,12 +1018,13 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         search_lr=OPTUNA_SEARCH_LR,
         search_rounds=OPTUNA_SEARCH_ROUNDS,
         stage=1,
+        narrow_ranges=warmstart_ranges if is_warmstarted else None,
         use_gpu=use_gpu,
     )
 
     # Count existing completed trials to determine remaining
     existing_completed = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    stage1_remaining = max(0, OPTUNA_STAGE1_TRIALS - existing_completed)
+    stage1_remaining = max(0, s1_trials - existing_completed)
 
     if stage1_remaining > 0:
         log.info(f"  Running {stage1_remaining} stage 1 trials ({existing_completed} already done)...")
@@ -869,7 +1060,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         return None
 
     n_groups_full, n_test_full = TF_CPCV_GROUPS.get(tf_name, (4, 1))
-    log.info(f"\n  STAGE 2: {OPTUNA_STAGE2_TRIALS} trials, {n_groups_full} CPCV groups (full), "
+    log.info(f"\n  STAGE 2{_ws_tag}: {s2_trials} trials, {n_groups_full} CPCV groups (full), "
              f"100% rows, lr={OPTUNA_SEARCH_LR}")
     log.info(f"  Narrowed ranges: {json.dumps({k: v for k, v in narrow_ranges.items() if k != 'max_bin'}, indent=4, default=str)}")
 
@@ -906,7 +1097,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
     )
 
     existing_s2 = len([t for t in study_s2.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    s2_remaining = max(0, OPTUNA_STAGE2_TRIALS - existing_s2)
+    s2_remaining = max(0, s2_trials - existing_s2)
 
     if s2_remaining > 0:
         log.info(f"  Running {s2_remaining} stage 2 trials ({existing_s2} already done)...")
@@ -965,19 +1156,22 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
 
     # Save optimal config
     config_path = os.path.join(PROJECT_DIR, f'optuna_configs_{tf_name}.json')
+    config_out = {
+        'best_params': best_overall.params,
+        'stage1_best_value': float(best_s1.value),
+        'stage2_best_value': float(best_s2.value),
+        'final_mean_accuracy': final_result['mean_accuracy'],
+        'final_mean_sortino': final_result['mean_sortino'],
+        'n_features': len(feature_cols),
+        'n_valid_samples': int(n_valid),
+        'stage1_time': stage1_elapsed,
+        'stage2_time': stage2_elapsed,
+        'final_time': final_elapsed,
+        'warmstart_from': warmstart_parent_tf,
+        'warmstart_trials': f'{s1_trials}+{s2_trials}' if is_warmstarted else None,
+    }
     with open(config_path, 'w') as f:
-        json.dump({
-            'best_params': best_overall.params,
-            'stage1_best_value': float(best_s1.value),
-            'stage2_best_value': float(best_s2.value),
-            'final_mean_accuracy': final_result['mean_accuracy'],
-            'final_mean_sortino': final_result['mean_sortino'],
-            'n_features': len(feature_cols),
-            'n_valid_samples': int(n_valid),
-            'stage1_time': stage1_elapsed,
-            'stage2_time': stage2_elapsed,
-            'final_time': final_elapsed,
-        }, f, indent=2)
+        json.dump(config_out, f, indent=2)
     log.info(f"  Config saved: {config_path}")
 
     total_elapsed = time.time() - total_start
@@ -1003,9 +1197,12 @@ def main():
                         help='Max stage to run (1=coarse only, 2=coarse+refine+final)')
     parser.add_argument('--n-jobs', type=int, default=None,
                         help='Parallel Optuna trials (default: cpu_count // threads_per_trial)')
+    parser.add_argument('--no-warmstart', action='store_true',
+                        help='Disable warm-start from parent TF (use full wide ranges + full trial count)')
     args = parser.parse_args()
 
     timeframes = args.tf if args.tf else TF_ORDER
+    use_warmstart = not args.no_warmstart
 
     # Auto-detect parallel trials
     total_cores = get_cpu_count() or 24
@@ -1015,12 +1212,15 @@ def main():
         # Use config constant if set (>0), otherwise auto-calculate
         n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, total_cores // 8)
 
-    log.info(f"Optuna LightGBM Search v3.1")
+    log.info(f"Optuna LightGBM Search v3.3")
     log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}")
     log.info(f"  Timeframes: {timeframes}")
-    log.info(f"  Stage 1: {OPTUNA_STAGE1_TRIALS} trials, {OPTUNA_SEARCH_CPCV_GROUPS} CPCV groups, "
-             f"{OPTUNA_SEARCH_ROW_SUBSAMPLE:.0%} subsample, lr={OPTUNA_SEARCH_LR}")
-    log.info(f"  Stage 2: {OPTUNA_STAGE2_TRIALS} trials, full CPCV, 100% data, lr={OPTUNA_SEARCH_LR}")
+    log.info(f"  Warm-start: {'ENABLED (cascade: 1w->1d->4h->1h->15m)' if use_warmstart else 'DISABLED'}")
+    log.info(f"  Stage 1 (cold): per-TF {OPTUNA_TF_STAGE1_TRIALS} | (warm): {OPTUNA_WARMSTART_STAGE1_TRIALS} trials")
+    log.info(f"  Stage 2 (cold): per-TF {OPTUNA_TF_STAGE2_TRIALS} | (warm): {OPTUNA_WARMSTART_STAGE2_TRIALS} trials")
+    log.info(f"  Search: {OPTUNA_SEARCH_CPCV_GROUPS} CPCV groups, "
+             f"{OPTUNA_SEARCH_ROW_SUBSAMPLE:.0%} subsample, lr={OPTUNA_SEARCH_LR}, "
+             f"ES patience={OPTUNA_SEARCH_ES_PATIENCE}, rounds={OPTUNA_SEARCH_ROUNDS}")
     log.info(f"  Final: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
 
     all_results = {}
@@ -1028,7 +1228,8 @@ def main():
 
     for tf in timeframes:
         try:
-            result = run_search_for_tf(tf, max_stage=args.stage, n_jobs=n_jobs)
+            result = run_search_for_tf(tf, max_stage=args.stage, n_jobs=n_jobs,
+                                       warmstart=use_warmstart)
             if result:
                 all_results[tf] = result
         except Exception as e:

@@ -248,6 +248,19 @@ dmesg | tail -20 | grep -i oom
 
 ---
 
+## LightGBM Config (from config.py)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| min_data_in_leaf | 3 | TF_MIN_DATA_IN_LEAF['1w'] |
+| num_leaves | 31 | TF_NUM_LEAVES['1w'] |
+| max_bin | 255 | V3_LGBM_PARAMS (binary crosses always get 2 bins regardless) |
+| CPCV folds | (4,1) = 4 folds | TF_CPCV_GROUPS['1w'] |
+| RIGHT_CHUNK | auto (default 500) | 818 rows + 2.2M features fits easily |
+| save_binary | Feasible | Dense matrix only 6.1GB, save_binary works fine |
+
+---
+
 ## Expected Feature Count (min_nonzero=3)
 
 | Component | Count |

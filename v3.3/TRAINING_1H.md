@@ -89,16 +89,13 @@ python3 -c "import pandas as pd; df=pd.read_parquet('/workspace/v3.3/features_BT
 7. LSTM -> lstm_1h.pt + platt_1h.pkl
 8. PBO/Audit -> validation_report_1h.json
 
-## CRITICAL LESSON: is_enable_sparse=False
-When data is converted from sparse to dense (Step 3), LightGBM MUST have `is_enable_sparse=False` set. Without this, LightGBM uses single-threaded sparse histogram construction even on dense data, wasting all but 1 core. The code in ml_multi_tf.py handles this automatically (line 780), but verify in logs:
-```
-is_enable_sparse=False (data converted to dense -- enables multi-core LightGBM)
-```
-If you do NOT see this line and data was converted to dense, training is single-threaded. STOP and investigate.
-
-**NOT APPLICABLE FOR 1H — dense matrix would be ~2.3TB, impossible. 1H always stays sparse.**
-
-If the machine has < 768GB cgroup RAM, dense conversion will be SKIPPED and training stays sparse. This is slower but correct — no data is lost. Parallel CPCV still works on sparse via ProcessPoolExecutor.
+## SPARSE TRAINING (1H always stays sparse)
+Dense matrix would be ~2.3TB — impossible on any available machine. 1H always stays sparse.
+- `is_enable_sparse=True` stays set (default from config.py)
+- LightGBM trains on sparse CSR with EFB bundling
+- SPARSE + SEQUENTIAL CPCV (parallel disabled for >1M features — pickle bottleneck)
+- int64 indptr handles NNZ > 2^31 (applied by `_ensure_lgbm_sparse_dtypes()`)
+- Verify in log: `"Keeping SPARSE (dense would need XXX GB, only YYY GB avail)"`
 
 ## CRITICAL: Dense Matrix = ~2.3TB. IMPOSSIBLE — Stays Sparse.
 - Dense conversion threshold: dense_bytes < 70% of available RAM
@@ -153,13 +150,13 @@ Must see:
 - V30_DATA_DIR pointing to /workspace/v3.3 (NOT v3.0)
 
 ## Verify Multi-Threaded Execution
-After training starts (Step 4 — CPCV), check load average:
+After training starts (Step 4 -- CPCV), check load average:
 ```bash
 # Load average should be >> 1.0 on 128+ core machine
 uptime
-# Expected: load average > 30 (parallel CPCV folds + LightGBM threads)
+# Expected: load average > 30 (LightGBM threads within sequential CPCV fold)
 # If load average ~ 1.0, training is SINGLE-THREADED — this is a critical bug
-# Check for "is_enable_sparse=False" in log if data was converted to dense
+# 1H always stays sparse (no dense conversion). Check log for "Keeping SPARSE".
 
 # Also check RSS (stays sparse — no dense conversion for 1h)
 ps aux | grep cloud_run_tf | grep -v grep
@@ -261,9 +258,19 @@ scp -P {PORT} root@{HOST}:/workspace/1h_log.txt .
 
 **Download partial results after each critical step (vast.ai machines die without warning).**
 
+## LightGBM Config (from config.py)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| min_data_in_leaf | 8 | TF_MIN_DATA_IN_LEAF['1h'] |
+| num_leaves | 63 | TF_NUM_LEAVES['1h'] |
+| max_bin | 255 | V3_LGBM_PARAMS (binary crosses always get 2 bins regardless) |
+| CPCV folds | (4,1) = 4 folds | TF_CPCV_GROUPS['1h'] |
+| save_binary | Not feasible | ~2.3TB dense matrix, stays sparse |
+
 ## Notes
 - min_data_in_leaf=8 for 1h (per TF_MIN_DATA_IN_LEAF in config.py)
 - 4 CPCV paths (N=4, K=1) — was (6,2)=15 folds. Production model identical regardless (trains on ALL data). See FOLD_STRATEGY.md.
-- NNZ will exceed int32 limit (~2B). int64 indptr fixes NNZ > 2^31. Row-partitioned boosting is BANNED (kills rare signals — Perplexity confirmed).
+- NNZ will exceed int32 limit (~2B). int64 indptr fixes NNZ > 2^31. Row-partitioned boosting is BANNED (kills rare signals -- Perplexity confirmed).
 - Subsampling code REMOVED from ml_multi_tf.py. If dense doesn't fit, it stays sparse. No data loss.
-- Download ALL artifacts after each step — vast.ai machines die without warning.
+- Download ALL artifacts after each step -- vast.ai machines die without warning.

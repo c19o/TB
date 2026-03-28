@@ -292,6 +292,19 @@ grep -E "Fold [0-9]|fold.*complete|accuracy" /workspace/1d_log.txt
 
 ---
 
+## LightGBM Config (from config.py)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| min_data_in_leaf | 3 | TF_MIN_DATA_IN_LEAF['1d'] |
+| num_leaves | 95 | TF_NUM_LEAVES['1d'] |
+| max_bin | 255 | V3_LGBM_PARAMS (binary crosses always get 2 bins regardless) |
+| CPCV folds | (4,1) = 4 folds | TF_CPCV_GROUPS['1d'] |
+| RIGHT_CHUNK | 200 | MANDATORY -- 500 OOM'd on 503GB, 200 safe on 512GB+ |
+| save_binary | Not recommended | Dense matrix ~138.6GB, binary cache would be massive |
+
+---
+
 ## Expected Feature Count (min_nonzero=3)
 
 | Component | Count |

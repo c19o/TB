@@ -297,18 +297,33 @@ SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_
 # ── Optuna Optimizer Config (v3.3 — Perplexity-optimized for 2.9M features) ──
 # Per Perplexity: save_binary() + reduced rounds + 2-fold search = 8-9x speedup
 # All features stay in model. Only tuning HOW model uses them.
-OPTUNA_STAGE1_TRIALS = 100         # 100+100 = 200 total (adequate for 10D TPE)
-OPTUNA_STAGE2_TRIALS = 100         # refinement around best region, full CPCV
+OPTUNA_STAGE1_TRIALS = 100         # adequate for 10D TPE (10x dimensions)
+OPTUNA_STAGE2_TRIALS = 50          # narrowed ranges from S1 top-5 — fewer trials needed; full CPCV = 2x cost/trial
+# Warm-start: reduced trials for downstream TFs (inherit params from prior TF)
+OPTUNA_WARMSTART_STAGE1_TRIALS = 50   # 50+50 = 100 total when warm-started
+OPTUNA_WARMSTART_STAGE2_TRIALS = 30   # warm-start + narrowed ranges = even less exploration needed
 OPTUNA_N_STARTUP_TRIALS = 10       # random trials before TPE kicks in
 OPTUNA_SEED = 42
-OPTUNA_PRUNER = 'median'           # MedianPruner (Hyperband incompatible with CPCV)
+OPTUNA_PRUNER = 'median'           # MedianPruner (Hyperband incompatible with CPCV — too few fold steps)
 OPTUNA_PRUNER_MIN_RESOURCE = 1     # min CPCV folds before pruning can kill a trial
 OPTUNA_PRUNER_REDUCTION_FACTOR = 3
 OPTUNA_SEARCH_LR = 0.08            # higher LR during search (faster convergence)
-OPTUNA_SEARCH_ROUNDS = 150         # reduced from 300 — early stop finds optimum
+OPTUNA_SEARCH_ROUNDS = 300         # WAS 150 — BUG: ES patience=125 at lr=0.08, so ES never fired with 150 rounds
+OPTUNA_SEARCH_ES_PATIENCE = 30     # search-only ES patience (decoupled from LR-scaled formula for fast trial eval)
 OPTUNA_FINAL_LR = 0.03             # original LR for final model
 OPTUNA_FINAL_ROUNDS = 800          # full rounds for final model only
 OPTUNA_SEARCH_CPCV_GROUPS = 2      # 2-fold for search speed, 4+ for final
+
+# Per-TF Optuna trial overrides (smaller datasets = fewer useful trials, larger = more expensive per trial)
+OPTUNA_TF_STAGE1_TRIALS = {
+    '1w': 60, '1d': 100, '4h': 100, '1h': 100, '15m': 100,
+}
+OPTUNA_TF_STAGE2_TRIALS = {
+    '1w': 30, '1d': 50, '4h': 50, '1h': 50, '15m': 40,
+}
+OPTUNA_TF_N_STARTUP_TRIALS = {
+    '1w': 10, '1d': 10, '4h': 10, '1h': 10, '15m': 15,  # 15m higher variance needs more random warm-up
+}
 # Per-TF row subsample for Optuna search (1w too few rows to subsample)
 OPTUNA_TF_ROW_SUBSAMPLE = {
     '1w': 1.0, '1d': 1.0, '4h': 1.0, '1h': 1.0, '15m': 1.0,  # ALL 1.0 — subsampling kills rare signals below min_data_in_leaf

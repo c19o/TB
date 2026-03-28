@@ -216,6 +216,16 @@ scp -P {PORT} root@{HOST}:/workspace/4h_log.txt .
 
 **Download partial results after each critical step (vast.ai machines die without warning).**
 
+## LightGBM Config (from config.py)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| min_data_in_leaf | 5 | TF_MIN_DATA_IN_LEAF['4h'] |
+| num_leaves | 63 | TF_NUM_LEAVES['4h'] |
+| max_bin | 255 | V3_LGBM_PARAMS (binary crosses always get 2 bins regardless) |
+| CPCV folds | (4,1) = 4 folds | TF_CPCV_GROUPS['4h'] |
+| save_binary | Feasible | NPZ + base parquet = manageable size at ~3-4M features |
+
 ## Notes
 - 4h has ~17,520 rows (2017-08-17 to 2026, Binance global API)
 - 4 CPCV paths (N=4, K=1) — production model identical regardless of fold count (trains on ALL data). See FOLD_STRATEGY.md.

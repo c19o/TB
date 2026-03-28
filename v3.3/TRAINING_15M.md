@@ -184,7 +184,17 @@ v2_cross_generator.py caps at 128 threads (line 654: `n_threads = min(_ram_limit
 Default in v2_cross_generator.py line 179: `MIN_CO_OCCURRENCE = 3`. This is correct — matches min_data_in_leaf=3. Preserves rare esoteric crosses. Can be overridden via env: `V2_MIN_CO_OCCURRENCE=3`.
 
 ### min_data_in_leaf=15:
-Per `TF_MIN_DATA_IN_LEAF` in config.py — higher than other TFs due to more rows. 15m has ~294K rows vs 5,727 for 1d, so rare signals still fire 100+ times even with leaf=15.
+Per `TF_MIN_DATA_IN_LEAF` in config.py -- higher than other TFs due to more rows. 15m has ~294K rows vs 5,727 for 1d, so rare signals still fire 100+ times even with leaf=15.
+
+### LightGBM Config (from config.py)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| min_data_in_leaf | 15 | TF_MIN_DATA_IN_LEAF['15m'] |
+| num_leaves | 127 | TF_NUM_LEAVES['15m'] |
+| max_bin | 255 | V3_LGBM_PARAMS (binary crosses always get 2 bins regardless) |
+| CPCV folds | (4,1) = 4 folds | TF_CPCV_GROUPS['15m'] |
+| save_binary | Not feasible | ~11TB dense matrix, stays sparse |
 
 ---
 
@@ -311,6 +321,22 @@ Must see:
 - Feature count: ~4,000+ base cols
 - Correct paths: DB_DIR=/workspace, V30_DATA_DIR=/workspace/v3.3
 - No "WARNING: DB missing" for any esoteric DB
+
+---
+
+## Failure Modes and What to Check
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "WARNING: DB missing" in log | Missing database file | Upload the missing .db, re-run verify script |
+| OOM during cross gen | V2_RIGHT_CHUNK too large | Set V2_RIGHT_CHUNK=200 (lower to 100 if still OOMing on <2TB) |
+| "ModuleNotFoundError: astrology_engine" | astrology_engine.py not in v3.3/ | Copy from project root |
+| Feature count mismatch | Stale parquet from old feature_library.py | Delete features_BTC_15m.parquet, restart |
+| V30_DATA_DIR shows v3.0 path | Env var not set | Verify `export V30_DATA_DIR=/workspace/v3.3` |
+| NNZ overflow (silent corruption) | int32 indptr on >2B NNZ | Verify `_ensure_lgbm_sparse_dtypes()` applied. Check log for int64 indptr. |
+| Cross gen very slow (>12 hrs) | 294K rows x 10M+ crosses | Expected. Single-threaded sparse matmul bottleneck. Wait. |
+| LSTM crashes with NaN | Features have NaN not imputed for LSTM | Run LSTM locally (13900K + RTX 3090). ml_multi_tf.py imputes NaN->0 for LSTM. |
+| Process disappears silently | OOM kill | Check `dmesg tail -20 grep -i oom`. Lower RIGHT_CHUNK or rent bigger machine. |
 
 ---
 
