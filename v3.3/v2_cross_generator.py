@@ -1,0 +1,1304 @@
+#!/usr/bin/env python
+"""
+v2_cross_generator.py — V2 Everything × Everything Cross Feature Generator
+============================================================================
+Generates ALL V2 cross features using sparse batch operations.
+MEMORY-OPTIMIZED: Streams results to sparse chunks instead of accumulating
+dense arrays in a dict. Peak RAM stays under ~4GB regardless of feature count.
+
+Cross types generated:
+  dx_  = DOY window (±2 days) × context
+  ax_  = astro × TA
+  ax2_ = multi-astro × TA
+  ta2_ = multi-TA × DOY + astro
+  ex2_ = esoteric × TA
+  sw_  = space weather × all
+  hod_ = hour-of-day × all
+  mx_  = macro × all
+  vx_  = volatility regime × all
+  asp_ = planetary aspects × all
+  pn_  = price numerology × all
+  3x regime-aware DOY crosses
+
+Usage:
+  python v2_cross_generator.py --tf 1d
+  python v2_cross_generator.py --tf 1d --gpu 0
+  python v2_cross_generator.py --tf 1h --save-sparse
+"""
+
+import os, time, argparse, warnings, gc
+import ctypes
+try:
+    _libc = ctypes.cdll.LoadLibrary("libc.so.6")
+    def _malloc_trim():
+        _libc.malloc_trim(0)
+except Exception:
+    def _malloc_trim():
+        pass
+import numpy as np
+import pandas as pd
+from scipy import sparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from numba import njit, prange
+
+warnings.filterwarnings('ignore')
+
+V2_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ── CUDA version detection (BEFORE any GPU library imports) ──
+# CuPy-cuda12x is compiled for CUDA 12.x.
+# On CUDA 13.0+ (driver 580+), CuPy runtime operations SEGFAULT.
+# Detect driver version FIRST and skip CuPy import on CUDA 13+.
+_CUDA_MAJOR = 12
+try:
+    import subprocess as _sp
+    _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+                   capture_output=True, text=True, timeout=5)
+    _drv = int(_nv.stdout.strip().split('.')[0])
+    _CUDA_MAJOR = 13 if _drv >= 580 else 12
+except Exception:
+    pass
+
+# ── GPU setup (guarded by CUDA version) ──
+if _CUDA_MAJOR >= 13:
+    cp = None
+    GPU = False
+    print(f"[v2_cross_generator] GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy would SEGFAULT. Using CPU mode.")
+else:
+    try:
+        import cupy as cp
+        GPU = True
+    except ImportError:
+        cp = None
+        GPU = False
+
+
+def log(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def _get_available_ram_gb():
+    """Get available RAM in GB (cgroup v1+v2 aware). Delegates to shared hardware_detect."""
+    try:
+        from hardware_detect import get_available_ram_gb
+        return get_available_ram_gb()
+    except ImportError:
+        pass
+    # Inline fallback if hardware_detect not available
+    try:
+        import psutil
+        return psutil.virtual_memory().available / (1024**3)
+    except (ImportError, Exception):
+        pass
+    return 64.0  # conservative fallback
+
+
+# ── Adaptive batch sizing based on available RAM ──
+def _get_right_chunk():
+    """Auto-detect RAM and set chunk size accordingly."""
+    try:
+        import psutil
+        ram_gb = psutil.virtual_memory().total / (1024**3)
+    except (ImportError, Exception):
+        try:
+            with open('/proc/meminfo') as f:
+                for line in f:
+                    if 'MemTotal' in line:
+                        ram_gb = int(line.split()[1]) / (1024**2)
+                        break
+                else:
+                    ram_gb = 64.0
+        except (FileNotFoundError, Exception):
+            ram_gb = 64.0  # conservative default
+
+    if ram_gb >= 512:
+        RIGHT_CHUNK = 2000   # cloud: 512GB+ RAM, process 2000 contexts at a time
+    elif ram_gb >= 256:
+        RIGHT_CHUNK = 1000   # cloud: 256GB RAM
+    elif ram_gb >= 128:
+        RIGHT_CHUNK = 500    # mid-range
+    elif ram_gb >= 64:
+        RIGHT_CHUNK = 200    # local 64GB
+    else:
+        RIGHT_CHUNK = 100    # low RAM
+
+    # Scale down for high-row-count TFs to prevent memory accumulation
+    # n_rows is not available here, so we check via environment variable or default
+    _env_nrows = os.environ.get('V2_NROWS')
+    if _env_nrows:
+        _nrows = int(_env_nrows)
+        RIGHT_CHUNK = max(200, int(RIGHT_CHUNK * min(1.0, 50000 / _nrows)))
+
+    return RIGHT_CHUNK
+
+
+def _get_cross_batch_size(n_rows):
+    """Auto-size batch for vectorized cross computation. Targets 25% of available RAM."""
+    try:
+        import psutil
+        avail = psutil.virtual_memory().available
+    except (ImportError, Exception):
+        try:
+            with open('/proc/meminfo') as f:
+                for line in f:
+                    if 'MemAvailable' in line:
+                        avail = int(line.split()[1]) * 1024
+                        break
+                else:
+                    avail = 16 * 1024**3
+        except Exception:
+            avail = 16 * 1024**3
+    target = int(avail * 0.25)
+    # Each pair: 2 column reads (N×4B) + 1 result (N×4B) = 12N bytes
+    bytes_per_pair = n_rows * 12
+    batch = max(500, min(50000, target // max(1, bytes_per_pair)))
+    _env_batch = os.environ.get("V2_BATCH_MAX")
+    if _env_batch:
+        batch = min(batch, int(_env_batch))
+    return batch
+
+
+# Env var override for orchestrator OOM retry
+_env_chunk = os.environ.get('V2_RIGHT_CHUNK')
+RIGHT_CHUNK = int(_env_chunk) if _env_chunk else _get_right_chunk()
+log(f"Adaptive RIGHT_CHUNK = {RIGHT_CHUNK} (detected RAM{', env override' if _env_chunk else ''})")
+
+# Minimum co-occurrence threshold for cross features.
+# Crosses firing fewer than this many times cannot reliably appear in both
+# CPCV train AND validation splits (98.3% coverage at n=8 with 5-fold CPCV).
+# This is a math constraint on the validation pipeline, not a signal filter.
+_env_co_occur = os.environ.get('V2_MIN_CO_OCCURRENCE')
+MIN_CO_OCCURRENCE = int(_env_co_occur) if _env_co_occur else 3  # Lowered from 8: matches min_data_in_leaf=3, preserves rare esoteric crosses
+
+
+# ── GPU VRAM-adaptive batch sizing ──
+def _get_gpu_vram_gb(gpu_id=0):
+    """Detect GPU VRAM in GB. Returns 0 on CUDA 13+ (GPU disabled)."""
+    if _CUDA_MAJOR >= 13 or cp is None:
+        return 0.0
+    try:
+        mem = cp.cuda.Device(gpu_id).mem_info  # returns (free, total)
+        return mem[1] / (1024**3)  # total VRAM in GB
+    except Exception:
+        return 12.0  # default: assume 3090
+
+
+def _get_optimal_batch(n_bars, n_right, gpu_vram_gb=None, gpu_id=0):
+    """Auto-size GPU batch based on available VRAM. Fully dynamic — no hard cap.
+    Scales from BATCH=5 on 12GB 3090 to BATCH=200+ on 96GB H100."""
+    if gpu_vram_gb is None:
+        gpu_vram_gb = _get_gpu_vram_gb(gpu_id=gpu_id)
+    # Leave 30% headroom for kernel overhead + other GPU operations
+    available_bytes = gpu_vram_gb * 0.7 * (1024**3)
+    # Shape is (n_bars, BATCH, n_right) in float32 = 4 bytes
+    bytes_per_batch_elem = n_bars * n_right * 4
+    if bytes_per_batch_elem <= 0:
+        return 10  # safe minimum
+    max_batch = int(available_bytes / bytes_per_batch_elem)
+    return max(1, max_batch)
+
+
+# ============================================================
+# BINARIZATION
+# ============================================================
+
+def binarize_contexts(df, four_tier=True):
+    """
+    Binarize all suitable columns into binary context arrays.
+    Returns: (ctx_names, ctx_arrays) where ctx_arrays is list of float32 arrays.
+
+    With four_tier=True:
+      EXTREME_HIGH (>95th), HIGH (>75th), LOW (<25th), EXTREME_LOW (<5th)
+    """
+    skip_pre = ('tx_', 'px_', 'ex_', 'dx_', 'cross_', 'next_', 'target_',
+                'doy_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_',
+                'mx_', 'vx_', 'pn_', 'seq_', 'roc_', 'harm_')
+    skip_ex = {'timestamp', 'open', 'high', 'low', 'close', 'volume', 'quote_volume',
+               'trades', 'taker_buy_volume', 'taker_buy_quote', 'triple_barrier_label',
+               'open_time', 'open_time_ms'}
+
+    N = len(df)
+    ctx_names = []
+    ctx_arrays = []
+
+    seen_cols = set()
+    for col in df.columns:
+        if col in seen_cols:
+            continue  # skip duplicate column names
+        seen_cols.add(col)
+        if col.startswith(skip_pre) or col in skip_ex:
+            continue
+
+        raw = df[col]
+        if isinstance(raw, pd.DataFrame):
+            raw = raw.iloc[:, 0]  # handle duplicate column names
+        vals = pd.to_numeric(raw, errors='coerce').values.astype(np.float32)
+        # NaN preserved — LightGBM treats missing as unknown split direction
+        uniq = np.unique(vals[~np.isnan(vals)])
+        if len(uniq) <= 1:
+            continue
+
+        if len(uniq) <= 3:
+            # Already binary — use directly
+            b = (vals > 0).astype(np.float32)
+            if 5 < np.nansum(b) < N * 0.98:
+                ctx_names.append(col)
+                ctx_arrays.append(b)
+        else:
+            try:
+                nz = vals[vals != 0] if np.nansum(vals != 0) > 100 else vals
+                nz = nz[~np.isnan(nz)]  # percentile cannot handle NaN
+                if four_tier:
+                    # 4-tier: EXTREME_HIGH, HIGH, LOW, EXTREME_LOW
+                    q95, q75, q25, q5 = np.percentile(nz, [95, 75, 25, 5])
+                    for tag, mask in [('XH', vals > q95), ('H', vals > q75),
+                                      ('L', vals < q25), ('XL', vals < q5)]:
+                        m = mask.astype(np.float32)
+                        if np.nansum(m) > 5:
+                            ctx_names.append(f'{col}_{tag}')
+                            ctx_arrays.append(m)
+                else:
+                    q80, q20 = np.percentile(nz, [80, 20])
+                    for tag, mask in [('H', vals > q80), ('L', vals < q20)]:
+                        m = mask.astype(np.float32)
+                        if np.nansum(m) > 5:
+                            ctx_names.append(f'{col}_{tag}')
+                            ctx_arrays.append(m)
+            except Exception as e:
+                print(f"  WARNING: Context array '{col}' failed: {e}")
+
+    return ctx_names, ctx_arrays
+
+
+# ============================================================
+# SIGNAL GROUP EXTRACTION
+# ============================================================
+
+def extract_signal_groups(df, ctx_names, ctx_arrays):
+    """
+    Extract named groups of binary signals for targeted crossing.
+    Returns dict of {group_name: [(name, array), ...]}.
+    """
+    groups = {
+        'astro': [], 'ta': [], 'esoteric': [], 'space_weather': [],
+        'macro': [], 'regime': [], 'session': [], 'aspect': [],
+        'price_num': [], 'moon': [], 'volatility': [],
+    }
+
+    astro_keys = ('moon_phase', 'moon_illumination', 'moon_distance',
+                  'new_moon', 'full_moon',
+                  'retro', 'eclipse', 'nakshatra', 'void_of_course',
+                  'planetary_hour', 'planetary_day', 'bazi', 'tzolkin',
+                  'equinox', 'solstice', 'tithi', 'karana')
+    ta_keys = ('rsi', 'macd', 'stoch', 'volume_', 'ema', 'sma',
+               'obv', 'ichimoku', 'supertrend',
+               'vwap', 'adx', 'cci', 'mfi', 'entropy', 'hurst')
+    esoteric_keys = (
+        # gematria / digital root
+        'gem_', 'dr_', 'gematria', 'digital_root',
+        # tweet / sentiment / caution
+        'tweet', 'caution', 'pump', 'misdirection', 'sentiment',
+        # on-chain
+        'onchain', 'oi_', 'funding', 'liq_', 'whale', 'mempool',
+        'hash_rate', 'block_height', 'coinbase_premium', 'cvd',
+        # hebrew calendar / shmita
+        'hebrew', 'shmita',
+        # esoteric time cycles
+        'fibonacci_time', 'gann_time', 'tesla',
+        # numerology
+        'master_', 'angel', 'contains_', 'palindrome', 'friday_13',
+        # text features
+        'caps_', 'excl_', 'word_count',
+        # fear & greed
+        'fear_greed', 'f_g_',
+    )
+    volatility_keys = ('atr', 'bb_width', 'realized_vol', 'vol_', 'keltner',
+                        'donchian', 'true_range', 'natr', 'bb_')
+    space_keys = ('kp_', 'solar', 'sunspot')
+    macro_keys = ('vix', 'dxy', 'yield', 'spx', 'dominance', 'tvl', 'cot_')
+    regime_keys = ('regime', 'bull', 'bear', 'sideways')
+    session_keys = ('session_', 'kill_zone', 'hod_')
+    aspect_keys = ('asp_',)
+    price_num_keys = ('price_dr', 'price_angel', 'price_near', 'price_master')
+    moon_keys = ('moon_in_', 'moon_fire', 'moon_earth', 'moon_air', 'moon_water',
+                 'moon_sign', 'moon_cardinal', 'moon_fixed', 'moon_mutable')
+
+    for name, arr in zip(ctx_names, ctx_arrays):
+        nl = name.lower()
+        if any(k in nl for k in astro_keys):
+            groups['astro'].append((name, arr))
+        elif any(k in nl for k in esoteric_keys):
+            groups['esoteric'].append((name, arr))
+        elif any(k in nl for k in volatility_keys):
+            groups['volatility'].append((name, arr))
+        elif any(k in nl for k in ta_keys):
+            groups['ta'].append((name, arr))
+        elif any(k in nl for k in space_keys):
+            groups['space_weather'].append((name, arr))
+        elif any(k in nl for k in macro_keys):
+            groups['macro'].append((name, arr))
+        elif any(k in nl for k in regime_keys):
+            groups['regime'].append((name, arr))
+        elif any(k in nl for k in session_keys):
+            groups['session'].append((name, arr))
+        elif any(k in nl for k in aspect_keys):
+            groups['aspect'].append((name, arr))
+        elif any(k in nl for k in price_num_keys):
+            groups['price_num'].append((name, arr))
+        elif any(k in nl for k in moon_keys):
+            groups['moon'].append((name, arr))
+        else:
+            groups['ta'].append((name, arr))  # default to TA
+
+    return groups
+
+
+# ============================================================
+# HELPERS: dict -> COO triplet conversion
+# ============================================================
+
+    # _dict_to_coo_triplets removed — GPU/CPU chunks now return COO directly
+
+
+# ============================================================
+# BATCH GPU CROSS MULTIPLICATION (CHUNKED RIGHT-SIDE)
+# ============================================================
+
+def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
+                    gpu_id=0, min_nonzero=None, max_features=None, col_offset=0):
+    """
+    Cross every left signal with every right signal using GPU batch multiply.
+    Returns (feature_names_list, rows_list, cols_list, data_list, n_new_cols)
+    as COO triplet arrays for efficient assembly.
+
+    Right-side is processed in chunks of RIGHT_CHUNK to cap memory.
+    col_offset: starting column index for global COO assembly.
+
+    NOTE: The RIGHT_CHUNK loop CANNOT be parallelized across GPUs.
+    Each chunk allocates a tensor of shape (n_bars, BATCH, n_right) that
+    consumes most of GPU VRAM. Running multiple chunks simultaneously would
+    OOM. The chunking exists precisely because the full cross product exceeds
+    VRAM. Sequential chunking is the correct approach here — the bottleneck
+    is VRAM capacity, not GPU compute utilization.
+    """
+    if min_nonzero is None:
+        min_nonzero = MIN_CO_OCCURRENCE
+
+    if not left_arrays or not right_arrays:
+        return [], [], [], [], 0
+
+    N = len(left_arrays[0])
+    left_mat = np.column_stack(left_arrays)  # (N, n_left) — usually small
+
+    all_names = []
+    all_rows = []
+    all_cols = []
+    all_data = []
+    _local_csr_chunks = []  # CSR chunks flushed per RIGHT_CHUNK
+    total_feats = 0
+    current_offset = col_offset
+
+    # Process right-side in chunks of RIGHT_CHUNK
+    for rc_start in range(0, len(right_names), RIGHT_CHUNK):
+        rc_end = min(rc_start + RIGHT_CHUNK, len(right_names))
+        r_names_chunk = right_names[rc_start:rc_end]
+        r_arrays_chunk = right_arrays[rc_start:rc_end]
+        right_mat_chunk = np.column_stack(r_arrays_chunk)  # (N, <=RIGHT_CHUNK)
+
+        # GPU now uses sparse matmul pre-filter — no 3D tensor, works for ANY row count.
+        # Skip if: CUDA 13+ detected, env var override, or CuPy unavailable.
+        _skip_gpu = _CUDA_MAJOR >= 13 or os.environ.get('V2_SKIP_GPU') == '1'
+        if GPU and not _skip_gpu:
+            try:
+                c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
+                    left_names, left_mat, r_names_chunk, right_mat_chunk,
+                    prefix, gpu_id, min_nonzero, max_features, total_feats,
+                    col_offset=current_offset
+                )
+            except Exception as e:
+                log(f"  GPU failed ({e}), falling back to CPU for chunk")
+                c_names, c_rows, c_cols, c_data, c_ncols = _cpu_cross_chunk(
+                    left_names, left_mat, r_names_chunk, right_mat_chunk,
+                    prefix, min_nonzero, max_features, total_feats,
+                    col_offset=current_offset
+                )
+        else:
+            c_names, c_rows, c_cols, c_data, c_ncols = _cpu_cross_chunk(
+                left_names, left_mat, r_names_chunk, right_mat_chunk,
+                prefix, min_nonzero, max_features, total_feats,
+                col_offset=current_offset
+            )
+
+        if c_names:
+            # FLUSH per RIGHT_CHUNK: convert COO to CSR immediately
+            all_names.extend(c_names)
+            if c_rows:
+                _flush_r = np.concatenate(c_rows)
+                _flush_c = np.concatenate(c_cols)
+                _flush_d = np.concatenate(c_data)
+                _flush_c_local = _flush_c - current_offset
+                _flush_ncols = int(_flush_c_local.max()) + 1 if len(_flush_c_local) > 0 else c_ncols
+                _flush_csr = sparse.coo_matrix((_flush_d, (_flush_r, _flush_c_local)), shape=(N, _flush_ncols)).tocsr()
+                _local_csr_chunks.append(_flush_csr)
+                del _flush_r, _flush_c, _flush_d, _flush_c_local, _flush_csr
+            current_offset += c_ncols
+            total_feats += len(c_names)
+            del c_rows, c_cols, c_data, c_names
+
+        del right_mat_chunk, r_arrays_chunk
+        gc.collect()
+        _malloc_trim()
+
+        if max_features and total_feats >= max_features:
+            break
+
+    del left_mat
+    n_total_cols = current_offset - col_offset
+    # Return CSR chunks if we flushed (memory-safe path)
+    if _local_csr_chunks:
+        return all_names, _local_csr_chunks, None, None, n_total_cols
+    return all_names, all_rows, all_cols, all_data, n_total_cols
+
+
+def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
+                     gpu_id, min_nonzero, max_features, feats_so_far,
+                     col_offset=0):
+    """
+    GPU cross multiply with sparse matmul pre-filter.
+    Step 1: Sparse matmul on CPU for co-occurrence (instant, tiny output).
+    Step 2: GPU element-wise multiply ONLY for valid pairs.
+    No 3D tensor — works for ANY row count including 217K+ (15m).
+    """
+    names = []
+    rows_list = []
+    cols_list = []
+    data_list = []
+    col_idx = 0
+
+    # ── Step 1: Sparse matmul pre-filter (CPU — instant, output is tiny) ──
+    left_sp = sparse.csc_matrix(left_mat)
+    if left_sp.indices.dtype != np.int64:
+        left_sp.indices = left_sp.indices.astype(np.int64)
+        left_sp.indptr = left_sp.indptr.astype(np.int64)
+    right_sp = sparse.csc_matrix(right_mat)
+    if right_sp.indices.dtype != np.int64:
+        right_sp.indices = right_sp.indices.astype(np.int64)
+        right_sp.indptr = right_sp.indptr.astype(np.int64)
+    co_occur = (left_sp.T @ right_sp).toarray()  # (n_left, n_right) — small
+    valid_pairs = np.argwhere(co_occur >= min_nonzero)
+    n_valid = len(valid_pairs)
+
+    if n_valid == 0:
+        return names, rows_list, cols_list, data_list, col_idx
+
+    gpu_vram_gb = _get_gpu_vram_gb(gpu_id=gpu_id)
+    log(f"  GPU VRAM: {gpu_vram_gb:.1f} GB | {n_valid} valid pairs (pre-filtered from {left_mat.shape[1]}×{right_mat.shape[1]})")
+
+    # Pre-build all feature names (preserves exact order)
+    all_names = [f'{prefix}_{left_names[int(p[0])][:40]}_{right_names[int(p[1])][:40]}'
+                 for p in valid_pairs]
+
+    # ── Step 2: Vectorized GPU batch multiply ──
+    _dev = 0 if os.environ.get('CUDA_VISIBLE_DEVICES') else gpu_id
+    cp.cuda.Device(_dev).use()
+    left_gpu = cp.asarray(np.ascontiguousarray(left_mat))
+    right_gpu = cp.asarray(np.ascontiguousarray(right_mat))
+
+    N = left_mat.shape[0]
+    avail_vram = int(gpu_vram_gb * 0.5 * 1024**3)
+    bytes_per_pair = N * 12
+    BATCH = max(100, min(50000, avail_vram // max(1, bytes_per_pair)))
+
+    for b_start in range(0, n_valid, BATCH):
+        b_end = min(b_start + BATCH, n_valid)
+        chunk = valid_pairs[b_start:b_end]
+
+        # Vectorized batch multiply on GPU
+        left_cols = left_gpu[:, chunk[:, 0]]
+        right_cols = right_gpu[:, chunk[:, 1]]
+        crosses_gpu = left_cols * right_cols
+
+        # Transfer to CPU for nonzero extraction
+        crosses = cp.asnumpy(crosses_gpu)
+        del crosses_gpu, left_cols, right_cols
+        cp.get_default_memory_pool().free_all_blocks()
+
+        nz_rows_all, nz_cols_all = np.nonzero(crosses)
+
+        if len(nz_rows_all) > 0:
+            unique_cols, col_starts = np.unique(nz_cols_all, return_index=True)
+            col_ends = np.append(col_starts[1:], len(nz_cols_all))
+
+            for k in range(len(unique_cols)):
+                c = int(unique_cols[k])
+                s, e = int(col_starts[k]), int(col_ends[k])
+                nz = nz_rows_all[s:e]
+                names.append(all_names[b_start + c])
+                rows_list.append(nz)
+                cols_list.append(np.full(len(nz), col_offset + col_idx, dtype=np.int64))
+                data_list.append(crosses[nz, c].astype(np.float32))
+                col_idx += 1
+
+        if max_features and (feats_so_far + col_idx) >= max_features:
+            break
+
+    del left_gpu, right_gpu
+    cp.get_default_memory_pool().free_all_blocks()
+    return names, rows_list, cols_list, data_list, col_idx
+
+
+@njit(parallel=True, cache=True)
+def _parallel_cross_multiply(left, right, out):
+    n_rows, n_pairs = left.shape
+    for j in prange(n_pairs):
+        for i in range(n_rows):
+            out[i, j] = left[i, j] * right[i, j]
+
+
+def _process_cross_block(left_mat, right_mat, valid_pairs, all_names,
+                         b_start, b_end, col_offset_base):
+    """
+    Process a block of cross pairs. Thread-safe — numpy element-wise ops release GIL.
+    Returns (names, rows_list, cols_list, data_list) for this block.
+    """
+    chunk = valid_pairs[b_start:b_end]
+    left_cols = np.ascontiguousarray(left_mat[:, chunk[:, 0]])     # (N, chunk_size)
+    right_cols = np.ascontiguousarray(right_mat[:, chunk[:, 1]])   # (N, chunk_size)
+    crosses = np.empty_like(left_cols)
+    _parallel_cross_multiply(left_cols, right_cols, crosses)       # Numba parallel prange
+
+    nz_rows_all, nz_cols_all = np.nonzero(crosses)
+
+    names = []
+    rows_list = []
+    cols_list = []
+    data_list = []
+
+    if len(nz_rows_all) > 0:
+        unique_cols, col_starts = np.unique(nz_cols_all, return_index=True)
+        col_ends = np.append(col_starts[1:], len(nz_cols_all))
+
+        for k in range(len(unique_cols)):
+            c = int(unique_cols[k])
+            s, e = int(col_starts[k]), int(col_ends[k])
+            nz = nz_rows_all[s:e]
+            names.append(all_names[b_start + c])
+            rows_list.append(nz)
+            # col indices assigned later during merge to ensure correct global ordering
+            data_list.append(crosses[nz, c].astype(np.float32))
+
+    return names, rows_list, data_list
+
+
+def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
+                     min_nonzero, max_features, feats_so_far, col_offset=0):
+    """
+    CPU cross multiply with sparse matmul pre-filter + MULTI-THREADED execution.
+    Step 1: Compute ALL co-occurrence counts via sparse matmul (instant).
+    Step 2: Only compute actual crosses for valid pairs (skip ~92% of work).
+    Step 3: Parallel thread execution — numpy element-wise ops release GIL.
+    Returns COO triplets directly, never stores dense columns.
+    """
+    names = []
+    rows_list = []
+    cols_list = []
+    data_list = []
+    col_idx = 0
+
+    # ── Sparse matmul pre-filter: compute ALL co-occurrence counts at once ──
+    left_sp = sparse.csc_matrix(left_mat)
+    if left_sp.indices.dtype != np.int64:
+        left_sp.indices = left_sp.indices.astype(np.int64)
+        left_sp.indptr = left_sp.indptr.astype(np.int64)
+    right_sp = sparse.csc_matrix(right_mat)
+    if right_sp.indices.dtype != np.int64:
+        right_sp.indices = right_sp.indices.astype(np.int64)
+        right_sp.indptr = right_sp.indptr.astype(np.int64)
+    co_occur = (left_sp.T @ right_sp).toarray()  # small: (n_left, n_right)
+
+    valid_pairs = np.argwhere(co_occur >= min_nonzero)
+
+    if len(valid_pairs) == 0:
+        return names, rows_list, cols_list, data_list, col_idx
+
+    all_names = [f'{prefix}_{left_names[int(p[0])][:40]}_{right_names[int(p[1])][:40]}'
+                 for p in valid_pairs]
+
+    # ── Multi-threaded batch cross multiply ──
+    # numpy element-wise * releases the GIL, so threads give true parallelism.
+    # Cap at 64 threads — memory bandwidth saturates before that on most machines.
+    N = left_mat.shape[0]
+    n_valid = len(valid_pairs)
+
+    # Determine thread count first, then size batches to fill threads
+    try:
+        from hardware_detect import get_cpu_count
+        n_cpus = get_cpu_count()
+    except ImportError:
+        try:
+            n_cpus = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            n_cpus = os.cpu_count() or 1
+    # Size batches based on available RAM
+    BATCH_MAX = _get_cross_batch_size(N)
+
+    # RAM-aware thread cap: each worker holds dense arrays of (N × BATCH × 4 bytes)
+    # With OMP_NUM_THREADS set by cloud_run_tf.py, total threads = n_threads × 4 (Numba prange inside each)
+    _ram_gb = _get_available_ram_gb()
+    _ram_per_worker_gb = max(0.1, N * BATCH_MAX * 8 * 3 / 1e9)  # float64 (8 bytes) × 3 arrays (left+right+result)
+    _ram_limited = max(4, int(_ram_gb * 0.4 / _ram_per_worker_gb))
+    n_threads = min(_ram_limited, n_cpus, max(64, int(_ram_gb * 0.3 / _ram_per_worker_gb)))  # RAM-aware cap
+
+    # Size batches so we get at least n_threads batches (saturate all threads)
+    # But don't make batches too small (< 500 pairs) — overhead dominates
+    BATCH = min(BATCH_MAX, max(500, n_valid // n_threads))
+    n_batches = (n_valid + BATCH - 1) // BATCH
+    n_threads = min(n_threads, n_batches)
+
+    if n_threads <= 1 or n_batches <= 1:
+        # Single-threaded fast path (small cross, no overhead)
+        for b_start in range(0, n_valid, BATCH):
+            b_end = min(b_start + BATCH, n_valid)
+            blk_names, blk_rows, blk_data = _process_cross_block(
+                left_mat, right_mat, valid_pairs, all_names, b_start, b_end, 0)
+            for i in range(len(blk_names)):
+                names.append(blk_names[i])
+                rows_list.append(blk_rows[i])
+                cols_list.append(np.full(len(blk_rows[i]), col_offset + col_idx, dtype=np.int64))
+                data_list.append(blk_data[i])
+                col_idx += 1
+            if max_features and (feats_so_far + col_idx) >= max_features:
+                break
+        return names, rows_list, cols_list, data_list, col_idx
+
+    # ── Multi-threaded execution ──
+    batch_ranges = []
+    for b_start in range(0, n_valid, BATCH):
+        b_end = min(b_start + BATCH, n_valid)
+        batch_ranges.append((b_start, b_end))
+
+    log(f"    Parallel cross: {n_valid} pairs, {len(batch_ranges)} batches, {n_threads} threads")
+
+    # Windowed execution: process batches in groups of 2*n_threads
+    # to prevent dense intermediates from accumulating in memory.
+    # Results consumed per window, then freed before next window.
+    WINDOW = 2 * n_threads  # max inflight futures
+    results = [None] * len(batch_ranges)
+    for win_start in range(0, len(batch_ranges), WINDOW):
+        win_end = min(win_start + WINDOW, len(batch_ranges))
+        win_ranges = batch_ranges[win_start:win_end]
+        with ThreadPoolExecutor(max_workers=n_threads) as executor:
+            futures = {}
+            for idx_offset, (b_start, b_end) in enumerate(win_ranges):
+                f = executor.submit(_process_cross_block,
+                                    left_mat, right_mat, valid_pairs, all_names,
+                                    b_start, b_end, 0)
+                futures[f] = win_start + idx_offset
+            for f in as_completed(futures):
+                results[futures[f]] = f.result()
+        # Free dense intermediates between windows
+        gc.collect()
+        _malloc_trim()
+
+    # Merge results in order (preserves deterministic feature ordering)
+    for blk_names, blk_rows, blk_data in results:
+        for i in range(len(blk_names)):
+            names.append(blk_names[i])
+            rows_list.append(blk_rows[i])
+            cols_list.append(np.full(len(blk_rows[i]), col_offset + col_idx, dtype=np.int64))
+            data_list.append(blk_data[i])
+            col_idx += 1
+        if max_features and (feats_so_far + col_idx) >= max_features:
+            break
+
+    return names, rows_list, cols_list, data_list, col_idx
+
+
+# ============================================================
+# DOY WINDOW GENERATION (±2 days)
+# ============================================================
+
+def create_doy_windows(df, window=2):
+    """
+    Create DOY ±window day flags. Each window covers 2*window+1 days.
+    Returns (doy_names, doy_arrays).
+    """
+    if hasattr(df.index, 'dayofyear'):
+        doy_vals = df.index.dayofyear.values
+    elif 'day_of_year' in df.columns:
+        doy_vals = pd.to_numeric(df['day_of_year'], errors='coerce').values.astype(int)
+    else:
+        log("  [WARN] No DOY source, skipping DOY windows")
+        return [], []
+
+    names = []
+    arrays = []
+    for d in range(1, 366):
+        # Window wraps around year boundary — vectorized with np.isin
+        targets = [(d + offset - 1) % 365 + 1 for offset in range(-window, window + 1)]
+        mask = np.isin(doy_vals, targets).astype(np.float32)
+
+        if mask.sum() > 0:
+            names.append(f'dw_{d}')
+            arrays.append(mask)
+
+    return names, arrays
+
+
+# ============================================================
+# REGIME-AWARE DOY (3x)
+# ============================================================
+
+def create_regime_doy(doy_names, doy_arrays, df):
+    """
+    Split DOY windows by regime: bull, bear, sideways.
+    Returns additional (names, arrays) — triples the DOY features.
+    """
+    # Find regime column
+    regime_col = None
+    for col in ('regime', 'hmm_regime', 'regime_label'):
+        if col in df.columns:
+            regime_col = col
+            break
+
+    # If no regime column, try ema50_rising as proxy
+    if regime_col is None:
+        if 'ema50_rising' in df.columns:
+            vals = pd.to_numeric(df['ema50_rising'], errors='coerce').values
+            # NaN preserved — LightGBM treats missing as unknown split direction
+            bull = (vals > 0).astype(np.float32)
+            bear = (vals == 0).astype(np.float32)
+            sideways = np.zeros(len(df), dtype=np.float32)  # No sideways without HMM
+        else:
+            return [], []
+    else:
+        regime_vals = df[regime_col].values
+        bull = (regime_vals == 'bull').astype(np.float32) if regime_vals.dtype == object else \
+               (regime_vals == 0).astype(np.float32)
+        bear = (regime_vals == 'bear').astype(np.float32) if regime_vals.dtype == object else \
+               (regime_vals == 1).astype(np.float32)
+        sideways = (regime_vals == 'sideways').astype(np.float32) if regime_vals.dtype == object else \
+                   (regime_vals == 2).astype(np.float32)
+
+    names = []
+    arrays = []
+    for dn, da in zip(doy_names, doy_arrays):
+        for tag, regime_mask in [('B', bull), ('R', bear), ('S', sideways)]:
+            cross = da * regime_mask
+            if cross.sum() > 0:
+                names.append(f'{dn}_{tag}')
+                arrays.append(cross)
+
+    return names, arrays
+
+
+# ============================================================
+# MULTI-SIGNAL COMBINATIONS
+# ============================================================
+
+def create_multi_signal_combos(signals, prefix, max_pairs=100):
+    """
+    Create 2-way combinations of signals firing simultaneously.
+    Returns (names, arrays) for the combos.
+    """
+    names_list = [s[0] for s in signals]
+    arrays_list = [s[1] for s in signals]
+    n = len(signals)
+
+    combo_names = []
+    combo_arrays = []
+    count = 0
+
+    # Batched inner loop: for each i, multiply against all j>i at once
+    for i in range(n):
+        remaining = n - (i + 1)
+        if remaining <= 0:
+            break
+
+        # Stack all j>i arrays into a matrix (N, remaining)
+        right_mat = np.column_stack(arrays_list[i + 1:])  # (N, remaining)
+
+        # Broadcast multiply: (N, 1) * (N, remaining) = (N, remaining)
+        combos_batch = arrays_list[i][:, None] * right_mat  # vectorized
+
+        # Compute sums along axis=0 to filter
+        sums = combos_batch.sum(axis=0)  # (remaining,)
+
+        # Extract valid combos
+        valid_mask = sums >= MIN_CO_OCCURRENCE
+        valid_indices = np.nonzero(valid_mask)[0]
+
+        for idx in valid_indices:
+            j = i + 1 + idx
+            combo_names.append(f'{prefix}_{names_list[i][:15]}_{names_list[j][:15]}')
+            combo_arrays.append(combos_batch[:, idx].copy())
+            count += 1
+            if count >= max_pairs:
+                return combo_names, combo_arrays
+
+        del right_mat, combos_batch, sums
+        if count >= max_pairs:
+            break
+
+    return combo_names, combo_arrays
+
+
+# ============================================================
+# MAIN CROSS GENERATION
+# ============================================================
+
+def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=None, max_crosses=None):
+    """
+    Generate ALL V2 cross features for a single asset's feature DataFrame.
+
+    MEMORY-OPTIMIZED: Each cross type streams directly to sparse chunks.
+    We never hold more than one batch of dense arrays at a time.
+    Peak RAM stays under ~4GB regardless of total feature count.
+
+    Returns base DataFrame (crosses are in sparse .npz file, not in df).
+    """
+    t0 = time.time()
+    N = len(df)
+    out_dir = output_dir or V2_DIR
+
+    # Pin to GPU — CUDA_VISIBLE_DEVICES remaps, so always use Device(0) when set
+    if GPU:
+        if os.environ.get('CUDA_VISIBLE_DEVICES'):
+            cp.cuda.Device(0).use()
+        else:
+            cp.cuda.Device(gpu_id).use()
+
+    log(f"V2 Cross Generator — {tf.upper()}")
+    log(f"  Input: {N:,} rows × {len(df.columns):,} cols")
+
+    # ── Step 1: Binarize all contexts (4-tier) ──
+    log("  Step 1: Binarizing contexts (4-tier)...")
+    ctx_names, ctx_arrays = binarize_contexts(df, four_tier=True)
+    log(f"    {len(ctx_names)} context signals")
+
+    # ── Step 2: Extract signal groups ──
+    groups = extract_signal_groups(df, ctx_names, ctx_arrays)
+    for g, sigs in groups.items():
+        if sigs:
+            log(f"    {g}: {len(sigs)} signals")
+
+    # ── Step 3: DOY windows ──
+    log("  Step 2: Creating DOY ±2 windows...")
+    doy_names, doy_arrays = create_doy_windows(df)
+    log(f"    {len(doy_names)} DOY windows")
+
+    # ── Accumulate sparse CSR chunks + column names across all cross types ──
+    # PERF: Convert each cross type to CSR immediately instead of accumulating
+    # one massive COO. hstack of small CSR matrices is much faster than
+    # converting a single giant COO→CSR (scipy COO→CSR is single-threaded).
+    _csr_chunks = []    # list of CSR matrices, one per cross type
+    all_cross_names = []    # flat list of feature names
+    col_offset = 0      # running column offset (for gpu_batch_cross)
+
+    _total_collected = 0
+
+    def _collect_cross(label, names, rows_list, cols_list, data_list, n_new_cols):
+        """Convert cross type results to CSR. Handles both CSR-flushed and legacy COO paths."""
+        nonlocal col_offset, _total_collected
+        count = len(names)
+        if count > 0:
+            all_cross_names.extend(names)
+            # Check if rows_list contains pre-flushed CSR chunks
+            if rows_list is not None and isinstance(rows_list, list) and len(rows_list) > 0 and hasattr(rows_list[0], "indptr"):
+                _csr_chunks.extend(rows_list)
+                col_offset += n_new_cols
+                _total_collected += count
+                gc.collect()
+                _malloc_trim()
+            elif rows_list is not None and cols_list is not None and isinstance(rows_list, list) and len(rows_list) > 0:
+                _r = np.concatenate(rows_list)
+                _c = np.concatenate(cols_list)
+                _d = np.concatenate(data_list)
+                _c_local = _c - col_offset
+                chunk = sparse.coo_matrix((_d, (_r, _c_local)), shape=(N, n_new_cols)).tocsr()
+                _csr_chunks.append(chunk)
+                del _r, _c, _c_local, _d, chunk
+                gc.collect()
+                _malloc_trim()
+                col_offset += n_new_cols
+                _total_collected += count
+            else:
+                col_offset += n_new_cols
+                _total_collected += count
+            log(f"    {label} crosses: {count:,} (total: {_total_collected:,})")
+        return count
+
+    def _remaining():
+        """How many more crosses can we generate before hitting max_crosses."""
+        if max_crosses is None:
+            return None
+        return max(0, max_crosses - _total_collected)
+
+    def _at_limit():
+        """True if we've hit the max_crosses cap."""
+        return max_crosses is not None and _total_collected >= max_crosses
+
+    # ── Cross 1: DOY × ALL contexts ──
+    log("  Cross 1: DOY windows × ALL contexts...")
+    names, r, c, d, nc = gpu_batch_cross(doy_names, doy_arrays, ctx_names, ctx_arrays,
+                                          'dx', gpu_id=gpu_id, col_offset=col_offset,
+                                          max_features=_remaining())
+    _collect_cross('dx_', names, r, c, d, nc)
+    del names, r, c, d
+    gc.collect()
+    _malloc_trim()
+
+    # ── Cross 2: Astro × TA ──
+    if not _at_limit() and groups['astro'] and groups['ta']:
+        log("  Cross 2: Astro × TA...")
+        astro_n = [s[0] for s in groups['astro']]
+        astro_a = [s[1] for s in groups['astro']]
+        ta_n = [s[0] for s in groups['ta']]
+        ta_a = [s[1] for s in groups['ta']]
+        names, r, c, d, nc = gpu_batch_cross(astro_n, astro_a, ta_n, ta_a, 'ax',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('ax_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 3: Multi-astro combos × TA ──
+    if not _at_limit() and len(groups['astro']) >= 2 and groups['ta']:
+        log("  Cross 3: Multi-astro combos × TA...")
+        ax2_names, ax2_arrays = create_multi_signal_combos(groups['astro'], 'a2', max_pairs=50)
+        if ax2_names:
+            ta_n = [s[0] for s in groups['ta']]
+            ta_a = [s[1] for s in groups['ta']]
+            names, r, c, d, nc = gpu_batch_cross(ax2_names, ax2_arrays, ta_n, ta_a, 'ax2',
+                                                  gpu_id=gpu_id, col_offset=col_offset,
+                                                  max_features=_remaining())
+            _collect_cross('ax2_', names, r, c, d, nc)
+            del names, r, c, d
+        del ax2_names, ax2_arrays
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 4: Multi-TA combos × DOY + astro ──
+    if not _at_limit() and len(groups['ta']) >= 2:
+        log("  Cross 4: Multi-TA combos × DOY + astro...")
+        ta2_names, ta2_arrays = create_multi_signal_combos(groups['ta'][:60], 'ta2', max_pairs=30)
+        if ta2_names:
+            combined_n = doy_names + [s[0] for s in groups['astro']]
+            combined_a = doy_arrays + [s[1] for s in groups['astro']]
+            names, r, c, d, nc = gpu_batch_cross(ta2_names, ta2_arrays, combined_n, combined_a,
+                                                  'ta2', gpu_id=gpu_id, col_offset=col_offset,
+                                                  max_features=_remaining())
+            _collect_cross('ta2_', names, r, c, d, nc)
+            del names, r, c, d, combined_n, combined_a
+        del ta2_names, ta2_arrays
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 5: Esoteric × TA ──
+    if not _at_limit() and groups['esoteric'] and groups['ta']:
+        log("  Cross 5: Esoteric × TA...")
+        eso_n = [s[0] for s in groups['esoteric']]
+        eso_a = [s[1] for s in groups['esoteric']]
+        ta_n = [s[0] for s in groups['ta']]
+        ta_a = [s[1] for s in groups['ta']]
+        names, r, c, d, nc = gpu_batch_cross(eso_n, eso_a, ta_n, ta_a, 'ex2',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('ex2_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 6: Space weather × ALL ──
+    if not _at_limit() and groups['space_weather']:
+        log("  Cross 6: Space weather × ALL contexts...")
+        sw_n = [s[0] for s in groups['space_weather']]
+        sw_a = [s[1] for s in groups['space_weather']]
+        names, r, c, d, nc = gpu_batch_cross(sw_n, sw_a, ctx_names, ctx_arrays, 'sw',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('sw_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 7: Session/HOD × ALL (intraday only) ──
+    if not _at_limit() and groups['session']:
+        log("  Cross 7: Session × ALL contexts...")
+        hod_n = [s[0] for s in groups['session']]
+        hod_a = [s[1] for s in groups['session']]
+        names, r, c, d, nc = gpu_batch_cross(hod_n, hod_a, ctx_names, ctx_arrays, 'hod',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('hod_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 8: Macro × ALL ──
+    if not _at_limit() and groups['macro']:
+        log("  Cross 8: Macro × ALL contexts...")
+        mx_n = [s[0] for s in groups['macro']]
+        mx_a = [s[1] for s in groups['macro']]
+        names, r, c, d, nc = gpu_batch_cross(mx_n, mx_a, ctx_names, ctx_arrays, 'mx',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('mx_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 9: Volatility regime × ALL ──
+    if not _at_limit() and groups['volatility']:
+        log("  Cross 9: Volatility × ALL contexts...")
+        vx_n = [s[0] for s in groups['volatility']]
+        vx_a = [s[1] for s in groups['volatility']]
+        names, r, c, d, nc = gpu_batch_cross(vx_n, vx_a, ctx_names, ctx_arrays, 'vx',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('vx_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 10: Planetary aspects × ALL ──
+    if not _at_limit() and groups['aspect']:
+        log("  Cross 10: Aspects × ALL contexts...")
+        asp_n = [s[0] for s in groups['aspect']]
+        asp_a = [s[1] for s in groups['aspect']]
+        names, r, c, d, nc = gpu_batch_cross(asp_n, asp_a, ctx_names, ctx_arrays, 'asp',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('asp_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 11: Price numerology × ALL ──
+    if not _at_limit() and groups['price_num']:
+        log("  Cross 11: Price numerology × ALL contexts...")
+        pn_n = [s[0] for s in groups['price_num']]
+        pn_a = [s[1] for s in groups['price_num']]
+        names, r, c, d, nc = gpu_batch_cross(pn_n, pn_a, ctx_names, ctx_arrays, 'pn',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('pn_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 12: Moon position × ALL ──
+    if not _at_limit() and groups['moon']:
+        log("  Cross 12: Moon × ALL contexts...")
+        mn_n = [s[0] for s in groups['moon']]
+        mn_a = [s[1] for s in groups['moon']]
+        names, r, c, d, nc = gpu_batch_cross(mn_n, mn_a, ctx_names, ctx_arrays, 'mn',
+                                              gpu_id=gpu_id, col_offset=col_offset,
+                                              max_features=_remaining())
+        _collect_cross('mn_', names, r, c, d, nc)
+        del names, r, c, d
+        gc.collect()
+        _malloc_trim()
+
+    # ── Cross 13: Regime-aware DOY (3x) ──
+    if _at_limit():
+        log("  Cross 13: SKIPPED (max_crosses reached)")
+    else:
+        log("  Cross 13: Regime-aware DOY (3x)...")
+        reg_names, reg_arrays = create_regime_doy(doy_names, doy_arrays, df)
+        if reg_names:
+            names, r, c, d, nc = gpu_batch_cross(reg_names, reg_arrays, ctx_names, ctx_arrays,
+                                                  'rdx', gpu_id=gpu_id, col_offset=col_offset,
+                                                  max_features=_remaining())
+            _collect_cross('rdx_', names, r, c, d, nc)
+            del names, r, c, d
+        del reg_names, reg_arrays
+        gc.collect()
+        _malloc_trim()
+
+    # ── Save inference artifacts (for live cross computation) ──
+    if len(all_cross_names) > 0:
+        try:
+            from inference_crosses import save_inference_artifacts
+            # Combine all context names: binarized + DOY windows + regime DOY
+            # The cross generator uses ctx_names (binarized) + doy_names as left/right
+            # for different cross types. Merge them all for inference.
+            all_ctx_names = list(ctx_names) + list(doy_names)
+            all_ctx_arrays = list(ctx_arrays) + list(doy_arrays)
+            log("  Saving inference artifacts...")
+            save_inference_artifacts(
+                all_ctx_names, all_ctx_arrays, all_cross_names, df, tf,
+                output_dir=out_dir,
+            )
+        except Exception as e:
+            log(f"  WARNING: Failed to save inference artifacts: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ── Free context arrays — no longer needed ──
+    del ctx_names, ctx_arrays, doy_names, doy_arrays, groups
+    gc.collect()
+    _malloc_trim()
+
+    # ── SAVE CROSSES AS SPARSE (memory efficient) ──
+    total_crosses = len(all_cross_names)
+    log(f"\n  TOTAL NEW FEATURES: {total_crosses:,}")
+
+    t_assign = time.time()
+
+    if total_crosses > 0 and _csr_chunks:
+        cross_names = all_cross_names
+
+        # Memory-safe hstack via CSC splicing (no COO intermediate)
+        log(f"  Memory-safe CSC splice of {len(_csr_chunks)} chunks...")
+        csc_chunks = [c.tocsc() for c in _csr_chunks]
+        del _csr_chunks
+        gc.collect()
+        _malloc_trim()
+        _all_data = np.concatenate([c.data for c in csc_chunks])
+        _all_indices = np.concatenate([c.indices for c in csc_chunks])
+        _cumulative = 0
+        _indptr_parts = []
+        for c in csc_chunks:
+            _indptr_parts.append(c.indptr[:-1] + _cumulative)
+            _cumulative += c.nnz
+        _indptr_parts.append(np.array([_cumulative], dtype=np.int64))
+        _new_indptr = np.concatenate(_indptr_parts)
+        n_cols = sum(c.shape[1] for c in csc_chunks)
+        sparse_mat = sparse.csc_matrix((_all_data, _all_indices, _new_indptr), shape=(N, n_cols)).tocsr()
+        del csc_chunks, _all_data, _all_indices, _indptr_parts, _new_indptr
+        gc.collect()
+        _malloc_trim()
+
+        # Force int64 to prevent silent overflow at >2B NNZ
+        if sparse_mat.nnz > 2**30:
+            sparse_mat.indices = sparse_mat.indices.astype(np.int64)
+            sparse_mat.indptr = sparse_mat.indptr.astype(np.int64)
+            log(f"  Upgraded to int64 indices (NNZ={sparse_mat.nnz:,})")
+
+
+        log(f"  Sparse matrix: {sparse_mat.shape}, {sparse_mat.nnz:,} non-zeros, "
+            f"density={sparse_mat.nnz / (sparse_mat.shape[0] * sparse_mat.shape[1]) * 100:.3f}%")
+
+        # Save sparse matrix + column names
+        import json
+        symbol_tag = ''
+        if hasattr(df, 'attrs') and 'symbol' in df.attrs:
+            symbol_tag = f"_{df.attrs['symbol']}"
+
+        # Per-symbol naming for modular builds
+        symbol_tag = getattr(df, '_v2_symbol', None) or ''
+        if symbol_tag:
+            npz_path = os.path.join(out_dir, f'v2_crosses_{symbol_tag}_{tf}.npz')
+            names_path = os.path.join(out_dir, f'v2_cross_names_{symbol_tag}_{tf}.json')
+        else:
+            npz_path = os.path.join(out_dir, f'v2_crosses_{tf}.npz')
+            names_path = os.path.join(out_dir, f'v2_cross_names_{tf}.json')
+
+        from atomic_io import atomic_save_npz, atomic_save_json
+        # Ensure cross names are native Python strings (not np.str_) for JSON
+        # Dedup names from truncation collisions — keep first occurrence, drop duplicates
+        # CRITICAL: dedup BEFORE saving NPZ so matrix cols match name count
+        seen = set()
+        dedup_indices = []
+        for i, n in enumerate(cross_names):
+            s = str(n)
+            if s in seen:
+                continue
+            seen.add(s)
+            dedup_indices.append(i)
+        if len(dedup_indices) < len(cross_names):
+            n_dups = len(cross_names) - len(dedup_indices)
+            log(f"  Deduplicating {n_dups} cross names from truncation collisions")
+            cross_names = [str(cross_names[i]) for i in dedup_indices]
+            # Also remove duplicate columns from sparse matrix
+            sparse_mat = sparse_mat[:, dedup_indices]
+        else:
+            cross_names = [str(n) for n in cross_names]
+        atomic_save_npz(sparse_mat, npz_path)
+        # FIX 26: Verify NPZ integrity immediately after save
+        try:
+            _verify = sparse.load_npz(npz_path)
+            assert _verify.shape == sparse_mat.shape, f"NPZ verify failed: shape {_verify.shape} != {sparse_mat.shape}"
+            del _verify
+            log(f"  NPZ verified: {npz_path} ({os.path.getsize(npz_path)/1e6:.1f} MB)")
+        except Exception as e:
+            log(f"  NPZ CORRUPT: {e} — deleting and retrying")
+            os.remove(npz_path)
+            raise
+        atomic_save_json(cross_names, names_path)
+
+        size_mb = os.path.getsize(npz_path) / 1e6
+        log(f"  Saved: {npz_path} ({size_mb:.1f} MB)")
+
+        # Also save base features (non-cross) as parquet
+        base_path = os.path.join(out_dir, f'v2_base_{tf}.parquet')
+        df.to_parquet(base_path)
+        log(f"  Saved base: {base_path}")
+
+        del sparse_mat
+        gc.collect()
+        _malloc_trim()
+
+    log(f"  Sparse build: {time.time()-t_assign:.1f}s")
+
+    elapsed = time.time() - t0
+    log(f"\n  DONE: {N:,} rows, {len(df.columns):,} base cols + {total_crosses:,} cross cols ({elapsed:.0f}s)")
+
+    # Final cleanup
+    del all_cross_names
+    gc.collect()
+    _malloc_trim()
+
+    # Return base df (crosses are in sparse file, not in df — too big for dense)
+    return df
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='V2 Cross Feature Generator')
+    parser.add_argument('--tf', nargs='+', default=['1d'], help='Timeframes to process')
+    parser.add_argument('--gpu', type=int, default=0, help='GPU device ID')
+    parser.add_argument('--save-sparse', action='store_true', help='Save sparse .npz files')
+    parser.add_argument('--input', help='Input parquet path (overrides auto-detect)')
+    parser.add_argument('--symbol', default='BTC', help='Asset symbol')
+    args = parser.parse_args()
+
+    for tf in args.tf:
+        # Look for input parquet
+        if args.input:
+            path = args.input
+        else:
+            # Try V2 path first, then V1
+            candidates = [
+                os.path.join(V2_DIR, f'features_{args.symbol}_{tf}.parquet'),
+                os.path.join(V2_DIR, f'features_{tf}.parquet'),
+            ]
+            path = None
+            for c in candidates:
+                if os.path.exists(c):
+                    path = c
+                    break
+
+            if path is None:
+                log(f"[SKIP] No parquet found for {args.symbol} {tf}")
+                continue
+
+        log(f"Loading {path}...")
+        df = pd.read_parquet(path)
+        # Set symbol attribute so output files include symbol in name
+        # (v2_crosses_BTC_{tf}.npz, not v2_crosses_{tf}.npz)
+        # pd.read_parquet doesn't preserve custom attributes
+        df._v2_symbol = args.symbol
+        df = generate_all_crosses(df, tf=tf, gpu_id=args.gpu,
+                                   save_sparse=args.save_sparse,
+                                   output_dir=V2_DIR)
+
+        # Save expanded parquet
+        out_path = os.path.join(V2_DIR, f'features_{args.symbol}_{tf}_v2.parquet')
+        df.to_parquet(out_path)
+        log(f"Saved: {out_path}")

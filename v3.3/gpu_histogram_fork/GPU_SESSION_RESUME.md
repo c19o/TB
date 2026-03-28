@@ -7,7 +7,7 @@ Read this file completely. Then read RESEARCH.md, ARCHITECTURE.md, and IMPLEMENT
 
 ---
 
-## STATUS: PHASE 2 — LightGBM C++ Fork Compiles, Needs Init() Fix
+## STATUS: PHASE 3 — CSR Bridge Fix Applied, Ready for GPU Training Verification
 
 ### What Works
 - LightGBM fork builds successfully (42/42 objects + linking)
@@ -18,33 +18,25 @@ Read this file completely. Then read RESEARCH.md, ARCHITECTURE.md, and IMPLEMENT
 - cuSPARSE SpMV histogram benchmark: **99x speedup on real 2.2M features** (1.68ms vs 166.5ms)
 - All 2.2M feature NPZ rebuilt with min_nonzero=3 (downloaded from cloud)
 - Pre-built DLL at: `_build/LightGBM/lib_lightgbm.dll`
+- CSR bridge between C API global and tree learner instance (Phase 3 fix)
+- DLL rebuilt with ninja (build_utf8 directory)
 
-### What's Broken — THE ONE BUG TO FIX
-**`Init()` crashes before `set_external_csr()` can be called.**
+### Phase 2 Bug (RESOLVED) — Init() Crash
+**Was:** `Init()` crashed before `set_external_csr()` could be called. Deferred upload fix applied in Phase 2.
 
-The sequence is:
-1. `lgb.Booster(params, ds)` → calls `Init()` → calls `UploadCSR()` → FAILS (no CSR set yet)
-2. `booster.set_external_csr(X)` → never reached
+### Phase 3 Bugs (BOTH FIXED)
 
-**Fix needed**: In `cuda_sparse_hist_tree_learner.cu`, make `UploadCSR()` a no-op if `has_external_csr_ == false`. Defer the actual upload to the first `ConstructHistograms()` call. The CSR will be set between Booster creation and the first `update()` call.
+**1. CSR Bridge Bug (FIXED):**
+The C API stored CSR in a global struct (`g_external_csr`) but the tree learner only checked its own member variable (`has_external_csr_`). The global was set by `LGBM_BoosterSetExternalCSR()` but the tree learner's `ConstructHistograms()` never read from it.
 
-Specifically in the .cu file:
-```cpp
-void CUDASparseHistTreeLearner::Init(...) {
-    SerialTreeLearner::Init(train_data, is_constant_hessian);
-    InitGPU();  // detect GPU, allocate streams
-    // DON'T call UploadCSR() here — CSR not set yet
-    // UploadCSR() will be called from first ConstructHistograms()
-}
+**Fix:** Added `extern "C"` declarations for the getter functions (`LGBM_GetExternalCSRIndptr`, `LGBM_GetExternalCSRIndices`, etc.) and a bridge in `ConstructHistograms()` that reads from the global and calls `SetExternalCSR()` on the tree learner instance.
 
-void CUDASparseHistTreeLearner::ConstructHistograms(...) {
-    if (!csr_uploaded_ && has_external_csr_) {
-        UploadCSR();  // First call — upload CSR now
-        csr_uploaded_ = true;
-    }
-    // ... rest of histogram building
-}
-```
+**2. Dangling Pointer Bug (FIXED):**
+`basic.py`'s `set_external_csr()` created local numpy arrays whose pointers were stored in the C API global but could be garbage-collected after the method returned. The C++ side held raw pointers to freed memory.
+
+**Fix:** Store as Booster instance attributes (`self._external_csr_indptr`, `self._external_csr_indices`) so they live as long as the Booster object.
+
+**3. Build Note:** `lightgbm.exe` target doesn't link `c_api` symbols — must build `_lightgbm` target (DLL) only.
 
 ### Build Environment (Windows 11, user's local machine)
 - CUDA Toolkit 12.6 at `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6`
@@ -119,9 +111,31 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 
 ## NEXT STEPS (in order)
 
-1. **Fix Init() crash** — defer UploadCSR to first ConstructHistograms
-2. **Rebuild DLL** — cmake + ninja in _build/LightGBM/build_link
-3. **Test locally** — train_1w_cached.py on 2.2M feature data
-4. **Verify model quality** — compare accuracy vs 67.7% cloud baseline
-5. **Train 1d, 4h** locally (fit in 3090 VRAM)
-6. **Rent cloud machine** for 1h/15m (need 80GB+ VRAM)
+1. **Verify GPU training works** — the binary cache exists (252MB), use --from-cache:
+   ```bash
+   cd v3.3/gpu_histogram_fork
+   python -u train_1w_cached.py --from-cache
+   ```
+
+2. **Run real-label test** — compare to 73.91% CPU baseline:
+   ```bash
+   python -u test_1w_end_to_end.py
+   ```
+
+3. **Build 1d features locally** (need DBs)
+
+4. **Build 4h features locally**
+
+5. **Train 1d and 4h locally**
+
+6. **Verify all models good for trading**
+
+7. **THEN rent cloud** for 1h (one machine) and 15m (separate machine)
+
+## KEY FILES
+- Binary cache: `v3.3/lgbm_dataset_1w.bin` (252MB, skips 4.5min EFB)
+- Fresh NPZ: `v3.3/v2_crosses_BTC_1w.npz` (75MB, 2.2M features)
+- Fork DLL: `_build/LightGBM/lib_lightgbm.dll`
+- Must go to BOTH: `site-packages/lightgbm/bin/` AND `site-packages/lightgbm/lib/`
+- Training script: `gpu_histogram_fork/train_1w_cached.py`
+- NO CPU FALLBACK — GPU or fix it

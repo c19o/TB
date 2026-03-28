@@ -174,7 +174,7 @@ run('pip install -q lightgbm scikit-learn scipy ephem astropy pytz joblib '
 
 # --- Stale artifact nuclear clean (delete old-version features/crosses) ---
 log("=== Stale artifact cleanup ===")
-_stale_patterns = ['features_*_all.json', 'v2_cross_names_*.json']
+_stale_patterns = ['features_*_all.json', 'v2_cross_names_*.json', 'v2_crosses_*.npz']  # NPZ+JSON must be deleted together
 _stale_count = 0
 for _pat in _stale_patterns:
     for _stale in glob.glob(_pat):
@@ -432,9 +432,29 @@ if not os.path.exists(npz_path):
     if not os.path.exists(cn) and os.path.exists(alt_cn):
         os.symlink(os.path.abspath(alt_cn), cn)
 
+_npz_valid = False
 if os.path.exists(npz_path) and os.path.getsize(npz_path) > 1000:
     npz_size = os.path.getsize(npz_path) / (1024*1024)
-    log(f"Cross NPZ already exists ({npz_size:.1f} MB) — SKIPPING cross gen")
+    # Validate NPZ col count — stale NPZs from v3.0 (min_nonzero=8) have far fewer crosses
+    _MIN_CROSS_COLS = {'1w': 1_500_000, '1d': 5_000_000, '4h': 3_000_000, '1h': 5_000_000, '15m': 5_000_000}
+    _min_cols = _MIN_CROSS_COLS.get(TF, 1_000_000)
+    try:
+        from scipy import sparse as _sp
+        _npz_shape = _sp.load_npz(npz_path).shape
+        if _npz_shape[1] >= _min_cols:
+            _npz_valid = True
+            log(f"Cross NPZ valid ({npz_size:.1f} MB, {_npz_shape[1]:,} cols >= {_min_cols:,} min) — SKIPPING cross gen")
+        else:
+            log(f"Cross NPZ STALE ({_npz_shape[1]:,} cols < {_min_cols:,} min) — will rebuild")
+            os.remove(npz_path)
+            cn_path = npz_path.replace('v2_crosses_', 'v2_cross_names_').replace('.npz', '.json')
+            if os.path.exists(cn_path):
+                os.remove(cn_path)
+                log(f"  Removed stale cross names: {cn_path}")
+    except Exception as _e:
+        log(f"  NPZ validation failed ({_e}) — will rebuild")
+if _npz_valid:
+    pass  # NPZ valid, skip cross gen
 else:
     run_tee(f'python -X utf8 -u {_script("v2_cross_generator.py")} --tf {TF} --symbol BTC --save-sparse',
             f'Build {TF} crosses', f'cross_{TF}.log')

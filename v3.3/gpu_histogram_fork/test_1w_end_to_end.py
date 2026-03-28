@@ -608,6 +608,13 @@ def save_artifacts(model, accuracy, train_time, gpu_results):
             "effective_bandwidth_gbs": round(gpu_results["eff_bw_gbs"], 1),
         })
 
+    # Convert numpy types to native Python for JSON serialization
+    def _to_native(obj):
+        if isinstance(obj, (np.bool_, np.generic)):
+            return obj.item()
+        return obj
+
+    results = {k: _to_native(v) for k, v in results.items()}
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     log(f"  Saved results: {results_path}")

@@ -166,23 +166,16 @@ def main():
         log('Build-only mode. Binary saved. Done.')
         return
 
-    # GPU training
-    try:
-        booster = train_gpu(ds, X_csr, args.rounds)
-        booster.save_model(MODEL_PATH)
-        log(f'Model saved: {MODEL_PATH}')
+    # GPU training — NO CPU FALLBACK. Fix the GPU issue, don't hide it.
+    booster = train_gpu(ds, X_csr, args.rounds)
+    booster.save_model(MODEL_PATH)
+    log(f'Model saved: {MODEL_PATH}')
 
-        # Quick accuracy check
-        X_dense = X_csr.toarray().astype(np.float32)
-        preds = booster.predict(X_dense)
-        acc = (np.argmax(preds, axis=1) == y).mean()
-        log(f'Train accuracy: {acc:.3f}')
-    except Exception as e:
-        log(f'GPU training failed: {e}')
-        log('Falling back to CPU...')
-        model = train_cpu(ds, args.rounds)
-        model.save_model(MODEL_PATH)
-        log(f'CPU model saved: {MODEL_PATH}')
+    # Quick accuracy check
+    X_dense = X_csr.toarray().astype(np.float32)
+    preds = booster.predict(X_dense)
+    acc = (np.argmax(preds, axis=1) == y).mean()
+    log(f'Train accuracy: {acc:.3f}')
 
     # Optional CPU baseline
     if args.cpu_baseline:

@@ -49,6 +49,17 @@
  * Includes
  * ========================================================================= */
 
+/* Workaround: nvcc + MSVC 19.50 (VS 2025) doesn't properly expose
+ * _MSVC_EXECUTION_CHARACTER_SET=65001 to the device compiler pass,
+ * causing fmt's UTF-8 static_assert to fire even with /utf-8 flag.
+ * Define FMT_UNICODE=0 to disable the check. This is safe — we don't
+ * use fmt formatting in CUDA kernels. */
+#ifdef __CUDACC__
+#ifndef FMT_UNICODE
+#define FMT_UNICODE 0
+#endif
+#endif
+
 #include <cuda_runtime.h>
 #include <cusparse.h>
 
@@ -239,6 +250,21 @@ static void launch_interleave_grad_kernel(
 
 
 /* =========================================================================
+ * External CSR global getters (defined in c_api.cpp, exported via extern "C").
+ * The Python wrapper calls LGBM_BoosterSetExternalCSR() which stores CSR data
+ * in a global struct. These getters let the tree learner read it.
+ * ========================================================================= */
+
+extern "C" {
+    const int64_t* LGBM_GetExternalCSRIndptr();
+    const int32_t* LGBM_GetExternalCSRIndices();
+    int64_t LGBM_GetExternalCSRNnz();
+    int32_t LGBM_GetExternalCSRNRows();
+    int32_t LGBM_GetExternalCSRNFeatures();
+    bool LGBM_GetExternalCSRIsSet();
+}
+
+/* =========================================================================
  * Include the class definition from the header file.
  * The header is the single source of truth for the class interface.
  * tree_learner.cpp also includes this header for the factory function.
@@ -256,7 +282,8 @@ namespace LightGBM {
  * ========================================================================= */
 
 CUDASparseHistTreeLearner::CUDASparseHistTreeLearner(const Config* config)
-    : SerialTreeLearner(config), gpu_hist_mode_(GPU_HIST_MODE_CUSPARSE) {}
+    : SerialTreeLearner(config), gpu_hist_mode_(GPU_HIST_MODE_CUSPARSE),
+      csr_uploaded_(false) {}
 
 CUDASparseHistTreeLearner::~CUDASparseHistTreeLearner() {
     CleanupGPU();
@@ -342,18 +369,28 @@ void CUDASparseHistTreeLearner::InitGPU() {
     CUDA_CHECK_FATAL(cudaStreamCreateWithFlags(&stream_d2h_,
                      cudaStreamNonBlocking));
 
-    /* Upload CSR data to GPU */
-    UploadCSR();
-
-    /* Set up cuSPARSE if using SpMV mode */
-    if (gpu_hist_mode_ == GPU_HIST_MODE_CUSPARSE && !has_efb_data_) {
-        SetupCuSPARSE();
-    } else if (gpu_hist_mode_ == GPU_HIST_MODE_CUSPARSE && has_efb_data_) {
-        /* cuSPARSE SpMV requires uniform nonzero values (all 1.0 for binary).
-         * EFB-encoded data has variable bin values — must use atomic scatter. */
-        Log::Warning("[CUDASparseHist] EFB data present — falling back to "
-                     "atomic scatter mode (cuSPARSE requires raw binary)");
-        gpu_hist_mode_ = GPU_HIST_MODE_ATOMIC;
+    /* CSR upload is DEFERRED until first ConstructHistograms() call.
+     * At Init() time, SetExternalCSR() has NOT been called yet.
+     * Call sequence from Python:
+     *   1. lgb.Booster(params, ds) -> Init() runs (here)
+     *   2. booster.set_external_csr(X) -> stores CSR in host vectors
+     *   3. booster.update() -> ConstructHistograms() -> uploads CSR there
+     */
+    if (has_external_csr_) {
+        /* CSR already set (unusual but possible) — upload now */
+        UploadCSR();
+        if (gpu_hist_mode_ == GPU_HIST_MODE_CUSPARSE && !has_efb_data_) {
+            SetupCuSPARSE();
+        } else if (gpu_hist_mode_ == GPU_HIST_MODE_CUSPARSE && has_efb_data_) {
+            Log::Warning("[CUDASparseHist] EFB data present — falling back to "
+                         "atomic scatter mode (cuSPARSE requires raw binary)");
+            gpu_hist_mode_ = GPU_HIST_MODE_ATOMIC;
+        }
+        csr_uploaded_ = true;
+    } else {
+        Log::Warning("[CUDASparseHist] No external CSR at Init() time — "
+                     "CSR will be uploaded on first ConstructHistograms() call "
+                     "after set_external_csr().");
     }
 
     /* Allocate gradient, histogram, and staging buffers */
@@ -416,9 +453,10 @@ void CUDASparseHistTreeLearner::SetExternalCSR(
 
 void CUDASparseHistTreeLearner::UploadCSR() {
     if (!has_external_csr_) {
-        Log::Fatal("[CUDASparseHist] No external CSR set. Call "
-                   "SetExternalCSR() after Dataset construction before "
-                   "training. Internal MultiValBin extraction not supported.");
+        Log::Warning("[CUDASparseHist] UploadCSR() called but no external CSR "
+                     "set yet. Skipping — CSR will be uploaded later via "
+                     "deferred path in ConstructHistograms().");
+        return;
     }
 
     const int64_t* h_indptr  = ext_csr_indptr_.data();
@@ -502,25 +540,59 @@ void CUDASparseHistTreeLearner::UploadCSR() {
             }
         }
 
-        /* Upload transposed CSR to GPU */
-        size_t csrT_indptr_bytes  = (n_cols + 1) * sizeof(int64_t);
-        size_t csrT_indices_bytes = static_cast<size_t>(nnz_) * sizeof(int32_t);
+        /* Upload transposed CSR to GPU.
+         * cuSPARSE requires matching index types for indptr and indices.
+         * When NNZ <= INT32_MAX: use int32 for both (saves memory).
+         * When NNZ > INT32_MAX: use int64 for both (required for 15m). */
+        csrT_use_int32_ = (nnz_ <= static_cast<int64_t>(INT32_MAX));
 
-        CUDA_CHECK_FATAL(cudaMalloc(&d_csrT_indptr_, csrT_indptr_bytes));
-        gpu_bytes_alloc_ += csrT_indptr_bytes;
+        if (csrT_use_int32_) {
+            /* Downcast transposed indptr to int32 */
+            std::vector<int32_t> h_csrT_indptr32(n_cols + 1);
+            for (int32_t c = 0; c <= n_cols; c++) {
+                h_csrT_indptr32[c] = static_cast<int32_t>(h_csrT_indptr_[c]);
+            }
+            size_t csrT_indptr_bytes  = (n_cols + 1) * sizeof(int32_t);
+            size_t csrT_indices_bytes = static_cast<size_t>(nnz_) * sizeof(int32_t);
 
-        CUDA_CHECK_FATAL(cudaMalloc(&d_csrT_indices_, csrT_indices_bytes));
-        gpu_bytes_alloc_ += csrT_indices_bytes;
+            CUDA_CHECK_FATAL(cudaMalloc(&d_csrT_indptr32_, csrT_indptr_bytes));
+            gpu_bytes_alloc_ += csrT_indptr_bytes;
+            CUDA_CHECK_FATAL(cudaMalloc(&d_csrT_indices_, csrT_indices_bytes));
+            gpu_bytes_alloc_ += csrT_indices_bytes;
 
-        CUDA_CHECK_FATAL(cudaMemcpy(d_csrT_indptr_, h_csrT_indptr_.data(),
-                                    csrT_indptr_bytes, cudaMemcpyHostToDevice));
-        CUDA_CHECK_FATAL(cudaMemcpy(d_csrT_indices_, h_csrT_indices_.data(),
-                                    csrT_indices_bytes, cudaMemcpyHostToDevice));
+            CUDA_CHECK_FATAL(cudaMemcpy(d_csrT_indptr32_, h_csrT_indptr32.data(),
+                                        csrT_indptr_bytes, cudaMemcpyHostToDevice));
+            CUDA_CHECK_FATAL(cudaMemcpy(d_csrT_indices_, h_csrT_indices_.data(),
+                                        csrT_indices_bytes, cudaMemcpyHostToDevice));
 
-        Log::Info("[CUDASparseHist] Transposed CSR uploaded: "
-                  "indptr %zu MB, indices %zu MB",
-                  csrT_indptr_bytes / (1024 * 1024),
-                  csrT_indices_bytes / (1024 * 1024));
+            Log::Info("[CUDASparseHist] Transposed CSR uploaded (int32 mode): "
+                      "indptr %zu MB, indices %zu MB",
+                      csrT_indptr_bytes / (1024 * 1024),
+                      csrT_indices_bytes / (1024 * 1024));
+        } else {
+            /* NNZ > INT32_MAX: use int64 for both. Upcast indices to int64. */
+            std::vector<int64_t> h_csrT_indices64(nnz_);
+            for (int64_t j = 0; j < nnz_; j++) {
+                h_csrT_indices64[j] = static_cast<int64_t>(h_csrT_indices_[j]);
+            }
+            size_t csrT_indptr_bytes  = (n_cols + 1) * sizeof(int64_t);
+            size_t csrT_indices_bytes = static_cast<size_t>(nnz_) * sizeof(int64_t);
+
+            CUDA_CHECK_FATAL(cudaMalloc(&d_csrT_indptr_, csrT_indptr_bytes));
+            gpu_bytes_alloc_ += csrT_indptr_bytes;
+            CUDA_CHECK_FATAL(cudaMalloc(&d_csrT_indices64_, csrT_indices_bytes));
+            gpu_bytes_alloc_ += csrT_indices_bytes;
+
+            CUDA_CHECK_FATAL(cudaMemcpy(d_csrT_indptr_, h_csrT_indptr_.data(),
+                                        csrT_indptr_bytes, cudaMemcpyHostToDevice));
+            CUDA_CHECK_FATAL(cudaMemcpy(d_csrT_indices64_, h_csrT_indices64.data(),
+                                        csrT_indices_bytes, cudaMemcpyHostToDevice));
+
+            Log::Info("[CUDASparseHist] Transposed CSR uploaded (int64 mode): "
+                      "indptr %zu MB, indices %zu MB",
+                      csrT_indptr_bytes / (1024 * 1024),
+                      csrT_indices_bytes / (1024 * 1024));
+        }
 
         /* Free host-side transposed CSR — it's now on GPU */
         h_csrT_indptr_.clear();
@@ -571,20 +643,41 @@ void CUDASparseHistTreeLearner::SetupCuSPARSE() {
      * This is CSR format of A^T, so:
      *   indptr  has n_features+1 entries
      *   indices has nnz entries (row indices of original = col indices of AT)
-     *   values  has nnz entries (all 1.0 for binary) */
-    CUSPARSE_CHECK_FATAL(cusparseCreateCsr(
-        &matA_T_,
-        n_features_,                /* rows of A^T */
-        n_rows_,                    /* cols of A^T */
-        nnz_,
-        d_csrT_indptr_,            /* int64 row pointers */
-        d_csrT_indices_,           /* int32 column indices */
-        d_csrT_values,             /* double values (all 1.0) */
-        CUSPARSE_INDEX_64I,        /* indptr type: int64 for NNZ > 2^31 */
-        CUSPARSE_INDEX_32I,        /* indices type: int32 */
-        CUSPARSE_INDEX_BASE_ZERO,
-        CUDA_R_64F                 /* values type: double */
-    ));
+     *   values  has nnz entries (all 1.0 for binary)
+     *
+     * cuSPARSE requires matching index types — both int32 or both int64.
+     * csrT_use_int32_ was set in UploadCSR() based on NNZ range. */
+    if (csrT_use_int32_) {
+        CUSPARSE_CHECK_FATAL(cusparseCreateCsr(
+            &matA_T_,
+            n_features_,                /* rows of A^T */
+            n_rows_,                    /* cols of A^T */
+            nnz_,
+            d_csrT_indptr32_,          /* int32 row pointers */
+            d_csrT_indices_,           /* int32 column indices */
+            d_csrT_values,             /* double values (all 1.0) */
+            CUSPARSE_INDEX_32I,        /* indptr type: int32 */
+            CUSPARSE_INDEX_32I,        /* indices type: int32 */
+            CUSPARSE_INDEX_BASE_ZERO,
+            CUDA_R_64F                 /* values type: double */
+        ));
+        Log::Info("[CUDASparseHist] cuSPARSE descriptor created (int32 indices)");
+    } else {
+        CUSPARSE_CHECK_FATAL(cusparseCreateCsr(
+            &matA_T_,
+            n_features_,                /* rows of A^T */
+            n_rows_,                    /* cols of A^T */
+            nnz_,
+            d_csrT_indptr_,            /* int64 row pointers */
+            d_csrT_indices64_,         /* int64 column indices */
+            d_csrT_values,             /* double values (all 1.0) */
+            CUSPARSE_INDEX_64I,        /* indptr type: int64 */
+            CUSPARSE_INDEX_64I,        /* indices type: int64 */
+            CUSPARSE_INDEX_BASE_ZERO,
+            CUDA_R_64F                 /* values type: double */
+        ));
+        Log::Info("[CUDASparseHist] cuSPARSE descriptor created (int64 indices)");
+    }
 
     /* Allocate full-size gradient vectors for SpMV input.
      * These are n_rows long — we scatter leaf gradients into them. */
@@ -692,6 +785,39 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
         return;
     }
 
+    /* Deferred CSR upload: The Python wrapper calls LGBM_BoosterSetExternalCSR()
+     * which stores CSR in a global struct (c_api.cpp). The tree learner reads it
+     * here on the first ConstructHistograms() call. */
+    if (!csr_uploaded_ && !has_external_csr_ && LGBM_GetExternalCSRIsSet()) {
+        /* Bridge: pull CSR from global C API into this tree learner instance */
+        Log::Info("[CUDASparseHist] Reading external CSR from C API global...");
+        SetExternalCSR(
+            LGBM_GetExternalCSRIndptr(),
+            LGBM_GetExternalCSRIndices(),
+            LGBM_GetExternalCSRNnz(),
+            LGBM_GetExternalCSRNRows(),
+            LGBM_GetExternalCSRNFeatures()
+        );
+    }
+    if (!csr_uploaded_ && has_external_csr_) {
+        UploadCSR();
+        if (gpu_hist_mode_ == GPU_HIST_MODE_CUSPARSE && !has_efb_data_) {
+            SetupCuSPARSE();
+        } else if (gpu_hist_mode_ == GPU_HIST_MODE_CUSPARSE && has_efb_data_) {
+            Log::Warning("[CUDASparseHist] EFB data present — falling back to "
+                         "atomic scatter mode (cuSPARSE requires raw binary)");
+            gpu_hist_mode_ = GPU_HIST_MODE_ATOMIC;
+        }
+        csr_uploaded_ = true;
+        Log::Info("[CUDASparseHist] CSR uploaded on first ConstructHistograms call");
+    }
+    if (!csr_uploaded_) {
+        /* Still no CSR data — fall back to CPU histogram building */
+        Log::Warning("[CUDASparseHist] No CSR available yet — CPU fallback");
+        SerialTreeLearner::ConstructHistograms(is_feature_used, use_subtract);
+        return;
+    }
+
     /* Get smaller/larger leaf info from the base class leaf splits.
      * smaller_leaf_splits_ and larger_leaf_splits_ are set by
      * SerialTreeLearner::BeforeFindBestSplit() before this is called. */
@@ -714,20 +840,26 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
      * use the raw arrays and index by original row position via
      * the leaf's data_indices mapping. */
     {
-        size_t grad_bytes = static_cast<size_t>(n_rows_) * num_classes_
-                            * sizeof(double);
+        int64_t n_grad_elems = static_cast<int64_t>(n_rows_) * num_classes_;
+        size_t grad_bytes = static_cast<size_t>(n_grad_elems) * sizeof(double);
 
-        /* Copy to pinned staging buffers (L1/L2 bandwidth, fast).
-         * score_t may be float or double depending on build config.
-         * Our GPU kernel expects double, so we cast accordingly. */
+        /* Copy to pinned staging buffers. score_t may be float or double
+         * depending on build config (SCORE_T_USE_DOUBLE). GPU kernels
+         * expect double, so widen if score_t is float. */
         const score_t* src_grad = gradients_;
         const score_t* src_hess = hessians_;
 
-        /* If score_t == double, this is a direct copy. If score_t == float,
-         * we need to widen. For simplicity, assume SCORE_T_USE_DOUBLE (the
-         * default for LightGBM training). */
+#ifdef SCORE_T_USE_DOUBLE
+        /* score_t is double — direct copy */
         std::memcpy(h_grad_pinned_, src_grad, grad_bytes);
         std::memcpy(h_hess_pinned_, src_hess, grad_bytes);
+#else
+        /* score_t is float — widen to double */
+        for (int64_t i = 0; i < n_grad_elems; i++) {
+            h_grad_pinned_[i] = static_cast<double>(src_grad[i]);
+            h_hess_pinned_[i] = static_cast<double>(src_hess[i]);
+        }
+#endif
 
         /* Async H2D via pinned memory */
         CUDA_CHECK_FATAL(cudaMemcpyAsync(d_gradients_, h_grad_pinned_,
@@ -738,8 +870,18 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
 
     /* ---- Step 2: Get row indices for the smaller leaf ---- */
     /* data_indices() returns the original row indices for this leaf's
-     * data subset. These map leaf positions to original row positions. */
+     * data subset. These map leaf positions to original row positions.
+     * For the root node (leaf 0, first split), data_indices() may return
+     * NULL because all rows are in the leaf — generate sequential indices. */
     const data_size_t* data_indices = smaller_leaf_splits_->data_indices();
+
+    std::vector<data_size_t> seq_indices;
+    if (data_indices == nullptr) {
+        /* Root node: all rows, sequential indices [0..n-1] */
+        seq_indices.resize(n_smaller_rows);
+        std::iota(seq_indices.begin(), seq_indices.end(), 0);
+        data_indices = seq_indices.data();
+    }
 
     /* Upload smaller leaf's row indices to GPU */
     CUDA_CHECK_FATAL(cudaMemcpyAsync(d_leaf_rows_, data_indices,
@@ -819,6 +961,13 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
         /* No subtraction — must build larger leaf histogram too.
          * Upload larger leaf's row indices and run GPU kernel again. */
         const data_size_t* larger_indices = larger_leaf_splits_->data_indices();
+
+        std::vector<data_size_t> larger_seq_indices;
+        if (larger_indices == nullptr) {
+            larger_seq_indices.resize(n_larger_rows);
+            std::iota(larger_seq_indices.begin(), larger_seq_indices.end(), 0);
+            larger_indices = larger_seq_indices.data();
+        }
 
         CUDA_CHECK_FATAL(cudaMemcpyAsync(d_leaf_rows_, larger_indices,
                          static_cast<size_t>(n_larger_rows) * sizeof(int32_t),
@@ -1121,7 +1270,9 @@ void CUDASparseHistTreeLearner::CleanupGPU() {
     if (d_csr_indices_)    cudaFree(d_csr_indices_);
     if (d_csr_data_)       cudaFree(d_csr_data_);
     if (d_csrT_indptr_)    cudaFree(d_csrT_indptr_);
+    if (d_csrT_indptr32_)  cudaFree(d_csrT_indptr32_);
     if (d_csrT_indices_)   cudaFree(d_csrT_indices_);
+    if (d_csrT_indices64_) cudaFree(d_csrT_indices64_);
 
     /* Free device memory — gradients and SpMV vectors */
     if (d_gradients_)      cudaFree(d_gradients_);

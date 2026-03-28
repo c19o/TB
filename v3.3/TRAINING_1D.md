@@ -4,8 +4,8 @@
 ---
 
 ## Machine Requirements
-- **RAM:** 1TB+ MINIMUM (OOM'd at 377GB and 503GB during cross gen)
-- **Cores:** 128+ (parallel CPCV + cross gen benefit from high core count)
+- **RAM:** 512GB+ MINIMUM (944GB confirmed working, 503GB OOM'd at RC=500)
+- **Cores:** 128+ (SPARSE + SEQUENTIAL CPCV + cross gen benefit from high core count)
 - **CPU Score:** 400+ (cores x GHz). Cross gen + training both CPU-bound.
 - **Disk:** 50GB+
 - **RIGHT_CHUNK:** `export V2_RIGHT_CHUNK=200` (MANDATORY — auto=2000 OOMs, 500 OOMs on 503GB)
@@ -25,10 +25,11 @@ With 6M features, parallel CPCV via ProcessPoolExecutor is a TRAP:
 
 ## Data
 - **Rows:** 5,733 (daily bars, 2010-2026)
-- **Base features:** ~3,795 cols
-- **Cross features:** ~5-6M cols expected (min_nonzero=3, was 4.46M at min_nonzero=8)
-- **Total:** ~5-6M features
-- **Dense matrix size:** ~114-131GB (5,733 x 5-6M x 4 bytes). Needs 256GB+ RAM.
+- **Base features:** ~3,756 cols
+- **Cross features:** 6,039,797 crosses confirmed (6,043,553 total)
+- **NNZ:** 497,919,431 NNZ, 1.4% density
+- **Total:** ~6.04M features
+- **Dense matrix size:** 138.6GB observed (5,733 x 6.04M x 4 bytes). Needs 512GB+ RAM.
 - **min_data_in_leaf:** 3 (rare esoteric signals fire 10-20x on daily)
 - **NPZ from v3.2/v3.3 cloud_results:** STALE (built with min_nonzero=8). Must regenerate.
 
@@ -115,7 +116,7 @@ python3 -c "import pandas as pd; df=pd.read_parquet('/workspace/v3.3/features_BT
 ## Pipeline Steps
 1. Feature build (~40s) -> `features_BTC_1d.parquet`
 2. Cross gen (~30-45 min, min_nonzero=3) -> `v2_crosses_BTC_1d.npz` + `v2_cross_names_BTC_1d.json`
-3. LightGBM CPCV (4 folds parallel) -> `model_1d.json`
+3. LightGBM CPCV (SPARSE + SEQUENTIAL — parallel disabled for >1M features) -> `model_1d.json`
 4. Optuna (200 trials) -> `optuna_configs_1d.json` (have v3.2 config as starting point)
 5. Meta-labeling -> `meta_model_1d.pkl`
 6. LSTM -> `lstm_1d.pt` + `platt_1d.pkl`
@@ -160,7 +161,7 @@ sleep 30 && head -30 /workspace/1d_log.txt
 **Must see:**
 - "All 16 databases present" (or zero "MISS" lines)
 - Row count: ~5,733 rows
-- Base feature count: ~3,795 cols
+- Base feature count: ~3,756 cols
 - Correct data directory: V30_DATA_DIR should show `/workspace/v3.3` not `/workspace/v3.0 (LGBM)`
 
 ---
@@ -172,7 +173,7 @@ After cross gen completes and training starts, check the log for:
 grep -E "Sparse crosses loaded|cross.*cols|feature_cols.*len" /workspace/1d_log.txt
 ```
 
-**Expected:** ~5-6M cross feature cols loaded (min_nonzero=3). If you see ~4.46M (the old
+**Expected:** ~6.04M cross feature cols loaded (min_nonzero=3). If you see ~4.46M (the old
 min_nonzero=8 count), the old cross names JSON was not deleted. STOP, delete both
 `v2_crosses_BTC_1d.npz` and `v2_cross_names_BTC_1d.json`, and restart.
 
@@ -217,11 +218,11 @@ If load avg is ~1.0, training is SINGLE-THREADED. Check:
 
 2. **OMP_NUM_THREADS not set:** LightGBM defaults to 1 thread without this env var.
 
-3. **RSS too small:** Dense 1d matrix should be ~114-131GB.
+3. **RSS too small:** Dense 1d matrix should be ~138.6GB.
    ```bash
    ps aux | grep cloud_run_tf | grep -v grep | awk '{print $6/1024 " MB"}'
    ```
-   If RSS is < 20GB on a 256GB machine, the sparse->dense conversion did not happen.
+   If RSS is < 20GB on a 512GB machine, the sparse->dense conversion did not happen.
 
 **Key log lines to look for:**
 ```
@@ -231,21 +232,18 @@ or
 ```
 Keeping SPARSE (dense would need XXX GB, only YYY GB avail)
 ```
-If keeping sparse: training is slower per fold but parallel CPCV still runs multiple folds.
+If keeping sparse: training is slower per fold but sequential CPCV trains one fold at a time.
 
 ---
 
-## Parallel CPCV (sparse AND dense)
+## SPARSE + SEQUENTIAL CPCV (parallel disabled for >1M features — pickle bottleneck)
 
-Parallel CPCV uses ProcessPoolExecutor to train folds concurrently. It works on BOTH:
-- **Dense data:** `is_enable_sparse=False` set automatically. Each worker gets a dense numpy slice.
-  Multi-core per worker via LightGBM's OpenMP.
-- **Sparse data:** CSR matrices pickle correctly. Each worker gets a CSR slice.
-  LightGBM uses `is_enable_sparse=True` (default).
-
-For 1d: dense matrix is ~114-131GB. On a 256GB machine with ~180GB available, 70% threshold =
-~126GB -> dense conversion will happen if features are ~5M. If features are ~6M (131GB dense),
-it may stay sparse on a 256GB machine. Either path works. Rent 384GB+ for guaranteed dense.
+For 1d with 6M+ features, parallel CPCV via ProcessPoolExecutor is disabled:
+- Dense conversion (138.6GB) may fit in RAM, but parallel path converts dense->sparse for pickle transport, then each worker converts sparse->dense again
+- 4 workers x ~100GB pickle data = ~400GB through one IPC pipe = hours wasted
+- **FIX:** Sequential CPCV (one fold at a time) with sparse CSR input
+- LightGBM trains on sparse CSR with EFB bundling — slower per fold but no pickle overhead
+- num_threads capped to 32 for <10K rows (active cap, not just warning)
 
 ---
 
@@ -298,9 +296,9 @@ grep -E "Fold [0-9]|fold.*complete|accuracy" /workspace/1d_log.txt
 
 | Component | Count |
 |-----------|-------|
-| Base features | ~3,795 |
-| Cross features (min_nonzero=3) | ~5-6M (was 4.46M at min_nonzero=8) |
-| Total | ~5-6M |
+| Base features | ~3,756 |
+| Cross features (min_nonzero=3) | 6,039,797 confirmed (was 4.46M at min_nonzero=8) |
+| Total | 6,043,553 |
 
 The increase from min_nonzero=8 to min_nonzero=3 preserves rare esoteric crosses that
 fire 3-7 times in the dataset. These rare signals ARE the edge. LightGBM's
@@ -323,17 +321,17 @@ min_gain_to_split=2.0 guards against noise from low-support features.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "WARNING: DB missing" in log | Missing database file | Upload the missing .db, re-run verify script |
-| Cross cols ~4.46M instead of ~5-6M | Old v2_cross_names JSON left over (min_nonzero=8) | Delete BOTH npz AND json, restart |
+| Cross cols ~4.46M instead of ~6.04M | Old v2_cross_names JSON left over (min_nonzero=8) | Delete BOTH npz AND json, restart |
 | Load avg ~1.0 during training | is_enable_sparse=True on dense data | Check log for "is_enable_sparse=False" |
 | "ModuleNotFoundError: astrology_engine" | astrology_engine.py not in v3.3/ | Copy from project root |
-| OOM during dense conversion | Not enough RAM for ~114-131GB dense | Rent 384GB+ machine, or keep sparse (slower but works) |
+| OOM during dense conversion | Not enough RAM for ~138.6GB dense | Rent 512GB+ machine, or keep sparse (slower but works) |
 | Cross gen very slow (>2 hrs) | Sparse matmul single-threaded bottleneck | Normal for 5M+ features. Wait. |
 | "No module named 'lightgbm'" | pip install not run | Run install command above |
 | Feature count mismatch vs v3.2 | Stale parquet from old feature_library.py | Delete features_BTC_1d.parquet, restart |
 | V30_DATA_DIR shows v3.0 path | Env var not set | Verify `export V30_DATA_DIR=/workspace/v3.3` |
 | LSTM crashes with NaN | Features have NaN not imputed for LSTM | ml_multi_tf.py imputes NaN->0 for LSTM only. Check log. |
 | Optuna errors | Missing optuna/cmaes/colorlog | Run full pip install command |
-| "Keeping SPARSE" on 256GB machine | Dense matrix too large for 70% threshold | Expected. Training works on sparse, just slower per fold. |
+| "Keeping SPARSE" on 512GB machine | Dense matrix too large for 70% threshold | Expected. Training works on sparse, just slower per fold. |
 
 ---
 
@@ -351,6 +349,11 @@ scp -P {PORT} root@{HOST}:/workspace/v3.3/lstm_1d.pt .
 scp -P {PORT} root@{HOST}:/workspace/v3.3/platt_1d.pkl .
 scp -P {PORT} root@{HOST}:/workspace/v3.3/validation_report_1d.json .
 scp -P {PORT} root@{HOST}:/workspace/v3.3/feature_importance_*.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/inference_1d_base_cols.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/inference_1d_cross_names.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/inference_1d_cross_pairs.npz .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/inference_1d_ctx_names.json .
+scp -P {PORT} root@{HOST}:/workspace/v3.3/inference_1d_thresholds.json .
 scp -P {PORT} root@{HOST}:/workspace/1d_log.txt .
 ```
 
@@ -360,11 +363,16 @@ most valuable artifact and takes the longest to produce.
 
 ---
 
+## STATUS
+Cross gen COMPLETE. CPCV was in progress (sparse+sequential) when machine destroyed. Artifacts downloaded.
+
+---
+
 ## Deployment Steps (matches TRAINING_PLAN.md)
 
 ### Step 1: Rent machine
 ```bash
-vastai search offers 'cpu_cores_effective >= 128 cpu_ram >= 256 reliability > 0.95 dph <= 2.0' -o 'dph'
+vastai search offers 'cpu_cores_effective >= 128 cpu_ram >= 512 reliability > 0.95 dph <= 2.0' -o 'dph'
 ```
 Pick the machine with highest CPU Score (cores x GHz).
 

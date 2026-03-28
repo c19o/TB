@@ -22,6 +22,16 @@ except (AttributeError, io.UnsupportedOperation):
     pass  # Already configured or not a TextIOWrapper
 warnings.filterwarnings('ignore')
 
+# Windows: add CUDA toolkit DLL directory so LightGBM can find cudart64_12.dll etc.
+if sys.platform == 'win32':
+    _cuda_bins = [
+        os.path.join(os.environ.get('CUDA_PATH', r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6'), 'bin'),
+    ]
+    for _cb in _cuda_bins:
+        if os.path.isdir(_cb):
+            os.add_dll_directory(_cb)
+            break
+
 import numpy as np
 import pandas as pd
 import sqlite3

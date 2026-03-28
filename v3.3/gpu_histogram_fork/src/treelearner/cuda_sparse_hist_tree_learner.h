@@ -15,8 +15,10 @@
  *   - Bit-exact float64 accumulation matching CPU LightGBM output.
  *
  * Memory model:
- *   - CSR matrix uploaded to GPU once at Init(), stays resident for all
- *     boosting rounds. Freed at destructor or ResetTrainingData().
+ *   - CSR matrix uploaded to GPU on first ConstructHistograms() call
+ *     (deferred from Init() because SetExternalCSR() hasn't been called yet).
+ *     Stays resident for all boosting rounds. Freed at destructor or
+ *     ResetTrainingData().
  *   - Gradients uploaded per boosting round via pinned memory + async H2D.
  *   - Histograms computed on GPU, transferred back via async D2H into
  *     pinned host buffer, then copied into LightGBM's histogram arrays.
@@ -119,9 +121,15 @@ class CUDASparseHistTreeLearner : public SerialTreeLearner {
   int32_t*  d_csr_indices_  = nullptr;
   uint8_t*  d_csr_data_     = nullptr;
 
-  /* Transposed CSR for cuSPARSE SpMV (features x rows) */
-  int64_t*  d_csrT_indptr_  = nullptr;
-  int32_t*  d_csrT_indices_ = nullptr;
+  /* Transposed CSR for cuSPARSE SpMV (features x rows).
+   * cuSPARSE requires matching index types (both int32 or both int64).
+   * When NNZ <= INT32_MAX: use int32 for both (d_csrT_indptr32_ + d_csrT_indices_).
+   * When NNZ > INT32_MAX: use int64 for both (d_csrT_indptr_ + d_csrT_indices64_). */
+  int64_t*  d_csrT_indptr_     = nullptr;
+  int32_t*  d_csrT_indptr32_   = nullptr;  /* int32 copy when NNZ fits */
+  int32_t*  d_csrT_indices_    = nullptr;
+  int64_t*  d_csrT_indices64_  = nullptr;  /* int64 copy when NNZ > INT32_MAX */
+  bool      csrT_use_int32_    = true;     /* true = int32 for both */
 
   /* ---- Dimensions ---- */
   int64_t   n_rows_         = 0;
@@ -167,6 +175,7 @@ class CUDASparseHistTreeLearner : public SerialTreeLearner {
 
   /* ---- State tracking ---- */
   bool   gpu_initialized_   = false;
+  bool   csr_uploaded_       = false;  /* set true after first UploadCSR() */
   bool   has_efb_data_      = false;
   size_t gpu_bytes_alloc_   = 0;
 
