@@ -82,22 +82,20 @@ else
     BUILD_CMD="make -j$(nproc) _lightgbm"
 fi
 
-# Clone LightGBM if not present, then apply fork patches
+# Extract pre-patched LightGBM source if not present
 if [ ! -f "$BUILD_DIR/CMakeLists.txt" ]; then
-    echo "  LightGBM source not found — cloning v4.6.0..."
-    git clone --depth 1 -b v4.6.0 https://github.com/microsoft/LightGBM.git "$BUILD_DIR"
-    cd "$BUILD_DIR" && git submodule update --init --recursive && cd "$SCRIPT_DIR"
-    echo "  Cloned + submodules initialized"
-fi
-
-# Apply ALL fork patches (12 modified files)
-PATCH_TAR="$SCRIPT_DIR/lgbm_fork_patches.tar.gz"
-if [ -f "$PATCH_TAR" ]; then
-    echo "  Applying fork patches from lgbm_fork_patches.tar.gz..."
-    tar xzf "$PATCH_TAR" -C "$BUILD_DIR"
-    echo "  Applied $(tar tzf "$PATCH_TAR" | wc -l) patched files"
-else
-    echo "  WARN: lgbm_fork_patches.tar.gz not found — using source tree as-is"
+    PATCHED_SRC="$SCRIPT_DIR/lgbm_patched_source.tar.gz"
+    if [ -f "$PATCHED_SRC" ]; then
+        echo "  Extracting pre-patched LightGBM source..."
+        mkdir -p "$BUILD_DIR"
+        tar xzf "$PATCHED_SRC" -C "$BUILD_DIR"
+        echo "  Extracted $(find "$BUILD_DIR/src" -name '*.cpp' -o -name '*.cu' | wc -l) source files"
+    else
+        echo "ERROR: lgbm_patched_source.tar.gz not found at $PATCHED_SRC"
+        echo "  This tar contains the complete LightGBM source with all 12 fork patches applied."
+        echo "  Build it locally first, or download from the repo."
+        exit 1
+    fi
 fi
 
 # ============================================================
