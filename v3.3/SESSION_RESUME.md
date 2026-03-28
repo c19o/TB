@@ -4,9 +4,9 @@
 
 ---
 
-## STATUS: GPU FORK PHASE 3 COMPLETE → CPU TRAINING VERIFIED → BUILD REMAINING TFs
+## STATUS: 1W DONE → 1D/4H CLOUD REQUIRED (OOM locally) → BUILD REMAINING TFs
 
-GPU histogram fork hit architectural wall (EFB mismatch). CPU training already works well (73.9% holdout). Decision pending on GPU path. Meanwhile, proceed with building + training remaining timeframes locally.
+1w training complete locally (CPCV 67.7%, needs Optuna). 1d cross gen crashed locally at 68GB RAM — needs 256GB+. Both 1d and 4h must train on cloud. GPU histogram fork hit architectural wall (EFB mismatch). CPU training already works well.
 
 ### TWO SEPARATE OPTIMIZERS IN OUR PIPELINE
 1. **LightGBM HPO** (`run_optuna_local.py`) — optimizes 10 LightGBM hyperparams (num_leaves, feature_fraction, learning_rate, lambdas, etc.). Objective: minimize mlogloss via CPCV. THIS is the 90% bottleneck (200 trials × 4-15 folds × 150 min/fold).
@@ -28,20 +28,23 @@ GPU histogram fork hit architectural wall (EFB mismatch). CPU training already w
 ### Training Status
 | TF | Status | Accuracy | Features | Notes |
 |----|--------|----------|----------|-------|
-| **1w** | DONE | CPCV 71.9% mean (73.3%, 66.7%, 73.0%, 74.6%), holdout **73.9%** | 2.2M | CPU training, real labels |
-| **1d** | NEEDS BUILD | — | — | Feature build + cross gen + training locally |
-| **4h** | NEEDS BUILD | — | — | Feature build + cross gen + training locally |
-| **1h** | NEEDS CLOUD | — | — | After local TFs verified |
-| **15m** | NEEDS CLOUD | — | — | Separate cloud machine, after local verified |
+| **1w** | DONE | CPCV 67.7% (needs Optuna) | 2.2M | CPU training, real labels |
+| **1d** | BASE BUILT | — | 5,733×3,796 base | Cross gen OOM at 68GB locally. Needs 256GB+ RAM → CLOUD |
+| **4h** | BASE BUILT | — | 8,794×3,904 base | Cross gen + training → CLOUD (512GB+ RAM needed) |
+| **1h** | NEEDS CLOUD | — | — | Separate cloud machine, 2TB+ RAM |
+| **15m** | NEEDS CLOUD | — | — | Separate cloud machine, 2TB+ RAM, user picks |
 
 ### Data Status
 | Asset | Status | Notes |
 |-------|--------|-------|
 | **1w NPZ** | COMPLETE | 2.2M features, parquet, cross names |
 | **1w model** | COMPLETE | model_1w.json (113MB), CPCV backup |
-| **1d cross gen** | OLD/STALE | v3.0 NPZ exists (6M features) but uses min_nonzero=8, needs rebuild with min_nonzero=3 |
-| **4h/1h/15m** | NOT BUILT | Need feature build + cross gen |
-| **16 DBs** | LOCATED | Being copied to v3.3 |
+| **1d base parquet** | COMPLETE | features_BTC_1d.parquet (10.7MB, 5,733×3,796) — ready for cloud upload |
+| **4h base parquet** | COMPLETE | features_BTC_4h.parquet (13.5MB, 8,794×3,904) — ready for cloud upload |
+| **1d cross gen** | FAILED LOCALLY | OOM at 68GB. Must run on cloud (256GB+ RAM) |
+| **4h cross gen** | NOT STARTED | Must run on cloud (512GB+ RAM) |
+| **1h/15m** | NOT BUILT | Need feature build + cross gen on cloud |
+| **16 DBs** | READY | ~3.3GB total, all in v3.3 directory |
 
 ### Config & Code Changes (ALL APPLIED)
 - max_bin=255, min_data_in_bin=1, row subsample=1.0
@@ -55,18 +58,58 @@ No active cloud machines.
 
 ---
 
+## CLOUD DEPLOYMENT PLAN
+
+### What to Upload to Cloud
+1. **v33_cloud_code.tar.gz** — all `.py`, `.sh`, `.md`, config `.json` files from v3.3/
+2. **All 16 DBs** (~3.3GB total)
+3. **features_BTC_1d.parquet** (10.7MB) — skip base feature rebuild on cloud
+4. **features_BTC_4h.parquet** (13.5MB) — skip base feature rebuild on cloud
+5. **astrology_engine.py** from project root (imported by feature_library.py)
+6. **kp_history_gfz.txt** (space weather data)
+
+### Cloud Machine Strategy
+
+| Machine | TFs | RAM Required | Pipeline | Notes |
+|---------|-----|-------------|----------|-------|
+| **Machine A** | 1d + 4h | 512GB+ | Sequential: 1d first, then 4h | Upload pre-built parquets to skip base build |
+| **Machine B** | 1h | 2TB+ | Full pipeline | Separate machine — high RAM for cross gen |
+| **Machine C** | 15m | 2TB+ | Full pipeline | User picks machine personally |
+
+### Per-Machine Pipeline Steps
+For each TF on cloud:
+1. **Cross gen** — sparse matmul + batch crosses (RAM-intensive)
+2. **CPCV Training** — 4 folds, LightGBM sparse CSR
+3. **Optuna HPO** — 200 trials (optional, can do after initial training)
+4. **Download artifacts** — model .json, cross names .json, CPCV results, logs
+
+### Machine A Details (1d + 4h)
+- Upload: code tar + DBs + features_BTC_1d.parquet + features_BTC_4h.parquet
+- Run 1d: `python -u cloud_run_tf.py --symbol BTC --tf 1d` (skips base build, starts at cross gen)
+- Download 1d artifacts
+- Run 4h: `python -u cloud_run_tf.py --symbol BTC --tf 4h` (skips base build, starts at cross gen)
+- Download 4h artifacts
+- **Estimated time**: 1d ~2.5hr + 4h ~5-10hr = ~8-13hr total
+
+---
+
 ## NEXT STEPS (ordered)
 
-1. **Verify DBs aren't stale** — check all 16 .db files have current data
-2. **Copy DBs to v3.3** — ensure all databases are in v3.3 directory
-3. **Build 1d features locally** — feature_library.py + cross gen with min_nonzero=3
-4. **Train 1d with CPCV** — 4 folds, fixed params (no Optuna initially)
-5. **Build 4h features locally** — feature build + cross gen
-6. **Train 4h with CPCV** — 4 folds, fixed params
-7. **Verify all local models** — ensure 1w/1d/4h good for trading
-8. **Rent cloud: 1h** — one machine, build + train
-9. **Rent cloud: 15m** — separate machine (high RAM), build + train
-10. **Push to git** — all models + artifacts
+1. **Rent Machine A** — 512GB+ RAM, 64+ cores for 1d + 4h
+2. **Upload code + DBs + pre-built parquets** to Machine A
+3. **Run 1d pipeline** — cross gen + CPCV training
+4. **Download 1d artifacts** — model, cross names, logs
+5. **Run 4h pipeline** — cross gen + CPCV training (same machine)
+6. **Download 4h artifacts** — model, cross names, logs
+7. **Destroy Machine A**
+8. **Rent Machine B** — 2TB+ RAM for 1h
+9. **Run 1h pipeline** — full build + cross gen + training
+10. **Download 1h artifacts + destroy Machine B**
+11. **Rent Machine C** — 2TB+ RAM for 15m (user picks)
+12. **Run 15m pipeline** — full build + cross gen + training
+13. **Download 15m artifacts + destroy Machine C**
+14. **Run Optuna** on all models (can be local for 1w, cloud for others)
+15. **Push to git** — all models + artifacts
 
 ### GPU Fork Decision (deferred)
 - Option A: Fix EFB mapping in GPU kernel (map per-feature histograms to per-bundle bins)
@@ -88,15 +131,15 @@ No active cloud machines.
 | CPCV total (4 folds all TFs) | 12m | 2hr | 3.3hr | 7hr | 10hr |
 | **Total no Optuna** | **25m** | **2.5hr** | **5-10hr** | **9-15hr** | **13-19hr** |
 
-### Machine Assignments
+### Machine Assignments (UPDATED — local OOM forced cloud)
 
 | TF | Where | Machine | Notes |
 |----|-------|---------|-------|
-| 1w | LOCAL | 13900K + 3090 | DONE |
-| 1d | LOCAL | 13900K + 3090 | Next |
-| 4h | LOCAL | 13900K + 3090 | After 1d |
-| 1h | CLOUD | 128c+ / 768GB+ | After local verified |
-| 15m | CLOUD | 128c+ / 1TB+ | Separate machine |
+| 1w | LOCAL | 13900K + 3090 | DONE (CPCV 67.7%, needs Optuna) |
+| 1d | CLOUD | Machine A (512GB+, 64c+) | Base parquet pre-built locally, upload to skip rebuild |
+| 4h | CLOUD | Machine A (same, sequential) | Base parquet pre-built locally, upload to skip rebuild |
+| 1h | CLOUD | Machine B (2TB+, 128c+) | Full pipeline on cloud |
+| 15m | CLOUD | Machine C (2TB+, 128c+) | User picks machine |
 
 ---
 
@@ -111,6 +154,8 @@ No active cloud machines.
 7. **enable_bundle=False for 1h/15m** — EFB conflict graph intractable at 10M features.
 8. **Cross features are pure 0/1** — structural zeros = feature OFF, not missing. No NaN after binarization.
 9. **We are in UNCHARTED TERRITORY** — no published work combines esoteric × TA at 2-10M sparse binary features.
+10. **1d cross gen OOM at 68GB locally** — needs 256GB+ RAM. Base features build fine (5,733×3,796).
+11. **4h estimated at 512GB+** — even more features than 1d, must go to cloud.
 
 ---
 
@@ -128,12 +173,15 @@ No active cloud machines.
 ## ARTIFACTS IN v3.3/ DIRECTORY
 
 ### Models & Training Results
-- model_1w.json (113MB, 2.2M features, 71.9% CPCV / 73.9% holdout)
+- model_1w.json (113MB, 2.2M features, CPCV 67.7%, needs Optuna)
 - model_1w_cpcv_backup.json
+
+### Pre-Built Base Feature Parquets (for cloud upload)
+- features_BTC_1d.parquet (10.7MB, 5,733×3,796)
+- features_BTC_4h.parquet (13.5MB, 8,794×3,904)
 
 ### Cross Feature Data
 - v2_cross_names_BTC_1w.json
-- 1d artifacts: OLD/STALE (v3.0 min_nonzero=8, needs rebuild)
 
 ### Documentation (AUTHORITATIVE)
 - SESSION_RESUME.md (this file)
