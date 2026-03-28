@@ -389,7 +389,7 @@ void CUDASparseHistTreeLearner::Init(const Dataset* train_data,
 
     Log::Info("[CUDASparseHist] EFB mapping active: %d features -> %lld hist bins (%.1fx compression)",
               n_features_, static_cast<long long>(total_hist_bins_),
-              static_cast<double>(n_features_) / std::max(1LL, static_cast<int64_t>(total_hist_bins_)));
+              static_cast<double>(n_features_) / static_cast<double>(total_hist_bins_ > 0 ? total_hist_bins_ : 1));
 
     /* Initialize GPU resources */
     InitGPU();
