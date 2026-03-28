@@ -1312,30 +1312,39 @@ if __name__ == '__main__':
               # ── Build parent Dataset ONCE for EFB/bin reuse across folds ──
               # This avoids recomputing EFB bundles + bin thresholds per fold (~30% time savings).
               # Per-fold Datasets use reference=_parent_ds to inherit bins/EFB.
+              # If Optuna already saved a binary Dataset, load it to skip EFB reconstruction entirely.
               _parent_ds = None
               try:
                   _parent_t0 = time.time()
-                  _parent_feature_cols = feature_cols + (_hmm_overlay_names if _hmm_overlay is not None else [])
-                  # Build representative sample: valid rows only, with HMM overlay if present
-                  _parent_valid = ~np.isnan(y_3class)
-                  if _X_all_is_sparse and _hmm_overlay is not None:
-                      _Xp_base = X_all[_parent_valid]
-                      _Xp_hmm = sp_sparse.csr_matrix(_hmm_overlay[_parent_valid])
-                      _Xp = sp_sparse.hstack([_Xp_base, _Xp_hmm], format='csr')
-                      del _Xp_base, _Xp_hmm
+                  bin_path = os.path.join(DB_DIR, f'lgbm_dataset_{tf_name}.bin')
+                  if os.path.exists(bin_path):
+                      log(f"  Loading parent Dataset from binary: {bin_path}")
+                      _parent_ds = lgb.Dataset(bin_path)
+                      _parent_ds.construct()
+                      log(f"  Parent Dataset loaded from binary in {time.time() - _parent_t0:.1f}s "
+                          f"(EFB reconstruction skipped). Folds reuse via reference=.")
                   else:
-                      _Xp = X_all[_parent_valid]
-                  _parent_ds = lgb.Dataset(
-                      _Xp, label=y_3class[_parent_valid].astype(int),
-                      weight=sample_weights[_parent_valid],
-                      feature_name=_parent_feature_cols,
-                      free_raw_data=True,
-                      params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255)},
-                  )
-                  _parent_ds.construct()
-                  log(f"  Parent Dataset built: {_Xp.shape[1]:,} features, EFB bins computed ONCE "
-                      f"({time.time() - _parent_t0:.1f}s). Folds reuse via reference=.")
-                  del _Xp
+                      _parent_feature_cols = feature_cols + (_hmm_overlay_names if _hmm_overlay is not None else [])
+                      # Build representative sample: valid rows only, with HMM overlay if present
+                      _parent_valid = ~np.isnan(y_3class)
+                      if _X_all_is_sparse and _hmm_overlay is not None:
+                          _Xp_base = X_all[_parent_valid]
+                          _Xp_hmm = sp_sparse.csr_matrix(_hmm_overlay[_parent_valid])
+                          _Xp = sp_sparse.hstack([_Xp_base, _Xp_hmm], format='csr')
+                          del _Xp_base, _Xp_hmm
+                      else:
+                          _Xp = X_all[_parent_valid]
+                      _parent_ds = lgb.Dataset(
+                          _Xp, label=y_3class[_parent_valid].astype(int),
+                          weight=sample_weights[_parent_valid],
+                          feature_name=_parent_feature_cols,
+                          free_raw_data=True,
+                          params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255)},
+                      )
+                      _parent_ds.construct()
+                      log(f"  Parent Dataset built: {_Xp.shape[1]:,} features, EFB bins computed ONCE "
+                          f"({time.time() - _parent_t0:.1f}s). Folds reuse via reference=.")
+                      del _Xp
                   gc.collect()
               except Exception as _pde:
                   log(f"  WARNING: Parent Dataset build failed ({_pde}), folds will construct independently")

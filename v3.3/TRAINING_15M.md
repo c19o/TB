@@ -399,6 +399,38 @@ Must see:
 
 ---
 
+## OPTUNA DEPLOYMENT
+
+### Upload Size for Optuna
+- **Total upload: ~150-220 GB** (parquet + NPZ + cross_names JSON + all DBs)
+- **MUST run on same machine as training** — impractical to transfer 150-220 GB
+- NPZ alone is **142-213 GB** (293,980 rows x 10M+ features x ~1% density)
+- Warm-started from 1h: 50+30 trials (vs 100+50 cold)
+- **Pick a cost-effective machine that runs BOTH training + Optuna**
+
+### Optuna Timing
+- Optuna takes ~2-3x final training time (target after optimizations)
+- 15m CPCV = ~10 hrs CPU / ~3 hrs GPU, so Optuna = ~25 hrs CPU / ~7.5 hrs GPU
+- save_binary bridge eliminates redundant EFB construction (Dataset parsed once, reused across all trials)
+- This is the LAST TF in the warm-start cascade (1w -> 1d -> 4h -> 1h -> 15m)
+
+### If Running Optuna on a Separate Machine (DO NOT DO THIS)
+Would need to upload:
+```
+features_BTC_15m.parquet         # base feature parquet
+v2_crosses_BTC_15m.npz           # cross feature sparse matrix (142-213 GB!!!)
+v2_cross_names_BTC_15m.json      # cross feature column names
+lgbm_dataset_15m.bin             # save_binary output (if available — skips EFB rebuild)
+model_15m.json                   # trained model (warm-start seed)
+optuna_configs_1h.json           # 1h Optuna results (warm-start cascade source)
+All 16 .db files + kp_history_gfz.txt + astrology_engine.py
+v33_code.tar.gz                  # all v3.3/*.py code
+```
+Total: **~150-220 GB.** At 1 Gbps = ~30 min transfer. At 100 Mbps = ~5 hrs.
+**This is impractical. ALWAYS run Optuna on the same machine as training for 15m.**
+
+---
+
 ## LAUNCH CHECKLIST:
 1. Machine with 2TB+ cgroup rented (user picks — high CPU score, <$2/hr)
 2. All 16 DBs verified present

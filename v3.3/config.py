@@ -203,7 +203,7 @@ PROTECTED_FEATURE_PREFIXES = [
     'master_', 'angel', 'palindrome',
     'doy_', 'dx_', 'ax_', 'ex2_', 'asp_', 'pn_', 'mn_',
     # Cross-generator prefixes
-    'rdx_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_',
+    'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_',
     # Esoteric prefixes matching actual features
     'price_dr', 'price_angel', 'price_master', 'price_near_round', 'price_repeating',
     'date_dr', 'date_palindrome',
@@ -273,12 +273,13 @@ TF_CLASS_WEIGHT = {
 }
 
 # Per-TF CPCV group settings (n_groups, n_test_groups) — FINAL evaluation (K=2)
+# Splits = C(N,K), unique paths phi = (K/N)*C(N,K), train fraction = (N-K)/N
 TF_CPCV_GROUPS = {
-    '1w': (5, 2),   # 10 splits, ~9 paths, 60% train
-    '1d': (5, 2),   # 10 splits, ~9 paths
-    '4h': (6, 2),   # 15 splits, 9 paths, 67% train
-    '1h': (6, 2),   # 15 splits, 9 paths
-    '15m': (6, 2),  # 15 splits, 9 paths
+    '1w': (5, 2),   # C(5,2)=10 splits, 4 unique paths, 60% train
+    '1d': (5, 2),   # C(5,2)=10 splits, 4 unique paths, 60% train
+    '4h': (6, 2),   # C(6,2)=15 splits, 5 unique paths, 67% train
+    '1h': (6, 2),   # C(6,2)=15 splits, 5 unique paths, 67% train
+    '15m': (6, 2),  # C(6,2)=15 splits, 5 unique paths, 67% train
 }
 
 # Per-TF num_leaves caps (scaled with data size — larger TFs support deeper trees)
@@ -293,7 +294,7 @@ TF_NUM_LEAVES = {
 # SHAP analysis config
 SHAP_N_SAMPLES = 10000        # High-confidence samples for SHAP analysis
 SHAP_TOP_N = 1000             # Top N features by |SHAP| to report
-SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_', 'rdx_')
+SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_')
 
 # ── Optuna Optimizer Config (v3.3 — Perplexity-optimized for 2.9M features) ──
 # Per Perplexity: save_binary() + reduced rounds + 2-fold search = 8-9x speedup

@@ -1064,6 +1064,11 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1, warmstart=True):
              f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features "
              f"(EFB cached, raw data freed -- folds use subset())")
 
+    # Save binary so ml_multi_tf.py can skip EFB reconstruction
+    bin_path = os.path.join(PROJECT_DIR, f'lgbm_dataset_{tf_name}.bin')
+    _parent_ds.save_binary(bin_path)
+    log.info(f"  Parent Dataset saved to binary: {bin_path}")
+
     # Determine trial counts: per-TF override > warm-start override > global default
     if is_warmstarted:
         s1_trials = OPTUNA_WARMSTART_STAGE1_TRIALS

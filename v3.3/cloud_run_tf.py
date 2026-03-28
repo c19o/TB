@@ -620,7 +620,7 @@ try:
     log(f"  Active features (split > 0): {len(active_features)} / {len(split_importance)}")
 
     # Count cross features that are active
-    cross_prefixes = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_', 'rdx_')
+    cross_prefixes = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_')
     active_crosses = [f for f in active_features if f.startswith(cross_prefixes)]
     active_base = [f for f in active_features if not f.startswith(cross_prefixes)]
     log(f"  Active cross features: {len(active_crosses)}")
