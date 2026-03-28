@@ -352,13 +352,64 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                     narrow_ranges=None, use_gpu=False, parent_ds=None):
     """Build an Optuna objective function for LightGBM hyperparameter search.
 
+    Pre-computes CPCV fold data slicing ONCE (valid_mask, subsample, splits,
+    X/y/w slices) -- identical across all trials. Eliminates ~0.5-2s of
+    redundant slicing per trial.
+
     Args:
         narrow_ranges: dict of param -> (low, high) for stage 2 narrowing
-        use_gpu: bool — if True, use GPU fork (cuda_sparse + set_external_csr)
-        parent_ds: lgb.Dataset — pre-constructed parent Dataset for EFB reuse
+        use_gpu: bool -- if True, use GPU fork (cuda_sparse + set_external_csr)
+        parent_ds: lgb.Dataset -- pre-constructed parent Dataset for EFB reuse
                    (reference= shares EFB bins across all trials, eliminating
                    redundant bin construction)
     """
+
+    # ── Pre-compute CPCV fold data ONCE (identical across all trials) ──
+    valid_mask = ~np.isnan(y)
+    subsample_idx = np.where(valid_mask)[0]
+    if row_subsample < 1.0:
+        np.random.seed(OPTUNA_SEED)
+        n_sample = int(len(subsample_idx) * row_subsample)
+        subsample_idx = np.sort(np.random.choice(subsample_idx, size=n_sample, replace=False))
+
+    n_sub = len(subsample_idx)
+    splits = _generate_cpcv_splits(
+        n_sub, n_groups=n_groups, n_test_groups=n_test_groups,
+        max_hold_bars=max_hold, embargo_pct=0.01,
+    )
+
+    # Pre-slice data for each fold -- avoids redundant indexing every trial
+    fold_data = []
+    for _fi, (train_rel, test_rel) in enumerate(splits):
+        abs_train = subsample_idx[train_rel]
+        abs_test = subsample_idx[test_rel]
+
+        y_train = y[abs_train].astype(int)
+        y_test = y[abs_test].astype(int)
+        w_train = sample_weights[abs_train]
+
+        X_train = X_all[abs_train]
+        X_test = X_all[abs_test]
+
+        if len(y_train) < 50 or len(y_test) < 20:
+            continue
+
+        # 85/15 train/val for early stopping
+        val_size = max(int(len(y_train) * 0.15), 50)
+        if val_size >= len(y_train):
+            val_size = max(len(y_train) // 5, 20)
+
+        X_train_es = X_train[:-val_size]
+        X_val_es = X_train[-val_size:]
+        y_train_es = y_train[:-val_size]
+        y_val_es = y_train[-val_size:]
+        w_train_es = w_train[:-val_size]
+        w_val_es = w_train[-val_size:]
+
+        fold_data.append((X_train_es, X_val_es, y_train_es, y_val_es, w_train_es,
+                          w_val_es, X_test, y_test))
+
+    log.info(f"  Pre-computed {len(fold_data)} CPCV folds (from {len(splits)} splits)")
 
     def objective(trial):
         # ── Suggest hyperparameters ──
@@ -416,57 +467,13 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             'learning_rate': learning_rate if not search_lr else lr,
             'seed': OPTUNA_SEED,
         })
-        # ── Row subsample for stage 1 ──
-        if row_subsample < 1.0:
-            np.random.seed(OPTUNA_SEED)
-            valid_mask = ~np.isnan(y)
-            valid_indices = np.where(valid_mask)[0]
-            n_sample = int(len(valid_indices) * row_subsample)
-            subsample_idx = np.sort(np.random.choice(valid_indices, size=n_sample, replace=False))
-        else:
-            valid_mask = ~np.isnan(y)
-            subsample_idx = np.where(valid_mask)[0]
 
-        # ── Generate CPCV splits on subsampled data ──
-        n_sub = len(subsample_idx)
-        splits = _generate_cpcv_splits(
-            n_sub, n_groups=n_groups, n_test_groups=n_test_groups,
-            max_hold_bars=max_hold, embargo_pct=0.01,
-        )
-
-        # ── Evaluate across CPCV folds ──
+        # ── Evaluate across pre-computed CPCV folds ──
         fold_scores = []
         fold_sortinos = []
 
-        for fold_i, (train_rel, test_rel) in enumerate(splits):
-            train_idx = subsample_idx[train_rel]
-            test_idx = subsample_idx[test_rel]
-
-            y_train = y[train_idx].astype(int)
-            y_test = y[test_idx].astype(int)
-            w_train = sample_weights[train_idx]
-
-            if is_sparse:
-                X_train = X_all[train_idx]
-                X_test = X_all[test_idx]
-            else:
-                X_train = X_all[train_idx]
-                X_test = X_all[test_idx]
-
-            if len(y_train) < 50 or len(y_test) < 20:
-                continue
-
-            # 85/15 train/val for early stopping
-            val_size = max(int(len(y_train) * 0.15), 50)
-            if val_size >= len(y_train):
-                val_size = max(len(y_train) // 5, 20)
-
-            X_val_es = X_train[-val_size:]
-            y_val_es = y_train[-val_size:]
-            w_val_es = w_train[-val_size:]
-            X_train_es = X_train[:-val_size]
-            y_train_es = y_train[:-val_size]
-            w_train_es = w_train[:-val_size]
+        for fold_i, (X_train_es, X_val_es, y_train_es, y_val_es, w_train_es,
+                      w_val_es, X_test, y_test) in enumerate(fold_data):
 
             dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
                                  reference=parent_ds, free_raw_data=False)
@@ -551,7 +558,7 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             fold_scores.append(mlogloss)
             fold_sortinos.append(sortino)
 
-            del model, dtrain, dval, X_train, X_test
+            del model, dtrain, dval
             import gc
             gc.collect()
 

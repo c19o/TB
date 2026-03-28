@@ -154,6 +154,7 @@ def train_dual_models(features, forward_return, direction, use_gpu, tf_name='1d'
         "verbosity": -1,
         "device": "cpu",
         "force_col_wise": True,
+        "feature_pre_filter": False,  # CRITICAL: True silently kills rare esoteric features
     }
 
     # --- Model A: Direction classifier ---
