@@ -250,7 +250,7 @@ echo "  Created: /workspace/lgbm_env.sh (source this for direct runs)"
 # 7. Unpack code and DBs
 # ============================================================
 echo ""
-echo ">>> [7/7] Unpacking data..."
+echo ">>> [7/8] Unpacking data..."
 
 if [ -f /workspace/code.tar.gz ]; then
     echo "  Unpacking code..."
@@ -271,6 +271,27 @@ ln -sf /workspace/v3.3/*.db /workspace/ 2>/dev/null || true
 ln -sf /workspace/v3.3/btc_prices.db /workspace/btc_prices.db 2>/dev/null || true
 
 # ============================================================
+# 8. Build LightGBM CUDA Sparse Fork (if CUDA available)
+# ============================================================
+echo ""
+echo ">>> [8/8] LightGBM CUDA Sparse Fork..."
+FORK_DIR="/workspace/v3.3/gpu_histogram_fork"
+CUDA_SPARSE_BUILT=0
+if command -v nvcc &>/dev/null && [ -f "$FORK_DIR/build_linux.sh" ]; then
+    echo "  CUDA detected + fork source found. Building..."
+    if bash "$FORK_DIR/build_linux.sh" --install 2>&1 | tail -20; then
+        CUDA_SPARSE_BUILT=1
+        echo "  CUDA Sparse Histogram fork: BUILT + INSTALLED"
+    else
+        echo "  WARN: Fork build failed. Training will use CPU histograms (still works, just slower)."
+    fi
+elif ! command -v nvcc &>/dev/null; then
+    echo "  No CUDA toolkit found. Skipping fork build (CPU histograms will be used)."
+else
+    echo "  Fork source not found at $FORK_DIR/build_linux.sh. Skipping."
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
@@ -285,6 +306,7 @@ echo "  Optimizations applied:"
 [ -w /sys/kernel/mm/transparent_hugepage/enabled ] && echo "    [OK] THP: always + defer+madvise defrag" || echo "    [--] THP: container restricted"
 echo "    [OK] vm.swappiness=1, vm.overcommit_memory=1"
 [ "$NUMA_NODES" -gt 1 ] 2>/dev/null && echo "    [OK] NUMA: $NUMA_NODES nodes, interleave binding" || echo "    [OK] NUMA: single node"
+[ "$CUDA_SPARSE_BUILT" -eq 1 ] 2>/dev/null && echo "    [OK] CUDA Sparse Histogram fork: built + installed" || echo "    [--] CUDA Sparse Histogram fork: not built"
 echo ""
 echo "  Run (recommended):"
 echo "    cd /workspace/v3.3 && lgbm-run python -u cloud_run_tf.py --symbol BTC --tf 1w"

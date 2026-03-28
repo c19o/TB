@@ -2,15 +2,15 @@
 """
 1W GPU Fork Training with Dataset Caching.
 
-Builds the LightGBM Dataset (EFB DISABLED) ONCE and saves to binary.
+Builds the LightGBM Dataset ONCE and saves to binary.
 Subsequent runs load from binary (~1 second vs ~5-8 minutes).
 
-EFB is disabled because GPU SpMV produces per-feature gradient sums.
-With EFB, 2.2M features bundle into ~23K bins — histogram buffer overflow.
+EFB (Exclusive Feature Bundling) is enabled by default — the GPU SpMV
+kernel uses the EFB bin mapping to scatter into bundled histogram slots.
 
 Usage:
   python train_1w_cached.py              # First run: build + save + train
-  python train_1w_cached.py --from-cache # Skip EFB, load from binary
+  python train_1w_cached.py --from-cache # Load from binary (skip rebuild)
   python train_1w_cached.py --build-only # Build + save binary, don't train
 """
 
@@ -163,10 +163,8 @@ def train_gpu(ds, X_csr, num_rounds=200):
         'min_data_in_leaf': 3,
         'feature_pre_filter': False,
         'verbose': 1,
-        # Limit CPU histogram pool to ~512 MB.  With enable_bundle=False
-        # each leaf cache entry is ~96 MB (4M bins * 24B) + 2.2M
-        # FeatureHistogram objects (~200 MB).  Default (pool_size<=0)
-        # allocates num_leaves=63 cache entries = 18+ GB → OOM on 64 GB.
+        # Limit CPU histogram pool to ~512 MB.  Default (pool_size<=0)
+        # allocates num_leaves=63 cache entries which can OOM on 64 GB.
         'histogram_pool_size': 512,
     }
 

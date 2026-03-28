@@ -54,6 +54,18 @@ from optuna.pruners import HyperbandPruner, MedianPruner
 import lightgbm as lgb
 from sklearn.metrics import accuracy_score, precision_score, log_loss
 
+# ── GPU fork detection ──
+_HAS_GPU_FORK = False
+try:
+    from gpu_histogram_fork.src.cloud_gpu_integration import (
+        should_use_gpu, gpu_cloud_integration,
+    )
+    # Probe: does set_external_csr exist on Booster?
+    if hasattr(lgb.Booster, 'set_external_csr'):
+        _HAS_GPU_FORK = True
+except ImportError:
+    pass
+
 from config import (
     V3_LGBM_PARAMS, TF_MIN_DATA_IN_LEAF, V30_DATA_DIR,
     OPTUNA_STAGE1_TRIALS, OPTUNA_STAGE2_TRIALS,
@@ -303,11 +315,12 @@ def load_tf_data(tf_name):
 def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                     max_hold, n_groups, n_test_groups, row_subsample=1.0,
                     search_lr=None, search_rounds=None, stage=1,
-                    narrow_ranges=None):
+                    narrow_ranges=None, use_gpu=False):
     """Build an Optuna objective function for LightGBM hyperparameter search.
 
     Args:
         narrow_ranges: dict of param -> (low, high) for stage 2 narrowing
+        use_gpu: bool — if True, use GPU fork (cuda_sparse + set_external_csr)
     """
 
     def objective(trial):
@@ -419,22 +432,55 @@ def build_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
             w_train_es = w_train[:-val_size]
 
             dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
-                                 free_raw_data=True)
+                                 free_raw_data=False if use_gpu else True)
             dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
-                               reference=dtrain, free_raw_data=True)
+                               reference=dtrain, free_raw_data=False if use_gpu else True)
 
-            # Use pruning callback for stage 1
             # MC-4: scale early stopping inversely with LR — esoteric signals need 800+ trees at low LR
             _es_patience = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
-            callbacks = [lgb.early_stopping(_es_patience), lgb.log_evaluation(0)]
 
-            model = lgb.train(
-                params, dtrain,
-                num_boost_round=rounds,
-                valid_sets=[dval],
-                valid_names=['val'],
-                callbacks=callbacks,
-            )
+            if use_gpu and sp_sparse.issparse(X_train_es):
+                # GPU fork path: manual Booster loop with set_external_csr
+                gpu_params = params.copy()
+                gpu_params['device_type'] = 'cuda_sparse'
+                gpu_params.pop('force_col_wise', None)
+                gpu_params.pop('force_row_wise', None)
+                gpu_params.pop('device', None)
+                gpu_params['histogram_pool_size'] = 512
+
+                dtrain.construct()
+                dval.construct()
+                booster = lgb.Booster(gpu_params, dtrain)
+                booster.add_valid(dval, 'val')
+                booster.set_external_csr(X_train_es)
+
+                best_score = float('inf')
+                best_iter = 0
+                no_improve = 0
+                for rnd in range(rounds):
+                    booster.update()
+                    val_result = booster.eval_valid()[0]  # (dataset_name, metric_name, value, is_higher_better)
+                    val_score = val_result[2]
+                    if val_score < best_score:
+                        best_score = val_score
+                        best_iter = rnd + 1
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                    if no_improve >= _es_patience:
+                        break
+                model = booster
+            else:
+                # CPU path
+                callbacks = [lgb.early_stopping(_es_patience), lgb.log_evaluation(0)]
+
+                model = lgb.train(
+                    params, dtrain,
+                    num_boost_round=rounds,
+                    valid_sets=[dval],
+                    valid_names=['val'],
+                    callbacks=callbacks,
+                )
 
             # OOS predictions
             preds = model.predict(X_test)
@@ -520,7 +566,7 @@ def compute_narrow_ranges(study, top_k=5):
 # FINAL RETRAINING WITH BEST PARAMS
 # ============================================================
 def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
-                  tf_name, max_hold, best_params):
+                  tf_name, max_hold, best_params, use_gpu=False):
     """Retrain with best params using full CPCV + full rounds + final LR."""
     log.info(f"  FINAL RETRAIN: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
 
@@ -583,20 +629,56 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         if val_size >= len(y_train):
             val_size = max(len(y_train) // 5, 20)
 
-        dtrain = lgb.Dataset(X_train[:-val_size], label=y_train[:-val_size],
+        X_train_fold = X_train[:-val_size]
+        dtrain = lgb.Dataset(X_train_fold, label=y_train[:-val_size],
                              weight=w_train[:-val_size], feature_name=feature_cols,
                              free_raw_data=False)
         dval = lgb.Dataset(X_train[-val_size:], label=y_train[-val_size:],
                            weight=w_train[-val_size:],
                            feature_name=feature_cols, free_raw_data=False)
 
-        model = lgb.train(
-            params, dtrain,
-            num_boost_round=OPTUNA_FINAL_ROUNDS,
-            valid_sets=[dtrain, dval],
-            valid_names=['train', 'val'],
-            callbacks=[lgb.early_stopping(max(50, int(100 * (0.1 / params.get('learning_rate', OPTUNA_FINAL_LR))))), lgb.log_evaluation(0)],
-        )
+        _es_patience_final = max(50, int(100 * (0.1 / params.get('learning_rate', OPTUNA_FINAL_LR))))
+
+        if use_gpu and sp_sparse.issparse(X_train_fold):
+            # GPU fork path
+            gpu_params = params.copy()
+            gpu_params['device_type'] = 'cuda_sparse'
+            gpu_params.pop('force_col_wise', None)
+            gpu_params.pop('force_row_wise', None)
+            gpu_params.pop('device', None)
+            gpu_params['histogram_pool_size'] = 512
+
+            dtrain.construct()
+            dval.construct()
+            booster = lgb.Booster(gpu_params, dtrain)
+            booster.add_valid(dval, 'val')
+            booster.set_external_csr(X_train_fold)
+
+            best_score = float('inf')
+            best_iter = 0
+            no_improve = 0
+            for rnd in range(OPTUNA_FINAL_ROUNDS):
+                booster.update()
+                val_result = booster.eval_valid()[0]
+                val_score = val_result[2]
+                if val_score < best_score:
+                    best_score = val_score
+                    best_iter = rnd + 1
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if no_improve >= _es_patience_final:
+                    break
+            model = booster
+        else:
+            # CPU path
+            model = lgb.train(
+                params, dtrain,
+                num_boost_round=OPTUNA_FINAL_ROUNDS,
+                valid_sets=[dtrain, dval],
+                valid_names=['train', 'val'],
+                callbacks=[lgb.early_stopping(_es_patience_final), lgb.log_evaluation(0)],
+            )
 
         preds = model.predict(X_test)
         pred_labels = np.argmax(preds, axis=1)
@@ -620,7 +702,8 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
             'y_pred_labels': pred_labels.tolist(),
         })
 
-        log.info(f"    Fold {fold_i+1}/{len(splits)}: Acc={acc:.3f} PrecL={prec_long:.3f} PrecS={prec_short:.3f} Sortino={sortino:.2f} Trees={model.best_iteration}")
+        _n_trees = getattr(model, 'best_iteration', None) or getattr(model, 'current_iteration', lambda: '?')()
+        log.info(f"    Fold {fold_i+1}/{len(splits)}: Acc={acc:.3f} PrecL={prec_long:.3f} PrecS={prec_short:.3f} Sortino={sortino:.2f} Trees={_n_trees}")
 
         if acc > best_acc:
             best_acc = acc
@@ -655,6 +738,23 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
     n_valid = (~np.isnan(y)).sum()
     log.info(f"  Features: {len(feature_cols):,} ({'SPARSE' if is_sparse else 'DENSE'})")
     log.info(f"  Valid samples: {int(n_valid):,} / {len(y):,}")
+
+    # ── GPU fork detection ──
+    use_gpu = False
+    if _HAS_GPU_FORK and is_sparse:
+        try:
+            use_gpu = should_use_gpu(tf_name, X_all)
+        except Exception as e:
+            log.warning(f"  GPU fork detection failed: {e}")
+    if use_gpu:
+        log.info(f"  GPU FORK: cuda_sparse enabled for Optuna trials")
+    else:
+        if _HAS_GPU_FORK and is_sparse:
+            log.warning(f"  GPU fork available but not viable for {tf_name} — using CPU")
+        elif _HAS_GPU_FORK and not is_sparse:
+            log.warning(f"  GPU fork requires sparse data — data is dense, using CPU")
+        else:
+            log.info(f"  GPU fork: not available, using CPU")
 
     # Create pruner
     if OPTUNA_PRUNER == 'hyperband':
@@ -706,6 +806,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         search_lr=OPTUNA_SEARCH_LR,
         search_rounds=OPTUNA_SEARCH_ROUNDS,
         stage=1,
+        use_gpu=use_gpu,
     )
 
     # Count existing completed trials to determine remaining
@@ -779,6 +880,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
         search_rounds=OPTUNA_SEARCH_ROUNDS,
         stage=2,
         narrow_ranges=narrow_ranges,
+        use_gpu=use_gpu,
     )
 
     existing_s2 = len([t for t in study_s2.trials if t.state == optuna.trial.TrialState.COMPLETE])
@@ -815,6 +917,7 @@ def run_search_for_tf(tf_name, max_stage=2, n_jobs=1):
     final_result = final_retrain(
         X_all, y, sample_weights, feature_cols, is_sparse,
         tf_name, max_hold, best_overall.params,
+        use_gpu=use_gpu,
     )
     final_elapsed = time.time() - final_start
 

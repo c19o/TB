@@ -71,8 +71,19 @@ from scipy import stats
 from scipy import sparse as sp_sparse
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 
-# LightGBM runs on CPU with force_col_wise for max throughput
-log(f"LightGBM: CPU mode (force_col_wise=True)")
+# ============================================================
+# GPU SPARSE HISTOGRAM DETECTION
+# The GPU fork adds set_external_csr() to lgb.Booster and supports
+# device_type='cuda_sparse'. Detect availability at import time.
+# ============================================================
+_GPU_SPARSE_AVAILABLE = hasattr(lgb.Booster, 'set_external_csr')
+_ALLOW_CPU = os.environ.get('ALLOW_CPU', '0') == '1'
+if _GPU_SPARSE_AVAILABLE:
+    log(f"LightGBM: GPU sparse histograms AVAILABLE (cuda_sparse fork detected)")
+    if _ALLOW_CPU:
+        log(f"  ALLOW_CPU=1 — will use CPU despite GPU availability")
+else:
+    log(f"LightGBM: CPU mode (force_col_wise=True) — GPU fork not detected")
 
 
 # ============================================================
@@ -291,6 +302,136 @@ def _predict_chunked(model, X, chunk_size=50000):
     return np.vstack(preds)
 
 
+def _use_gpu_sparse():
+    """Check if GPU sparse training should be used."""
+    return _GPU_SPARSE_AVAILABLE and not _ALLOW_CPU
+
+
+def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
+               early_stopping_rounds, checkpoint_cb=None, log_period=100):
+    """Train with GPU sparse histograms via the CUDA fork.
+
+    Uses lgb.Booster + manual update() loop with set_external_csr().
+    Falls back to CPU lgb.train() if GPU init fails.
+
+    Parameters
+    ----------
+    params : dict
+        LightGBM params (device_type will be set to cuda_sparse).
+    ds_train : lgb.Dataset
+        Training dataset.
+    ds_val : lgb.Dataset or None
+        Validation dataset for early stopping.
+    X_train_csr : scipy.sparse.csr_matrix
+        CSR matrix for GPU histogram building (must match ds_train rows).
+    num_boost_round : int
+        Maximum boosting rounds.
+    early_stopping_rounds : int
+        Stop if no improvement for this many rounds.
+    checkpoint_cb : CheckpointCallback or None
+        Optional checkpoint callback.
+    log_period : int
+        Log evaluation every N rounds.
+
+    Returns
+    -------
+    booster : lgb.Booster
+        Trained model. Has .best_iteration set.
+    """
+    params = dict(params)
+    params['device_type'] = 'cuda_sparse'
+    # Remove force_col_wise — GPU path uses its own histogram builder
+    params.pop('force_col_wise', None)
+    # GPU fork needs histogram_pool_size to avoid OOM on large num_leaves
+    if 'histogram_pool_size' not in params:
+        params['histogram_pool_size'] = 512
+
+    try:
+        booster = lgb.Booster(params, ds_train)
+        booster.set_external_csr(X_train_csr)
+    except Exception as e:
+        log(f"  WARNING: GPU sparse init failed ({e}), falling back to CPU")
+        # Revert to CPU training
+        cpu_params = dict(params)
+        cpu_params['device_type'] = 'cpu'
+        cpu_params.pop('histogram_pool_size', None)
+        cpu_params['force_col_wise'] = True
+        callbacks = [
+            lgb.early_stopping(early_stopping_rounds),
+            lgb.log_evaluation(log_period),
+        ]
+        if checkpoint_cb is not None:
+            callbacks.append(checkpoint_cb)
+        model = lgb.train(
+            cpu_params, ds_train,
+            num_boost_round=num_boost_round,
+            valid_sets=[ds_train, ds_val] if ds_val is not None else [ds_train],
+            valid_names=['train', 'val'] if ds_val is not None else ['train'],
+            callbacks=callbacks,
+        )
+        return model
+
+    # Add validation set
+    if ds_val is not None:
+        booster.add_valid(ds_val, 'val')
+
+    best_score = None
+    best_iter = 0
+    best_model_str = None
+    _higher_better = None  # auto-detected from first eval
+    for i in range(num_boost_round):
+        booster.update()
+
+        # Early stopping check on validation set
+        if ds_val is not None:
+            val_result = booster.eval_valid()  # returns list of (ds_name, metric_name, value, higher_better)
+            if val_result:
+                score = val_result[0][2]  # first metric value
+                if _higher_better is None:
+                    _higher_better = val_result[0][3]  # auto-detect from LightGBM
+                    best_score = score
+                    best_iter = i + 1
+                    best_model_str = booster.model_to_string()
+                elif (_higher_better and score > best_score) or (not _higher_better and score < best_score):
+                    best_score = score
+                    best_iter = i + 1
+                    best_model_str = booster.model_to_string()
+                elif (i + 1) - best_iter >= early_stopping_rounds:
+                    if log_period > 0:
+                        log(f"    GPU early stopping at round {i+1} (best={best_iter})")
+                    break
+
+        # Log periodically
+        if log_period > 0 and (i + 1) % log_period == 0:
+            train_result = booster.eval_train()
+            tr_str = f"train={train_result[0][2]:.4f}" if train_result else ""
+            val_str = f"val={best_score:.4f}" if ds_val is not None else ""
+            log(f"    [GPU] Round {i+1}/{num_boost_round}: {tr_str} {val_str}")
+
+        # Checkpoint callback
+        if checkpoint_cb is not None:
+            class _FakeEnv:
+                pass
+            _env = _FakeEnv()
+            _env.iteration = i
+            _env.model = booster
+            try:
+                checkpoint_cb(_env)
+            except KeyboardInterrupt:
+                raise
+
+        # SIGTERM check
+        if _SIGTERM_FLAG.is_set():
+            log(f"    [GPU] SIGTERM at round {i+1}")
+            break
+
+    # Restore best model if early stopping was used
+    if best_model_str is not None and ds_val is not None:
+        booster = lgb.Booster(model_str=best_model_str)
+    booster.best_iteration = best_iter if best_iter > 0 else (i + 1)
+    return booster
+
+
 def _cpcv_split_worker(args_tuple):
     """Train a single LightGBM CPCV split.
     Runs in a subprocess for parallel CPU training.
@@ -302,6 +443,7 @@ def _cpcv_split_worker(args_tuple):
      y_3class, sample_weights, feature_cols, lgb_params,
      num_boost_round, tf_name, gpu_id) = args_tuple
 
+    import os
     import numpy as np
     from scipy import sparse
     import lightgbm as lgb
@@ -349,13 +491,64 @@ def _cpcv_split_worker(args_tuple):
     dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
                          feature_name=feature_cols, free_raw_data=False)
     dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, feature_name=feature_cols, free_raw_data=False)
-    model = lgb.train(
-        params, dtrain,
-        num_boost_round=num_boost_round,
-        valid_sets=[dtrain, dval],
-        valid_names=['train', 'val'],
-        callbacks=[lgb.early_stopping(max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))), lgb.log_evaluation(0)],
-    )
+    _es_rounds_w = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+
+    # GPU sparse path: detect in-worker (subprocess doesn't inherit parent globals)
+    _worker_gpu = hasattr(lgb.Booster, 'set_external_csr') and os.environ.get('ALLOW_CPU', '0') != '1'
+    if _worker_gpu and sparse.issparse(X_train_es):
+        _X_csr_w = X_train_es.tocsr() if not isinstance(X_train_es, sparse.csr_matrix) else X_train_es
+        _gpu_params = dict(params)
+        _gpu_params['device_type'] = 'cuda_sparse'
+        _gpu_params.pop('force_col_wise', None)
+        if 'histogram_pool_size' not in _gpu_params:
+            _gpu_params['histogram_pool_size'] = 512
+        try:
+            booster = lgb.Booster(_gpu_params, dtrain)
+            booster.set_external_csr(_X_csr_w)
+            booster.add_valid(dval, 'val')
+            best_score_w = None
+            best_iter_w = 0
+            best_model_str_w = None
+            _hb_w = None  # higher_better flag
+            for _ri in range(num_boost_round):
+                booster.update()
+                val_result = booster.eval_valid()
+                if val_result:
+                    _sc = val_result[0][2]
+                    if _hb_w is None:
+                        _hb_w = val_result[0][3]
+                        best_score_w = _sc
+                        best_iter_w = _ri + 1
+                        best_model_str_w = booster.model_to_string()
+                    elif (_hb_w and _sc > best_score_w) or (not _hb_w and _sc < best_score_w):
+                        best_score_w = _sc
+                        best_iter_w = _ri + 1
+                        best_model_str_w = booster.model_to_string()
+                    elif (_ri + 1) - best_iter_w >= _es_rounds_w:
+                        break
+            if best_model_str_w is not None:
+                model = lgb.Booster(model_str=best_model_str_w)
+            else:
+                model = booster
+            model.best_iteration = best_iter_w if best_iter_w > 0 else (_ri + 1)
+            del _X_csr_w
+        except Exception:
+            # GPU failed in worker — fall back to CPU
+            model = lgb.train(
+                params, dtrain,
+                num_boost_round=num_boost_round,
+                valid_sets=[dtrain, dval],
+                valid_names=['train', 'val'],
+                callbacks=[lgb.early_stopping(_es_rounds_w), lgb.log_evaluation(0)],
+            )
+    else:
+        model = lgb.train(
+            params, dtrain,
+            num_boost_round=num_boost_round,
+            valid_sets=[dtrain, dval],
+            valid_names=['train', 'val'],
+            callbacks=[lgb.early_stopping(_es_rounds_w), lgb.log_evaluation(0)],
+        )
 
     # OOS predictions (LightGBM predicts directly on arrays)
     preds_3c = model.predict(X_test)
@@ -907,7 +1100,7 @@ if __name__ == '__main__':
           # If run_optuna_local.py was run first (Step 5 in cloud pipeline), it saves
           # optuna_configs_{tf}.json with best_params. Load and overlay onto _base_lgb_params.
           # This lets Step 4 (training) use Optuna-found params instead of config.py defaults.
-          _optuna_config_path = os.path.join(PROJECT_DIR, f'optuna_configs_{tf_name}.json')
+          _optuna_config_path = os.path.join(V30_DATA_DIR, f'optuna_configs_{tf_name}.json')
           if not os.path.exists(_optuna_config_path):
               # Also check CWD (cloud deploys may have it in /workspace)
               _optuna_config_path_cwd = f'optuna_configs_{tf_name}.json'
@@ -1282,17 +1475,32 @@ if __name__ == '__main__':
                   dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es, **_ds_kwargs)
                   dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, **_ds_kwargs)
                   _ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_fold{wi}.txt')
-                  model = lgb.train(
-                      params, dtrain,
-                      num_boost_round=_args.boost_rounds,
-                      valid_sets=[dtrain, dval],
-                      valid_names=['train', 'val'],
-                      callbacks=[
-                          lgb.early_stopping(max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))),
-                          lgb.log_evaluation(100),
-                          CheckpointCallback(_ckpt_path, period=100),
-                      ],
-                  )
+                  _es_rounds = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+                  if _use_gpu_sparse() and hasattr(X_train_es, 'tocsr'):
+                      # GPU sparse histogram path — keep CSR, use manual update loop
+                      _X_csr_fold = X_train_es.tocsr() if not isinstance(X_train_es, sp_sparse.csr_matrix) else X_train_es
+                      model = _train_gpu(
+                          params, dtrain, dval, _X_csr_fold,
+                          num_boost_round=_args.boost_rounds,
+                          early_stopping_rounds=_es_rounds,
+                          checkpoint_cb=CheckpointCallback(_ckpt_path, period=100),
+                          log_period=100,
+                      )
+                      del _X_csr_fold
+                  else:
+                      if _GPU_SPARSE_AVAILABLE and not hasattr(X_train_es, 'tocsr'):
+                          log(f"    WARNING: GPU fork available but data is dense — using CPU training")
+                      model = lgb.train(
+                          params, dtrain,
+                          num_boost_round=_args.boost_rounds,
+                          valid_sets=[dtrain, dval],
+                          valid_names=['train', 'val'],
+                          callbacks=[
+                              lgb.early_stopping(_es_rounds),
+                              lgb.log_evaluation(100),
+                              CheckpointCallback(_ckpt_path, period=100),
+                          ],
+                      )
 
                   # Predict OOS (LightGBM predicts directly on arrays)
                   preds_3c = model.predict(X_test)  # shape (N, 3)
@@ -1548,15 +1756,30 @@ if __name__ == '__main__':
           dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f, **_final_ds_kwargs)
           dval = lgb.Dataset(X_val_f, label=y_val_f, weight=w_val_f, **_final_ds_kwargs)
           _final_ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_final.txt')
-          final_model = lgb.train(
-              final_params, dtrain, num_boost_round=_args.boost_rounds,
-              valid_sets=[dtrain, dval], valid_names=['train', 'val'],
-              callbacks=[
-                  lgb.early_stopping(max(50, int(100 * (0.1 / final_params.get('learning_rate', 0.03))))),
-                  lgb.log_evaluation(100),
-                  CheckpointCallback(_final_ckpt_path, period=100),
-              ],
-          )
+          _final_es_rounds = max(50, int(100 * (0.1 / final_params.get('learning_rate', 0.03))))
+          if _use_gpu_sparse() and hasattr(X_tr_f, 'tocsr'):
+              # GPU sparse histogram path for final model
+              _X_csr_final = X_tr_f.tocsr() if not isinstance(X_tr_f, sp_sparse.csr_matrix) else X_tr_f
+              final_model = _train_gpu(
+                  final_params, dtrain, dval, _X_csr_final,
+                  num_boost_round=_args.boost_rounds,
+                  early_stopping_rounds=_final_es_rounds,
+                  checkpoint_cb=CheckpointCallback(_final_ckpt_path, period=100),
+                  log_period=100,
+              )
+              del _X_csr_final
+          else:
+              if _GPU_SPARSE_AVAILABLE and not hasattr(X_tr_f, 'tocsr'):
+                  log(f"  WARNING: GPU fork available but final data is dense — using CPU training")
+              final_model = lgb.train(
+                  final_params, dtrain, num_boost_round=_args.boost_rounds,
+                  valid_sets=[dtrain, dval], valid_names=['train', 'val'],
+                  callbacks=[
+                      lgb.early_stopping(_final_es_rounds),
+                      lgb.log_evaluation(100),
+                      CheckpointCallback(_final_ckpt_path, period=100),
+                  ],
+              )
 
           # Evaluate on val set (held-out 15% from end, used for early stopping)
           final_preds_3c = final_model.predict(X_val_f)  # shape (N, 3)
