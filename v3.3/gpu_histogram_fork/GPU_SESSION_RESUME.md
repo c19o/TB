@@ -216,6 +216,27 @@ gpu_histogram_fork/          ~70 files, ~30,000 lines
 | 1h | 91K | 15s | 3.0s | GPU (5×) |
 | 15m | 227K | 25s | 3.5s | GPU (7×) |
 
+### LIVE TRAINING STATUS (2026-03-29)
+- 1w: DONE (58% CPCV, 29% SHORT precision — asymmetric barriers working)
+- 1d: RUNNING on m:28851559 (Score 1423, 755GB, $3.73/hr) — cross gen phase
+- 4h: RUNNING on m:33727995 (Score 1422, 479GB, $4.27/hr) — cross gen phase
+- 1h: NEXT — run on 1d machine after 1d completes (755GB RAM sufficient)
+- 15m: NEEDS separate 1TB+ machine
+
+### CUDA 13 VERIFIED (2026-03-29)
+- Built + tested on RTX PRO 5000 Blackwell (driver 580.126.09, nvcc 13.2)
+- cuSPARSE 13.x backward compatible with our SpMV calls
+- Fix: std::max explicit cast (int64_t vs long long)
+- Must copy .so to BOTH lightgbm/ AND lightgbm/lib/
+- build_linux.sh ships pre-patched LightGBM source (14MB tar)
+- Entire vast.ai fleet unlocked — no more CUDA 12 hunting
+
+### Cross Gen OOM Fix (2026-03-29)
+- After each cross type checkpoint: FREE CSR from RAM + gc.collect()
+- Before final assembly: reload all checkpoints from disk
+- Peak RAM = max(single_cross_type) not sum(all)
+- Zero accuracy impact, ~30-90s speed cost
+
 ### ETAs (Score 1200 + 5090, with Optuna)
 | TF | Optuna | Final CPCV | Total |
 |----|--------|-----------|-------|
