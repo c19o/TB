@@ -152,7 +152,7 @@ print(f"  CWD:   {os.getcwd()}", flush=True)
 print(f"{'='*60}", flush=True)
 
 # --- RAM validation per TF ---
-TF_MIN_RAM = {'1w': 64, '1d': 192, '4h': 768, '1h': 1024, '15m': 1500}
+TF_MIN_RAM = {'1w': 64, '1d': 128, '4h': 256, '1h': 512, '15m': 768}  # Reduced: targeted crossing + int8 cut RAM 50-70%
 if ram_gb > 0 and ram_gb < TF_MIN_RAM.get(TF, 64):
     print(f"ERROR: {TF} needs {TF_MIN_RAM[TF]}GB RAM, only {ram_gb:.0f}GB available", flush=True)
     sys.exit(1)
