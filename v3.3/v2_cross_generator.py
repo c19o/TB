@@ -1209,22 +1209,28 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         log(f"  Accumulated: {_total_collected:,} features so far")
 
     def _save_checkpoint(cross_prefix):
-        """Save the last completed cross type's CSR chunk + names as a checkpoint file."""
+        """Save ALL accumulated CSR chunks as one checkpoint, then FREE all from RAM."""
         if not _csr_chunks:
             return
-        _last_chunk = _csr_chunks[-1]
-        _n_cols_this = _last_chunk.shape[1]
+        # Merge all chunks into one CSR for this checkpoint
+        if len(_csr_chunks) == 1:
+            _merged = _csr_chunks[0]
+        else:
+            _merged = sparse.hstack(_csr_chunks, format='csr')
+        _n_cols_this = _merged.shape[1]
         _these_names = all_cross_names[-_n_cols_this:]
         _ckpt_npz = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}.npz')
         _ckpt_names = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}_names.json')
-        sparse.save_npz(_ckpt_npz, _last_chunk)
+        sparse.save_npz(_ckpt_npz, _merged)
         with open(_ckpt_names, 'w') as _f:
             _json_mod.dump([str(n) for n in _these_names], _f)
         log(f"    Checkpoint saved: {cross_prefix} ({_n_cols_this:,} features)")
-        # FREE the chunk from RAM — checkpoint file has it on disk
-        del _csr_chunks[-1]
+        # FREE ALL chunks from RAM — checkpoint file has everything on disk
+        _csr_chunks.clear()
+        del _merged
         gc.collect()
-        log(f"    RAM freed (chunk offloaded to disk)")
+        _malloc_trim()
+        log(f"    RAM freed (all chunks offloaded to disk)")
 
     def _cleanup_checkpoints():
         """Delete all checkpoint files after successful final save."""
