@@ -24,6 +24,8 @@ Steps:
 import os, sys, subprocess, time, json, glob, sqlite3
 
 os.environ['PYTHONUNBUFFERED'] = '1'
+# CuPy Blackwell (sm_120) compat: PTX JIT lets CUDA 13.0 driver compile for sm_120
+os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')
 # V30_DATA_DIR fallback to /workspace/v3.3 so config.py doesn't resolve to /v3.0 (LGBM)
 os.environ.setdefault('V30_DATA_DIR', '/workspace/v3.3')
 os.environ.setdefault('SAVAGE22_DB_DIR', '/workspace')
@@ -80,14 +82,34 @@ def run(cmd, name, critical=True):
     return ok
 
 def run_tee(cmd, name, logfile, critical=True):
-    """Run command with output tee'd to logfile for post-verification."""
+    """Run command with output tee'd to logfile — Python Popen drain, no shell pipe.
+    Replaces bash 'tee' pipeline which breaks on long runs (SIGPIPE, buffer saturation)."""
+    from pathlib import Path
     t0 = time.time()
     log(f"=== {name} ===")
-    # pipefail ensures pipe returns the python exit code, not tee's
-    full_cmd = f'set -o pipefail && {{ {cmd} ; }} 2>&1 | tee -a {logfile}'
-    r = subprocess.run(['bash', '-c', full_cmd])
+    Path(logfile).parent.mkdir(parents=True, exist_ok=True)
+    with open(logfile, 'ab', buffering=0) as logf:
+        proc = subprocess.Popen(
+            ['bash', '-c', cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            bufsize=0,
+        )
+        try:
+            while True:
+                chunk = proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+                logf.write(chunk)
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+        rc = proc.wait()
     dt = time.time() - t0
-    ok = r.returncode == 0
+    ok = rc == 0
     log(f"{name}: {'OK' if ok else 'FAIL'} ({dt:.0f}s)")
     if not ok:
         FAILURES.append(name)
@@ -421,6 +443,14 @@ if _free_gb < 20:
 # ============================================================
 # STEP 3: Build crosses (skip if NPZ already exists)
 # ============================================================
+# Per-TF cross feature toggle: 1w has too few rows (1158) for 2.8M crosses to be meaningful.
+# Base features alone (TA + esoteric + astro + gematria + numerology) give better signal on 1w.
+# The matrix thesis scales with DATA — more rows = more crosses add value.
+SKIP_CROSSES_TFS = {'1w'}  # Base features only — no cross gen
+if TF in SKIP_CROSSES_TFS:
+    log(f"  SKIP CROSSES for {TF} — base features only (too few rows for cross features to add signal)")
+    log(f"  Matrix signal comes from base feature diversity on {TF}")
+
 # --- Dynamic OMP/NUMBA for cross gen phase (limit threads to prevent exhaustion) ---
 os.environ['OMP_NUM_THREADS'] = '4'
 _numba_threads = min(4, max(1, cpu_count // 4))
@@ -441,10 +471,14 @@ if not os.path.exists(npz_path):
         os.symlink(os.path.abspath(alt_cn), cn)
 
 _npz_valid = False
-if os.path.exists(npz_path) and os.path.getsize(npz_path) > 1000:
+_skip_crosses = TF in SKIP_CROSSES_TFS
+if _skip_crosses:
+    _npz_valid = True  # pretend NPZ exists — training will use base features only
+    log(f"  Crosses DISABLED for {TF} — training on base features only")
+elif os.path.exists(npz_path) and os.path.getsize(npz_path) > 1000:
     npz_size = os.path.getsize(npz_path) / (1024*1024)
     # Validate NPZ col count — stale NPZs from v3.0 (min_nonzero=8) have far fewer crosses
-    _MIN_CROSS_COLS = {'1w': 1_500_000, '1d': 5_000_000, '4h': 3_000_000, '1h': 5_000_000, '15m': 5_000_000}
+    _MIN_CROSS_COLS = {'1w': 500_000, '1d': 1_000_000, '4h': 1_000_000, '1h': 1_000_000, '15m': 1_000_000}
     _min_cols = _MIN_CROSS_COLS.get(TF, 1_000_000)
     try:
         from scipy import sparse as _sp

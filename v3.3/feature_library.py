@@ -26,8 +26,8 @@ warnings.filterwarnings('ignore')
 
 # ── CUDA version detection (BEFORE any GPU library imports) ──
 # cuDF, cuML, CuPy-cuda12x are compiled for CUDA 12.x.
-# On CUDA 13.0+ (driver 580+), GPU operations SEGFAULT.
-# Detect driver version FIRST and skip ALL GPU imports on CUDA 13+.
+# On CUDA 13.0+ (driver 580+), cuDF/cuML SEGFAULT but CuPy works with PTX JIT.
+# Detect driver version to disable cuDF/cuML while keeping CuPy alive.
 _CUDA_MAJOR = 0
 try:
     import subprocess as _sp
@@ -38,35 +38,29 @@ try:
 except Exception:
     _CUDA_MAJOR = 12  # assume CUDA 12 compatible
 
-# GPU acceleration — skip entirely on CUDA 13+ (binary incompat)
-if _CUDA_MAJOR >= 13:
+# GPU acceleration — CuPy works on CUDA 13+ with PTX JIT; cuDF does NOT
+os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')  # Blackwell sm_120 compat
+try:
+    import cupy as cp
+    # Verify GPU actually works (catches sm_120 / driver mismatch)
+    cp.array([1.0]) + cp.array([2.0])
+    _N_GPUS = cp.cuda.runtime.getDeviceCount()
+    _HAS_GPU = _N_GPUS > 0
+    if _HAS_GPU:
+        _gpu_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
+        print(f"[feature_library] CuPy GPU: {_gpu_name} x{_N_GPUS}" +
+              (f" (CUDA {_CUDA_MAJOR}.x — cuDF disabled, CuPy OK)" if _CUDA_MAJOR >= 13 else ""))
+except (ImportError, Exception) as _cupy_err:
     if os.environ.get('ALLOW_CPU', '0') != '1':
         raise RuntimeError(
-            f"GPU REQUIRED: CUDA 13+ detected (driver 580+). Use a machine with CUDA 12.x driver. "
-            f"Set ALLOW_CPU=1 to force CPU mode."
+            f"GPU REQUIRED: CuPy failed ({_cupy_err}). Install CuPy or set ALLOW_CPU=1 to force CPU mode."
         )
     cp = None
     _HAS_GPU = False
     _N_GPUS = 0
-    os.environ['V2_SKIP_GPU'] = '1'  # Signal to sub-modules (knn_feature_engine, etc.)
-    print(f"[feature_library] ALLOW_CPU=1 — GPU DISABLED — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy/cuDF need CUDA 12.x. Using CPU mode.")
-else:
-    try:
-        import cupy as cp
-        _N_GPUS = cp.cuda.runtime.getDeviceCount()
-        _HAS_GPU = _N_GPUS > 0
-        if _HAS_GPU:
-            _gpu_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
-            print(f"[feature_library] CuPy GPU: {_gpu_name} x{_N_GPUS}")
-    except (ImportError, Exception) as _cupy_err:
-        if os.environ.get('ALLOW_CPU', '0') != '1':
-            raise RuntimeError(
-                f"GPU REQUIRED: CuPy import failed ({_cupy_err}). Install CuPy or set ALLOW_CPU=1 to force CPU mode."
-            )
-        cp = None
-        _HAS_GPU = False
-        _N_GPUS = 0
-        print(f"[feature_library] ALLOW_CPU=1 — CuPy unavailable ({_cupy_err}). Using CPU mode.")
+    if _CUDA_MAJOR >= 13:
+        os.environ['V2_SKIP_GPU'] = '1'
+    print(f"[feature_library] ALLOW_CPU=1 — CuPy unavailable ({_cupy_err}). Using CPU mode.")
 
 try:
     if _CUDA_MAJOR >= 13:
@@ -3002,6 +2996,35 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 out['onchain_hash_rate_roc'] = out['onchain_hash_rate'].pct_change(bars_per_week)
                 out['onchain_hash_rate_capitulation'] = (out['onchain_hash_rate_roc'] < -0.10).astype(int)
 
+                # ── Difficulty Ribbon (hash ribbon) ──
+                # Short MAs crossing below long MAs = miner capitulation = strong entry signal
+                # Uses hash_rate as proxy (difficulty follows hash_rate closely)
+                hr = out['onchain_hash_rate']
+                _hr_30 = hr.rolling(30, min_periods=5).mean()
+                _hr_60 = hr.rolling(60, min_periods=10).mean()
+                _hr_128 = hr.rolling(128, min_periods=20).mean()
+                _hr_200 = hr.rolling(200, min_periods=30).mean()
+                out['hash_ribbon_30_60'] = (_hr_30 / _hr_60.clip(lower=1e-10) - 1.0).astype(np.float32)
+                out['hash_ribbon_60_128'] = (_hr_60 / _hr_128.clip(lower=1e-10) - 1.0).astype(np.float32)
+                out['hash_ribbon_compression'] = ((_hr_30 - _hr_200).abs() / _hr_200.clip(lower=1e-10)).astype(np.float32)
+                out['hash_ribbon_buy'] = ((_hr_30 > _hr_60) & (_hr_30.shift(1) <= _hr_60.shift(1))).astype(np.float32)
+                out['hash_ribbon_capitulation'] = (_hr_30 < _hr_60).astype(np.float32)
+
+            # ── Puell Multiple (from miners_revenue) ──
+            if 'onchain_miners_revenue' in out.columns:
+                mr = out['onchain_miners_revenue']
+                _mr_365 = mr.rolling(365, min_periods=30).mean()
+                out['puell_multiple'] = (mr / _mr_365.clip(lower=1e-10)).astype(np.float32)
+                out['puell_multiple_high'] = (out['puell_multiple'] > 4.0).astype(np.float32)  # cycle top zone
+                out['puell_multiple_low'] = (out['puell_multiple'] < 0.5).astype(np.float32)   # capitulation zone
+
+            # ── Whale Volume Z-Score (cycle accumulation/distribution) ──
+            if 'onchain_whale_vol' in out.columns:
+                wv = out['onchain_whale_vol']
+                _wv_mean = wv.rolling(182, min_periods=20).mean()  # 26-week
+                _wv_std = wv.rolling(182, min_periods=20).std()
+                out['whale_vol_zscore_26w'] = ((wv - _wv_mean) / _wv_std.clip(lower=1e-10)).astype(np.float32)
+
         # Bucketed on-chain (onchain_data style with timestamps)
         if len(oc_ts_df) > 0 and 'timestamp' in oc_ts_df.columns:
             oc_ts = oc_ts_df.copy()
@@ -3075,6 +3098,45 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                 btc_ret = c.pct_change()
                 macro_ret = out[f'macro_{corr_ticker}'].pct_change()
                 out[f'btc_{corr_ticker}_corr'] = btc_ret.rolling(cfg['corr_window']).corr(macro_ret)
+
+        # ── Macro Cycle Detection Features (built from existing macro data) ──
+        # These help detect cycle tops/bottoms — critical for SHORT predictions on weekly
+        if 'macro_vix' in out.columns:
+            vix = out['macro_vix']
+            out['vix_stress'] = (vix > 30).astype(np.float32)       # stress regime
+            out['vix_complacency'] = (vix < 15).astype(np.float32)  # complacency regime
+            out['vix_zscore_52w'] = ((vix - vix.rolling(52, min_periods=10).mean()) /
+                                     vix.rolling(52, min_periods=10).std().clip(lower=1e-10)).astype(np.float32)
+
+        if 'macro_us10y' in out.columns and 'macro_tlt' in out.columns:
+            # Yield curve proxy: higher TLT (bond prices up) = lower rates = dovish
+            out['yield_curve_proxy'] = (out['macro_us10y'] - out['macro_tlt'].pct_change(20) * 100).astype(np.float32)
+
+        # Risk-on/off composite: SPX up + DXY down + VIX low = risk on
+        _risk_cols = []
+        if 'macro_spx_roc20d' in out.columns:
+            _risk_cols.append(out['macro_spx_roc20d'] > 0)
+        if 'macro_dxy_roc20d' in out.columns:
+            _risk_cols.append(out['macro_dxy_roc20d'] < 0)
+        if 'macro_vix' in out.columns:
+            _risk_cols.append(out['macro_vix'] < 20)
+        if _risk_cols:
+            out['macro_risk_on_score'] = sum(c.astype(np.float32) for c in _risk_cols)
+
+        # BTC-SPX rolling correlation TREND (not just level)
+        if 'btc_spx_corr' in out.columns:
+            corr = out['btc_spx_corr']
+            out['btc_spx_corr_13w_chg'] = (corr - corr.shift(13)).astype(np.float32)
+            out['btc_spx_corr_26w_chg'] = (corr - corr.shift(26)).astype(np.float32)
+        if 'btc_dxy_corr' in out.columns:
+            corr = out['btc_dxy_corr']
+            out['btc_dxy_corr_13w_chg'] = (corr - corr.shift(13)).astype(np.float32)
+
+        # Price vs 200-week MA ratio (cycle position indicator)
+        if 'sma_200' in out.columns:
+            out['price_200w_ratio'] = (c / out['sma_200'].clip(lower=1e-10)).astype(np.float32)
+            out['price_200w_ratio_zscore'] = ((out['price_200w_ratio'] - out['price_200w_ratio'].rolling(104, min_periods=20).mean()) /
+                                              out['price_200w_ratio'].rolling(104, min_periods=20).std().clip(lower=1e-10)).astype(np.float32)
 
         # Macro DR features (if available in db with pre-computed DRs)
         if 'timestamp' in macro_df.columns:
@@ -4906,11 +4968,13 @@ def _bars_since_event(event_series: pd.Series) -> pd.Series:
 # ============================================================
 
 TRIPLE_BARRIER_CONFIG = {
-    '15m': {'tp_atr_mult': 2.0, 'sl_atr_mult': 1.8, 'max_hold_bars': 32},
-    '1h':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 1.5, 'max_hold_bars': 24},
-    '4h':  {'tp_atr_mult': 3.0, 'sl_atr_mult': 1.5, 'max_hold_bars': 12},
-    '1d':  {'tp_atr_mult': 3.5, 'sl_atr_mult': 1.5, 'max_hold_bars': 8},
-    '1w':  {'tp_atr_mult': 3.5, 'sl_atr_mult': 1.2, 'max_hold_bars': 4},
+    # Tuned from actual BTC trade durations + label distribution testing.
+    # Target: <5% HOLD, balanced LONG/SHORT. Tested on real data 2026-03-29.
+    '15m': {'tp_atr_mult': 1.0, 'sl_atr_mult': 1.0, 'max_hold_bars': 24},   # 7-40 bar trades, 49/50/1% split
+    '1h':  {'tp_atr_mult': 1.2, 'sl_atr_mult': 1.2, 'max_hold_bars': 48},   # 7-100 bar trades, 50/49/0% split
+    '4h':  {'tp_atr_mult': 1.5, 'sl_atr_mult': 1.5, 'max_hold_bars': 72},   # 10-140 bar trades, 51/49/0% split
+    '1d':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 90},   # 42-144 bar trades, 56/43/1% split
+    '1w':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 50},   # 11-94 bar trades, 64/31/4% split
 }
 
 

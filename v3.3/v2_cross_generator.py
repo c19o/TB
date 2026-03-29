@@ -39,16 +39,27 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+# Set Numba/OMP thread count BEFORE import — can't change after first use.
+# With many Python threads (128+), each Numba prange must use few sub-threads
+# to avoid thread exhaustion (128 × 512 = crash).
+if 'NUMBA_NUM_THREADS' not in os.environ:
+    try:
+        _ncpu = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        _ncpu = os.cpu_count() or 1
+    _numba_threads = max(1, min(8, _ncpu // 32))  # 4 on 128c, 8 on 256c+, cap at 8
+    os.environ['NUMBA_NUM_THREADS'] = str(_numba_threads)
+if 'OMP_NUM_THREADS' not in os.environ:
+    os.environ['OMP_NUM_THREADS'] = os.environ.get('NUMBA_NUM_THREADS', '4')
 from numba import njit, prange
 
 warnings.filterwarnings('ignore')
 
 V2_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ── CUDA version detection (BEFORE any GPU library imports) ──
-# CuPy-cuda12x is compiled for CUDA 12.x.
-# On CUDA 13.0+ (driver 580+), CuPy runtime operations SEGFAULT.
-# Detect driver version FIRST and skip CuPy import on CUDA 13+.
+# ── CUDA version detection ──
+# CuPy works on CUDA 13+ with CUPY_COMPILE_WITH_PTX=1 (Blackwell sm_120 compat)
+os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')
 _CUDA_MAJOR = 12
 try:
     import subprocess as _sp
@@ -59,26 +70,34 @@ try:
 except Exception:
     pass
 
-# ── GPU setup (guarded by CUDA version) ──
-if _CUDA_MAJOR >= 13:
-    if os.environ.get('ALLOW_CPU', '0') != '1':
-        raise RuntimeError("GPU REQUIRED: CUDA 13+ driver (580+) — CuPy would SEGFAULT. Set ALLOW_CPU=1 for CPU mode.")
-    cp = None
-    cusp = None
-    GPU = False
-    print(f"[v2_cross_generator] ALLOW_CPU=1 — CUDA {_CUDA_MAJOR}.x driver (580+). CuPy would SEGFAULT. Using CPU mode.")
-else:
-    try:
-        import cupy as cp
-        import cupyx.scipy.sparse as cusp
-        GPU = True
-    except ImportError:
-        if os.environ.get('ALLOW_CPU', '0') != '1':
-            raise RuntimeError("GPU REQUIRED: CuPy not installed. Install CuPy or set ALLOW_CPU=1 for CPU mode.")
+# ── GPU setup — CuPy works on CUDA 13+ with PTX JIT ──
+# GPUs under RTX 4090 (< 24GB VRAM) are too small for cross gen — CPU with many cores is faster.
+_MIN_VRAM_GB = 20  # RTX 4090 = 24GB, anything below = CPU only
+try:
+    import cupy as cp
+    import cupyx.scipy.sparse as cusp
+    cp.array([1.0]) + cp.array([2.0])  # verify GPU works
+    _vram_gb = cp.cuda.runtime.memGetInfo()[1] / 1024**3
+    _gpu_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
+    if _vram_gb < _MIN_VRAM_GB:
+        # Small GPU — CPU path is faster for cross gen
         cp = None
         cusp = None
         GPU = False
-        print("[v2_cross_generator] ALLOW_CPU=1 — CuPy not available, using CPU mode.")
+        print(f"[v2_cross_generator] {_gpu_name} ({_vram_gb:.0f}GB VRAM) too small for cross gen — using CPU (faster with many cores)")
+    else:
+        GPU = True
+        if _CUDA_MAJOR >= 13:
+            print(f"[v2_cross_generator] CuPy GPU verified: {_gpu_name} ({_vram_gb:.0f}GB) (CUDA {_CUDA_MAJOR}.x — PTX JIT)")
+        else:
+            print(f"[v2_cross_generator] CuPy GPU verified: {_gpu_name} ({_vram_gb:.0f}GB)")
+except (ImportError, Exception) as _gpu_err:
+    if os.environ.get('ALLOW_CPU', '0') != '1':
+        raise RuntimeError(f"GPU REQUIRED: CuPy failed ({_gpu_err}). Set ALLOW_CPU=1 for CPU mode.")
+    cp = None
+    cusp = None
+    GPU = False
+    print(f"[v2_cross_generator] ALLOW_CPU=1 — CuPy unavailable ({_gpu_err}). Using CPU mode.")
 
 
 def log(msg):
@@ -181,8 +200,8 @@ MIN_CO_OCCURRENCE = int(_env_co_occur) if _env_co_occur else 3  # Lowered from 8
 
 # ── GPU VRAM-adaptive batch sizing ──
 def _get_gpu_vram_gb(gpu_id=0):
-    """Detect GPU VRAM in GB. Returns 0 on CUDA 13+ (GPU disabled)."""
-    if _CUDA_MAJOR >= 13 or cp is None:
+    """Detect GPU VRAM in GB. Returns 0 if CuPy unavailable."""
+    if cp is None:
         return 0.0
     try:
         mem = cp.cuda.Device(gpu_id).mem_info  # returns (free, total)
@@ -586,8 +605,41 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
     all_cols = []
     all_data = []
     _local_csr_chunks = []  # CSR chunks flushed per RIGHT_CHUNK
+    _disk_npz_files = []    # temp NPZ files for sub-checkpoint flush
+    _disk_tmp_dirs = []     # tmp dirs to clean up
     total_feats = 0
     current_offset = col_offset
+
+    # Sub-checkpoint: flush accumulated CSR chunks to disk when chunk count
+    # exceeds threshold. Bounds peak RAM regardless of RIGHT_CHUNK iteration count.
+    # (RIGHT_CHUNK may be large enough to produce ALL features in 1-2 iterations.)
+    _ram_gb = _get_available_ram_gb()
+    # Flush when accumulated chunks hit this count. Lower = less RAM, more disk I/O.
+    # Target: keep accumulated CSR chunks under ~200GB. Each chunk is (N, sub_flush_cols)
+    # CSR with ~N*density*sub_flush_cols*4 bytes. For N=5733, density~0.2, sub_flush=5000:
+    # ~23MB/chunk. At 200GB cap: ~8000 chunks. Use 2000 as safety margin.
+    MAX_CHUNKS_IN_RAM = max(100, min(2000, int(_ram_gb * 0.25 / max(0.01, N * 0.001))))
+    _tmp_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'), f'_sub_ckpt_{prefix}_{os.getpid()}')
+
+    def _flush_chunks_to_disk():
+        """Hstack accumulated CSR chunks, save to temp NPZ, clear from RAM."""
+        nonlocal _local_csr_chunks
+        if not _local_csr_chunks:
+            return
+        os.makedirs(_tmp_dir, exist_ok=True)
+        if len(_local_csr_chunks) == 1:
+            _merged = _local_csr_chunks[0]
+        else:
+            _merged = sparse.hstack(_local_csr_chunks, format='csr')
+        _npz_path = os.path.join(_tmp_dir, f'sub_{len(_disk_npz_files):04d}.npz')
+        sparse.save_npz(_npz_path, _merged, compressed=False)
+        _disk_npz_files.append(_npz_path)
+        _n_flushed = sum(c.shape[1] for c in _local_csr_chunks)
+        _local_csr_chunks.clear()
+        del _merged
+        gc.collect()
+        _malloc_trim()
+        log(f"      Sub-flush #{len(_disk_npz_files)}: {_n_flushed:,} cols to disk, RAM freed")
 
     # Process right-side in chunks of RIGHT_CHUNK
     for rc_start in range(0, len(right_names), RIGHT_CHUNK):
@@ -597,9 +649,7 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
         right_mat_chunk = np.column_stack(r_arrays_chunk)  # (N, <=RIGHT_CHUNK)
 
         # GPU now uses sparse matmul pre-filter — no 3D tensor, works for ANY row count.
-        # Skip if: CUDA 13+ detected, env var override, or CuPy unavailable.
-        _skip_gpu = _CUDA_MAJOR >= 13 or os.environ.get('V2_SKIP_GPU') == '1'
-        if GPU and not _skip_gpu:
+        if GPU and os.environ.get('V2_SKIP_GPU') != '1':
             c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
                 left_names, left_mat, r_names_chunk, right_mat_chunk,
                 prefix, gpu_id, min_nonzero, max_features, total_feats,
@@ -613,13 +663,26 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
             )
 
         if c_names:
-            # FLUSH per RIGHT_CHUNK: convert COO to CSR immediately
-            # Memory-safe: build CSR in sub-batches to avoid giant concatenation OOM.
-            # Each entry in c_rows[i] is one column's nonzero row indices.
             all_names.extend(c_names)
-            if c_rows:
-                # Estimate total NNZ to pick safe sub-batch size
-                # Target: sub-batch concat peak under 500MB (~125M int32 entries)
+            # Check if return is already CSR chunks (from GPU/CPU flush path)
+            # or disk-backed paths — pass through directly to local lists
+            if c_cols == 'disk':
+                # Disk-backed: c_rows = list of NPZ paths, c_data = tmp_dir
+                _disk_npz_files.extend(c_rows)
+                _disk_tmp_dirs.append(c_data)
+                current_offset += c_ncols
+                total_feats += len(c_names)
+                c_rows = c_cols = c_data = c_names = None
+                gc.collect()
+            elif c_rows and hasattr(c_rows[0], 'indptr'):
+                # Already CSR chunks — append to local list
+                _local_csr_chunks.extend(c_rows)
+                current_offset += c_ncols
+                total_feats += len(c_names)
+                c_rows = c_cols = c_data = c_names = None
+                gc.collect()
+            elif c_rows:
+                # Legacy COO path — convert to CSR
                 _total_nnz = sum(len(r) for r in c_rows)
                 _avg_nnz = _total_nnz / max(1, len(c_rows))
                 # Max entries per sub-batch concat = 125M (500MB / 4 bytes)
@@ -661,19 +724,36 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
                         del _sf_r, _sf_c, _sf_d, _sf_csr
                     del sf_r_parts, sf_c_parts, sf_d_parts
                     gc.collect()
-            current_offset += c_ncols
-            total_feats += len(c_names)
-            del c_rows, c_cols, c_data, c_names
+                current_offset += c_ncols
+                total_feats += len(c_names)
 
         del right_mat_chunk, r_arrays_chunk
+        c_names = c_rows = c_cols = c_data = None
         gc.collect()
         _malloc_trim()
+
+        # Sub-checkpoint: flush accumulated CSR chunks to disk when count exceeds threshold
+        if len(_local_csr_chunks) >= MAX_CHUNKS_IN_RAM:
+            _flush_chunks_to_disk()
 
         if max_features and total_feats >= max_features:
             break
 
     del left_mat
+
+    # Flush any remaining in-memory chunks to disk
+    if _disk_npz_files and _local_csr_chunks:
+        _flush_chunks_to_disk()
+
     n_total_cols = current_offset - col_offset
+
+    if _disk_npz_files:
+        # Return disk file paths instead of in-memory CSR chunks.
+        # Caller (_collect_cross / _save_checkpoint) streams from disk.
+        # Combine all tmp dirs for cleanup
+        _all_tmp_dirs = list(set(_disk_tmp_dirs + ([_tmp_dir] if os.path.exists(_tmp_dir) else [])))
+        log(f"    {len(_disk_npz_files)} sub-checkpoints on disk, {n_total_cols:,} total cols")
+        return all_names, _disk_npz_files, 'disk', _all_tmp_dirs, n_total_cols
     # Return CSR chunks if we flushed (memory-safe path)
     if _local_csr_chunks:
         return all_names, _local_csr_chunks, None, None, n_total_cols
@@ -738,6 +818,8 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                  for p in valid_pairs]
 
     # ── Step 2: Vectorized GPU batch multiply ──
+    # Flush COO→CSR every FLUSH_INTERVAL batches to prevent unbounded RAM growth.
+    # Without this, 1.38M features accumulate ~16GB+ of COO arrays before returning.
     _dev = 0 if os.environ.get('CUDA_VISIBLE_DEVICES') else gpu_id
     cp.cuda.Device(_dev).use()
     left_gpu = cp.asarray(np.ascontiguousarray(left_mat))
@@ -747,6 +829,64 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     avail_vram = int(gpu_vram_gb * 0.5 * 1024**3)
     bytes_per_pair = N * 12
     BATCH = max(100, min(50000, avail_vram // max(1, bytes_per_pair)))
+
+    # Accumulate CSR chunks, flush to disk when too many to prevent OOM.
+    _csr_out = []  # list of CSR matrices in RAM
+    _disk_csr_files = []  # list of NPZ file paths flushed to disk
+    _coo_names = []
+    _coo_rows = []
+    _coo_data = []
+    _coo_col_local = 0
+
+    _ram_gb = _get_available_ram_gb()
+    FLUSH_FEATS = max(5000, min(50000, int(_ram_gb * 50)))  # COO→CSR every ~37K features
+    # Flush CSR chunks to disk every N chunks to prevent _csr_out from eating all RAM
+    MAX_CSR_IN_RAM = max(2, min(5, int(_ram_gb / 300)))  # ~2 on 755GB, ~6 on 2TB
+    _gpu_tmp_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
+                                f'_gpu_csr_{prefix}_{os.getpid()}')
+
+    def _flush_csr_to_disk():
+        """Save accumulated CSR chunks to disk NPZ, clear from RAM."""
+        if not _csr_out:
+            return
+        os.makedirs(_gpu_tmp_dir, exist_ok=True)
+        if len(_csr_out) == 1:
+            _merged = _csr_out[0]
+        else:
+            _merged = sparse.hstack(_csr_out, format='csr')
+        _path = os.path.join(_gpu_tmp_dir, f'gpu_csr_{len(_disk_csr_files):04d}.npz')
+        sparse.save_npz(_path, _merged, compressed=False)
+        _disk_csr_files.append(_path)
+        _csr_out.clear()
+        del _merged
+        gc.collect()
+        _malloc_trim()
+        log(f"      CSR disk flush #{len(_disk_csr_files)}: {col_idx:,} feats total, RAM freed")
+
+    def _flush_coo_to_csr():
+        """Convert accumulated COO arrays to CSR, append to _csr_out, clear COO."""
+        nonlocal _coo_col_local
+        if not _coo_rows:
+            return
+        _r_all = np.concatenate(_coo_rows)
+        _c_all_parts = []
+        for _ci, _r in enumerate(_coo_rows):
+            _c_all_parts.append(np.full(len(_r), _ci, dtype=np.int32))
+        _c_all = np.concatenate(_c_all_parts)
+        _d_all = np.concatenate(_coo_data)
+        _csr = sparse.coo_matrix((_d_all, (_r_all, _c_all)),
+                                  shape=(N, _coo_col_local)).tocsr()
+        _csr_out.append(_csr)
+        names.extend(_coo_names)
+        _coo_names.clear()
+        _coo_rows.clear()
+        _coo_data.clear()
+        _coo_col_local = 0
+        del _r_all, _c_all, _d_all, _csr, _c_all_parts
+        gc.collect()
+        # Flush CSR to disk if too many accumulated
+        if len(_csr_out) >= MAX_CSR_IN_RAM:
+            _flush_csr_to_disk()
 
     for b_start in range(0, n_valid, BATCH):
         b_end = min(b_start + BATCH, n_valid)
@@ -758,13 +898,12 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
         crosses_gpu = left_cols * right_cols
         del left_cols, right_cols
 
-        # GPU nonzero extraction (Phase 1B — avoids full CPU scan)
+        # GPU nonzero extraction
         nz_rows_gpu, nz_cols_gpu = cp.nonzero(crosses_gpu)
         nz_rows_all = cp.asnumpy(nz_rows_gpu)
         nz_cols_all = cp.asnumpy(nz_cols_gpu)
         del nz_rows_gpu, nz_cols_gpu
 
-        # Transfer crosses to CPU for data value extraction
         crosses = cp.asnumpy(crosses_gpu)
         del crosses_gpu
         cp.get_default_memory_pool().free_all_blocks()
@@ -777,17 +916,34 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                 c = int(unique_cols[k])
                 s, e = int(col_starts[k]), int(col_ends[k])
                 nz = nz_rows_all[s:e]
-                names.append(all_names[b_start + c])
-                rows_list.append(nz)
-                cols_list.append(np.full(len(nz), col_offset + col_idx, dtype=np.int64))
-                data_list.append(crosses[nz, c].astype(np.float32))
+                _coo_names.append(all_names[b_start + c])
+                _coo_rows.append(nz)
+                _coo_data.append(crosses[nz, c].astype(np.float32))
+                _coo_col_local += 1
                 col_idx += 1
+
+        # Periodic flush: convert accumulated COO to CSR to free RAM
+        if _coo_col_local >= FLUSH_FEATS:
+            _flush_coo_to_csr()
+            log(f"    GPU batch flush: {len(_csr_out)} CSR chunks, {col_idx:,}/{n_valid:,} features")
 
         if max_features and (feats_so_far + col_idx) >= max_features:
             break
 
+    # Final flush of remaining COO → CSR → disk
+    _flush_coo_to_csr()
+    if _csr_out:
+        _flush_csr_to_disk()
+
     del left_gpu, right_gpu
     cp.get_default_memory_pool().free_all_blocks()
+
+    # Return disk-backed CSR files if any were created
+    if _disk_csr_files:
+        return names, _disk_csr_files, 'disk', _gpu_tmp_dir, col_idx
+    # Return in-memory CSR chunks
+    if _csr_out:
+        return names, _csr_out, None, None, col_idx
     return names, rows_list, cols_list, data_list, col_idx
 
 
@@ -902,15 +1058,19 @@ def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             n_cpus = len(os.sched_getaffinity(0))
         except (AttributeError, OSError):
             n_cpus = os.cpu_count() or 1
-    # Size batches based on available RAM
-    BATCH_MAX = _get_cross_batch_size(N)
-
-    # RAM-aware thread cap: each worker holds dense arrays of (N × BATCH × 4 bytes)
-    # With OMP_NUM_THREADS set by cloud_run_tf.py, total threads = n_threads × 4 (Numba prange inside each)
+    # Size batches based on available RAM — cap so thread spike stays under 10% of RAM
     _ram_gb = _get_available_ram_gb()
-    _ram_per_worker_gb = max(0.1, N * BATCH_MAX * 8 * 3 / 1e9)  # float64 (8 bytes) × 3 arrays (left+right+result)
-    _ram_limited = max(4, int(_ram_gb * 0.4 / _ram_per_worker_gb))
-    n_threads = min(_ram_limited, n_cpus, max(64, int(_ram_gb * 0.3 / _ram_per_worker_gb)))  # RAM-aware cap
+    BATCH_MAX = _get_cross_batch_size(N)
+    # Cap BATCH so all threads' dense arrays fit in 10% of RAM
+    # Each thread: 3 arrays of (N, BATCH) × 8 bytes + nonzero overhead (~2x)
+    _target_thread_ram_gb = _ram_gb * 0.10
+    _n_target_threads = max(4, min(64, n_cpus // 4))
+    _max_batch_for_ram = max(500, int(_target_thread_ram_gb * 1e9 / (_n_target_threads * N * 8 * 6)))
+    BATCH_MAX = min(BATCH_MAX, _max_batch_for_ram)
+
+    _ram_per_worker_gb = max(0.1, N * BATCH_MAX * 8 * 3 / 1e9)
+    _ram_limited = max(4, int(_ram_gb * 0.10 / _ram_per_worker_gb))
+    n_threads = min(_ram_limited, n_cpus, max(4, _ram_limited))
 
     # Size batches so we get at least n_threads batches (saturate all threads)
     # But don't make batches too small (< 500 pairs) — overhead dominates
@@ -919,22 +1079,50 @@ def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     n_threads = min(n_threads, n_batches)
 
     if n_threads <= 1 or n_batches <= 1:
-        # Single-threaded fast path (small cross, no overhead)
+        # Single-threaded fast path — still flush COO→CSR periodically
+        _st_csr = []
+        _st_names = []
+        _st_rows = []
+        _st_data = []
+        _st_col = 0
+        _FLUSH_ST = max(5000, min(50000, int(_ram_gb * 50)))
         for b_start in range(0, n_valid, BATCH):
             b_end = min(b_start + BATCH, n_valid)
             blk_names, blk_rows, blk_data = _process_cross_block(
                 left_mat, right_mat, valid_pairs, all_names, b_start, b_end, 0)
             for i in range(len(blk_names)):
-                names.append(blk_names[i])
-                rows_list.append(blk_rows[i])
-                cols_list.append(np.full(len(blk_rows[i]), col_offset + col_idx, dtype=np.int64))
-                data_list.append(blk_data[i])
+                _st_names.append(blk_names[i])
+                _st_rows.append(blk_rows[i])
+                _st_data.append(blk_data[i])
+                _st_col += 1
                 col_idx += 1
+            if _st_col >= _FLUSH_ST:
+                _r = np.concatenate(_st_rows)
+                _cp = [np.full(len(r), ci, dtype=np.int32) for ci, r in enumerate(_st_rows)]
+                _c = np.concatenate(_cp)
+                _d = np.concatenate(_st_data)
+                _st_csr.append(sparse.coo_matrix((_d, (_r, _c)), shape=(N, _st_col)).tocsr())
+                names.extend(_st_names)
+                _st_names.clear(); _st_rows.clear(); _st_data.clear(); _st_col = 0
+                del _r, _c, _d, _cp; gc.collect()
             if max_features and (feats_so_far + col_idx) >= max_features:
                 break
+        # Final flush
+        if _st_rows:
+            _r = np.concatenate(_st_rows)
+            _cp = [np.full(len(r), ci, dtype=np.int32) for ci, r in enumerate(_st_rows)]
+            _c = np.concatenate(_cp)
+            _d = np.concatenate(_st_data)
+            _st_csr.append(sparse.coo_matrix((_d, (_r, _c)), shape=(N, _st_col)).tocsr())
+            names.extend(_st_names)
+            del _r, _c, _d, _cp; gc.collect()
+        if _st_csr:
+            return names, _st_csr, None, None, col_idx
         return names, rows_list, cols_list, data_list, col_idx
 
-    # ── Multi-threaded execution ──
+    # ── Multi-threaded execution with streaming merge ──
+    # Process batches in windows. Merge results WITHIN each window (not after all).
+    # This prevents 1.38M features of per-column arrays from accumulating.
     batch_ranges = []
     for b_start in range(0, n_valid, BATCH):
         b_end = min(b_start + BATCH, n_valid)
@@ -942,38 +1130,80 @@ def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
 
     log(f"    Parallel cross: {n_valid} pairs, {len(batch_ranges)} batches, {n_threads} threads")
 
-    # Windowed execution: process batches in groups of 2*n_threads
-    # to prevent dense intermediates from accumulating in memory.
-    # Results consumed per window, then freed before next window.
-    WINDOW = 2 * n_threads  # max inflight futures
-    results = [None] * len(batch_ranges)
+    _csr_out = []
+    _coo_names_local = []
+    _coo_rows_local = []
+    _coo_data_local = []
+    _coo_col_local = 0
+    _ram_gb_cpu = _get_available_ram_gb()
+    _FLUSH_FEATS_CPU = max(5000, min(50000, int(_ram_gb_cpu * 50)))
+
+    def _flush_cpu_coo():
+        nonlocal _coo_col_local
+        if not _coo_rows_local:
+            return
+        _r = np.concatenate(_coo_rows_local)
+        _c_parts = [np.full(len(r), ci, dtype=np.int32) for ci, r in enumerate(_coo_rows_local)]
+        _c = np.concatenate(_c_parts)
+        _d = np.concatenate(_coo_data_local)
+        _csr = sparse.coo_matrix((_d, (_r, _c)), shape=(N, _coo_col_local)).tocsr()
+        _csr_out.append(_csr)
+        names.extend(_coo_names_local)
+        _coo_names_local.clear()
+        _coo_rows_local.clear()
+        _coo_data_local.clear()
+        _coo_col_local = 0
+        del _r, _c, _d, _csr, _c_parts
+        gc.collect()
+
+    WINDOW = n_threads  # one batch per thread per window
+    _hit_limit = False
     for win_start in range(0, len(batch_ranges), WINDOW):
         win_end = min(win_start + WINDOW, len(batch_ranges))
         win_ranges = batch_ranges[win_start:win_end]
+        # Execute window
+        win_results = [None] * len(win_ranges)
         with ThreadPoolExecutor(max_workers=n_threads) as executor:
             futures = {}
             for idx_offset, (b_start, b_end) in enumerate(win_ranges):
                 f = executor.submit(_process_cross_block,
                                     left_mat, right_mat, valid_pairs, all_names,
                                     b_start, b_end, 0)
-                futures[f] = win_start + idx_offset
+                futures[f] = idx_offset
             for f in as_completed(futures):
-                results[futures[f]] = f.result()
-        # Free dense intermediates between windows
+                try:
+                    win_results[futures[f]] = f.result()
+                except Exception as _thread_err:
+                    log(f"    WARNING: thread {futures[f]} failed: {_thread_err}")
+                    win_results[futures[f]] = ([], [], [])  # empty result
+        # Merge this window's results immediately (frees per-column arrays)
+        for blk_names, blk_rows, blk_data in win_results:
+            if blk_names is None:
+                blk_names, blk_rows, blk_data = [], [], []
+            if blk_names is None:
+                continue
+            for i in range(len(blk_names)):
+                _coo_names_local.append(blk_names[i])
+                _coo_rows_local.append(blk_rows[i])
+                _coo_data_local.append(blk_data[i])
+                _coo_col_local += 1
+                col_idx += 1
+            if _coo_col_local >= _FLUSH_FEATS_CPU:
+                _flush_cpu_coo()
+                log(f"    CPU merge flush: {len(_csr_out)} CSR chunks, {col_idx:,}/{n_valid:,} features")
+            if max_features and (feats_so_far + col_idx) >= max_features:
+                _hit_limit = True
+                break
+        del win_results
         gc.collect()
         _malloc_trim()
-
-    # Merge results in order (preserves deterministic feature ordering)
-    for blk_names, blk_rows, blk_data in results:
-        for i in range(len(blk_names)):
-            names.append(blk_names[i])
-            rows_list.append(blk_rows[i])
-            cols_list.append(np.full(len(blk_rows[i]), col_offset + col_idx, dtype=np.int64))
-            data_list.append(blk_data[i])
-            col_idx += 1
-        if max_features and (feats_so_far + col_idx) >= max_features:
+        if _hit_limit:
             break
 
+    _flush_cpu_coo()  # final flush
+
+    if _csr_out:
+        return names, _csr_out, None, None, col_idx
     return names, rows_list, cols_list, data_list, col_idx
 
 
@@ -1006,6 +1236,38 @@ def create_doy_windows(df, window=2):
             arrays.append(mask)
 
     return names, arrays
+
+
+def create_month_windows(df):
+    """
+    Create month-of-year flags (12 months). Replaces DOY for TFs where
+    daily granularity is noise (1w, 1d). Each flag fires ~480 times on 1d
+    vs ~16 times for each DOY flag.
+    Returns (month_names, month_arrays).
+    """
+    if hasattr(df.index, 'month'):
+        month_vals = df.index.month.values
+    else:
+        log("  [WARN] No month source, skipping month windows")
+        return [], []
+
+    names = []
+    arrays = []
+    month_labels = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                    'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    for m in range(1, 13):
+        mask = (month_vals == m).astype(np.float32)
+        if mask.sum() > 0:
+            names.append(f'moy_{month_labels[m-1]}')
+            arrays.append(mask)
+
+    return names, arrays
+
+
+# Per-TF: use month windows instead of DOY windows for low-granularity TFs
+# DOY crosses create 365 × contexts = ~1M features. Month crosses = 12 × contexts = ~30K.
+# DOY is noise on weekly/daily. Month captures real seasonal patterns.
+USE_MONTH_INSTEAD_OF_DOY = {'1w', '1d'}
 
 
 # ============================================================
@@ -1145,10 +1407,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         if sigs:
             log(f"    {g}: {len(sigs)} signals")
 
-    # ── Step 3: DOY windows ──
-    log("  Step 2: Creating DOY ±2 windows...")
-    doy_names, doy_arrays = create_doy_windows(df)
-    log(f"    {len(doy_names)} DOY windows")
+    # ── Step 3: DOY or Month windows (per-TF) ──
+    if tf in USE_MONTH_INSTEAD_OF_DOY:
+        log(f"  Step 2: Creating month-of-year windows (DOY replaced for {tf})...")
+        doy_names, doy_arrays = create_month_windows(df)
+        log(f"    {len(doy_names)} month windows (replaces 365 DOY windows)")
+    else:
+        log("  Step 2: Creating DOY ±2 windows...")
+        doy_names, doy_arrays = create_doy_windows(df)
+        log(f"    {len(doy_names)} DOY windows")
 
     # ── Pre-extract TA and astro arrays for targeted crossing ──
     # Crosses 6-12 use targeted right-sides (TA, TA+astro, TA+DOY) instead of ALL contexts.
@@ -1208,29 +1475,85 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         log(f"  Resumed {len(_completed_prefixes)} cross type(s): {sorted(_completed_prefixes)}")
         log(f"  Accumulated: {_total_collected:,} features so far")
 
-    def _save_checkpoint(cross_prefix):
-        """Save ALL accumulated CSR chunks as one checkpoint, then FREE all from RAM."""
-        if not _csr_chunks:
-            return
-        # Merge all chunks into one CSR for this checkpoint
-        if len(_csr_chunks) == 1:
-            _merged = _csr_chunks[0]
-        else:
-            _merged = sparse.hstack(_csr_chunks, format='csr')
-        _n_cols_this = _merged.shape[1]
-        _these_names = all_cross_names[-_n_cols_this:]
-        _ckpt_npz = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}.npz')
-        _ckpt_names = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}_names.json')
-        sparse.save_npz(_ckpt_npz, _merged)
-        with open(_ckpt_names, 'w') as _f:
-            _json_mod.dump([str(n) for n in _these_names], _f)
-        log(f"    Checkpoint saved: {cross_prefix} ({_n_cols_this:,} features)")
-        # FREE ALL chunks from RAM — checkpoint file has everything on disk
-        _csr_chunks.clear()
-        del _merged
+    _pending_disk_groups = []  # list of (npz_file_list, tmp_dir) from disk-backed cross types
+
+    def _streaming_csc_splice(sources, n_rows):
+        """Stream-assemble CSR from mix of in-memory CSR matrices and on-disk NPZ files.
+        Loads one source at a time to bound peak RAM."""
+        all_data_parts = []
+        all_indices_parts = []
+        indptr_parts = []
+        cumulative_nnz = np.int64(0)
+        total_cols = 0
+        for src in sources:
+            if isinstance(src, str):
+                csc = sparse.load_npz(src).tocsc()
+            else:
+                csc = src.tocsc()
+            all_data_parts.append(csc.data)
+            all_indices_parts.append(csc.indices)
+            # int64 cast BEFORE addition to prevent overflow at >2B NNZ
+            indptr_parts.append(csc.indptr[:-1].astype(np.int64) + cumulative_nnz)
+            cumulative_nnz += np.int64(csc.nnz)
+            total_cols += csc.shape[1]
+            del csc
+            gc.collect()
+        indptr_parts.append(np.array([cumulative_nnz], dtype=np.int64))
+        _all_data = np.concatenate(all_data_parts)
+        _all_indices = np.concatenate(all_indices_parts)
+        _new_indptr = np.concatenate(indptr_parts)
+        del all_data_parts, all_indices_parts, indptr_parts
+        result = sparse.csc_matrix((_all_data, _all_indices, _new_indptr),
+                                   shape=(n_rows, total_cols)).tocsr()
+        del _all_data, _all_indices, _new_indptr
         gc.collect()
-        _malloc_trim()
-        log(f"    RAM freed (all chunks offloaded to disk)")
+        return result
+
+    def _save_checkpoint(cross_prefix):
+        """Save checkpoint from in-memory CSR chunks + disk-backed sub-checkpoints.
+        Streams from disk to avoid loading all sub-checkpoints at once."""
+        import shutil as _shutil
+        _has_memory = bool(_csr_chunks)
+        _has_disk = bool(_pending_disk_groups)
+        if not _has_memory and not _has_disk:
+            return
+
+        # Build source list: disk NPZ paths + in-memory CSR matrices
+        _sources = []
+        _tmp_dirs_to_clean = []
+        for _npz_files, _tmp_dirs in _pending_disk_groups:
+            _sources.extend(_npz_files)
+            if isinstance(_tmp_dirs, list):
+                _tmp_dirs_to_clean.extend(_tmp_dirs)
+            else:
+                _tmp_dirs_to_clean.append(_tmp_dirs)
+        _sources.extend(_csr_chunks)
+
+        try:
+            if len(_sources) == 1 and not isinstance(_sources[0], str):
+                _merged = _sources[0]
+            else:
+                log(f"    Streaming CSC splice: {len(_sources)} sources ({sum(1 for s in _sources if isinstance(s, str))} disk, {len(_csr_chunks)} memory)")
+                _merged = _streaming_csc_splice(_sources, N)
+
+            _n_cols_this = _merged.shape[1]
+            _these_names = all_cross_names[-_n_cols_this:]
+            _ckpt_npz = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}.npz')
+            _ckpt_names = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}_names.json')
+            sparse.save_npz(_ckpt_npz, _merged)
+            with open(_ckpt_names, 'w') as _f:
+                _json_mod.dump([str(n) for n in _these_names], _f)
+            log(f"    Checkpoint saved: {cross_prefix} ({_n_cols_this:,} features)")
+            del _merged
+        finally:
+            # ALWAYS cleanup: free RAM + remove temp dirs (even on OOM)
+            _csr_chunks.clear()
+            _pending_disk_groups.clear()
+            for _td in _tmp_dirs_to_clean:
+                _shutil.rmtree(_td, ignore_errors=True)
+            gc.collect()
+            _malloc_trim()
+            log(f"    RAM freed (all chunks offloaded to disk)")
 
     def _cleanup_checkpoints():
         """Delete all checkpoint files after successful final save."""
@@ -1245,11 +1568,20 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             log(f"  Cleaned up {_removed} checkpoint files")
 
     def _collect_cross(label, names, rows_list, cols_list, data_list, n_new_cols):
-        """Convert cross type results to CSR. Handles both CSR-flushed and legacy COO paths."""
+        """Convert cross type results to CSR. Handles CSR-flushed, disk-backed, and legacy COO paths."""
         nonlocal col_offset, _total_collected
         count = len(names)
         if count > 0:
             all_cross_names.extend(names)
+            # Disk-backed path: sub-checkpoints on disk from gpu_batch_cross
+            if cols_list == 'disk' and isinstance(rows_list, list):
+                # data_list = list of tmp_dirs or single tmp_dir string
+                _tmp_dirs = data_list if isinstance(data_list, list) else [data_list]
+                _pending_disk_groups.append((rows_list, _tmp_dirs))  # (npz_files, tmp_dirs)
+                col_offset += n_new_cols
+                _total_collected += count
+                log(f"    {label} crosses: {count:,} (total: {_total_collected:,}) [disk-backed]")
+                return count
             # Check if rows_list contains pre-flushed CSR chunks
             if rows_list is not None and isinstance(rows_list, list) and len(rows_list) > 0 and hasattr(rows_list[0], "indptr"):
                 _csr_chunks.extend(rows_list)
@@ -1528,36 +1860,18 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     t_assign = time.time()
 
-    # Reload checkpoint files into _csr_chunks (they were freed from RAM after each save)
+    # Final assembly: stream from checkpoint files (one at a time) to bound peak RAM
     _ckpt_files = sorted(glob.glob(os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*.npz')))
     _ckpt_files = [f for f in _ckpt_files if '_names.json' not in f]
-    if _ckpt_files and not _csr_chunks:
-        log(f"  Reloading {len(_ckpt_files)} checkpoint files for final assembly...")
-        for _cf in _ckpt_files:
-            _csr_chunks.append(sparse.load_npz(_cf))
-        log(f"  Reloaded {len(_csr_chunks)} chunks ({sum(c.shape[1] for c in _csr_chunks):,} total features)")
 
-    if total_crosses > 0 and _csr_chunks:
+    if total_crosses > 0 and (_ckpt_files or _csr_chunks):
         cross_names = all_cross_names
 
-        # Memory-safe hstack via CSC splicing (no COO intermediate)
-        log(f"  Memory-safe CSC splice of {len(_csr_chunks)} chunks...")
-        csc_chunks = [c.tocsc() for c in _csr_chunks]
-        del _csr_chunks
-        gc.collect()
-        _malloc_trim()
-        _all_data = np.concatenate([c.data for c in csc_chunks])
-        _all_indices = np.concatenate([c.indices for c in csc_chunks])
-        _cumulative = 0
-        _indptr_parts = []
-        for c in csc_chunks:
-            _indptr_parts.append(c.indptr[:-1] + _cumulative)
-            _cumulative += c.nnz
-        _indptr_parts.append(np.array([_cumulative], dtype=np.int64))
-        _new_indptr = np.concatenate(_indptr_parts)
-        n_cols = sum(c.shape[1] for c in csc_chunks)
-        sparse_mat = sparse.csc_matrix((_all_data, _all_indices, _new_indptr), shape=(N, n_cols)).tocsr()
-        del csc_chunks, _all_data, _all_indices, _indptr_parts, _new_indptr
+        # Build source list: checkpoint file paths + any remaining in-memory chunks
+        _sources = list(_ckpt_files) + list(_csr_chunks)
+        log(f"  Streaming CSC splice: {len(_ckpt_files)} disk + {len(_csr_chunks)} memory = {len(_sources)} sources")
+        sparse_mat = _streaming_csc_splice(_sources, N)
+        _csr_chunks.clear()
         gc.collect()
         _malloc_trim()
 

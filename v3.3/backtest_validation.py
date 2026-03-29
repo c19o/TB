@@ -399,7 +399,17 @@ if __name__ == "__main__":
             sys.exit(1)
         print(f"=== PBO Validation: {args.tf} ===")
         print(f"  Loading: {oos_path}")
-        report = validation_report(oos_path, tf_name=args.tf)
+        # Extract IS metrics for proper PBO
+        import pickle as _pkl
+        with open(oos_path, 'rb') as _f:
+            _oos = _pkl.load(_f)
+        is_metrics = None
+        if _oos and 'is_accuracy' in _oos[0]:
+            is_metrics = [{'path': p.get('path', i),
+                           'is_accuracy': p.get('is_accuracy', 0.0),
+                           'is_sharpe': p.get('is_sharpe', 0.0)}
+                          for i, p in enumerate(_oos)]
+        report = validation_report(oos_path, tf_name=args.tf, is_metrics=is_metrics)
         save_report(report, db_dir=args.db_dir)
         print(f"  Overall: {report['overall']}")
         print(f"  PBO: {report['pbo']['pbo']:.3f} ({report['pbo']['recommendation']})")
@@ -419,5 +429,6 @@ if __name__ == "__main__":
                 y_probs[j, y_true[j]] += 0.3
             y_probs /= y_probs.sum(axis=1, keepdims=True)
             fake_oos.append({'path': i, 'y_true': y_true, 'y_pred_probs': y_probs})
-        pbo = compute_pbo(fake_oos)
+        fake_is_metrics = [{'path': i, 'is_sharpe': np.random.uniform(0.5, 2.0)} for i in range(15)]
+        pbo = compute_pbo(fake_oos, is_metrics=fake_is_metrics)
         print(f"  PBO = {pbo['pbo']:.3f} ({pbo['recommendation']})")

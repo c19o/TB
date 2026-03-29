@@ -459,6 +459,78 @@ Three single-threaded bottlenecks discovered on 512-core machine (only 1 core us
 - After binarization, bit=0 means the conditions were not met. bit=1 means they were. No ambiguity, no NaN
 - This is why sparse CSR is architecturally correct for crosses: unstored entries ARE zeros, and zeros ARE the correct "off" signal
 
+### Cross Gen OOM: Triple Disk Flush Architecture (2026-03-29)
+Cross gen OOM'd **6 times** on a 755GB machine before being solved. Three levels of memory accumulation:
+1. **COO lists inside `_gpu_cross_chunk`** — per-feature row/col/data arrays grew unbounded. Fix: `_flush_coo_to_csr()` every `FLUSH_FEATS` features converts COO→CSR and frees arrays.
+2. **CSR list inside `_gpu_cross_chunk`** — accumulated CSR chunks after COO flush. Fix: `_flush_csr_to_disk()` every `MAX_CSR_IN_RAM` chunks dumps to NPZ files.
+3. **CSR list inside `gpu_batch_cross`** — accumulated chunks across RIGHT_CHUNK iterations. Fix: `_flush_chunks_to_disk()` with `MAX_CHUNKS_IN_RAM` threshold.
+- **Thresholds**: `FLUSH_FEATS = ram_gb * 50`, `MAX_CSR_IN_RAM = max(2, min(5, ram_gb / 300))`, `MAX_CHUNKS_IN_RAM = max(100, ...)`
+- **Final assembly**: `_streaming_csc_splice()` loads one checkpoint at a time from disk — never loads all into RAM.
+- **CPU path streaming merge**: `_cpu_cross_chunk` merges results per-window (not all-at-once). Each window's results freed before next window starts.
+- All return types (COO, CSR, disk-backed) handled via `cols_list == 'disk'` or `hasattr(rows_list[0], 'indptr')` detection.
+
+### CuPy Blackwell sm_120 Compatibility (2026-03-29)
+- `CUPY_COMPILE_WITH_PTX=1` env var makes CuPy JIT-compile for Blackwell (sm_120) via PTX.
+- CuPy 14.0.1 + CUDA 12.9 runtime works on RTX 5090 with this env var. Verified.
+- cuDF and cuML do NOT work on CUDA 13+ — only CuPy.
+- Set `CUPY_COMPILE_WITH_PTX=1` early in cloud_run_tf.py and all GPU-using modules.
+- **Exception**: cuSPARSE SpGEMM on small GPUs (RTX 3060 Ti, 8GB) still crashes on CUDA 13 even with PTX. Use CPU path for those.
+
+### GPU VRAM Minimum for Cross Gen (2026-03-29)
+- GPUs with < 20GB VRAM are SLOWER than multi-core CPU for cross gen (tiny VRAM = tiny batches).
+- Auto-detect: `cp.cuda.runtime.memGetInfo()[1] / 1024**3 < 20` → force CPU path.
+- RTX 3060 Ti (8GB) on CUDA 13/driver 580 crashed cuSPARSE even with PTX mode.
+- RTX 3090 (24GB), RTX 4090 (24GB), A40 (48GB), A100/H100 (80GB) → GPU path.
+
+### scipy 2.x `len(sparse_matrix)` Breaking Change (2026-03-29)
+- `len(csr_matrix)` raises `TypeError: sparse array length is ambiguous` in scipy 2.x.
+- Our code had `sum(len(r) for r in c_rows)` where `c_rows` could be CSR matrices (from GPU flush path).
+- Fix: detect CSR returns via `hasattr(rows_list[0], 'indptr')` before the COO processing code.
+
+### CPU Thread Count Must Reserve RAM for COO/CSR Accumulation (2026-03-29)
+- Thread intermediates (`left_cols`, `right_cols`, `crosses` arrays) compete with COO/CSR accumulation for RAM.
+- Old formula: `ram_gb * 0.4 / per_worker_gb` → too many threads, OOM'd on cgroup-limited machines.
+- New formula: `ram_gb * 0.10 / per_worker_gb` → reserves 90% for data accumulation + OS.
+- cgroup memory limits can be lower than physical RAM — always use `_get_available_ram_gb()` (cgroup-aware).
+
+### Cross Gen Breakthrough: 128 Threads + Small Batches (2026-03-29)
+- Previous: 14 threads × 50K BATCH = 96GB thread spike + slow single-threaded merge = 99.8% CPU idle during merge
+- **Fix**: Cap BATCH to `target_ram / (n_threads * N * 8 * 6)` = ~5.5K on 967GB cgroup
+- Result: **128 threads × 252 batches** — 1.38M features in ~5 min (was 20+ min with 14 threads)
+- Merge flush fires every ~5 seconds (was ~80 seconds) — RAM bounded at ~140GB
+- **Key insight**: Smaller batches = more threads = faster windows + faster merge = lower peak RAM
+- **7th attempt on Cross 5** — 6 prior failures (4 OOM, 1 cuSPARSE crash, 1 UnboundLocalError)
+
+### Cross Gen CPU Utilization Must Be 100% (2026-03-29)
+- The CPU merge phase in `_cpu_cross_chunk` is single-threaded Python (iterating per-column arrays).
+- On a 512-core machine, this means 99.8% idle during merge — unacceptable.
+- Thread computation phase (Numba prange) uses all cores, but merge kills utilization.
+- **TODO**: Parallelize the merge phase or eliminate per-column array iteration entirely.
+- **RULE**: Always target 100% CPU utilization. If a pipeline stage drops below 50%, investigate and fix. No matrix signal is worth losing to idle cores.
+- `OMP_NUM_THREADS=4` during cross gen limits Numba internal parallelism — should be tuned to `cores / n_threads` for full saturation.
+
+### 4h Optuna OOM: 5.3M Dense Features × 23K Rows = 498GB (2026-03-29)
+- `run_optuna_local.py` converts sparse→dense BEFORE building LightGBM Dataset
+- For 4h: 5,360,147 features × 23,237 rows × 4 bytes = **498GB** dense matrix
+- Plus LightGBM EFB internal structures → total exceeds 2TB cgroup
+- The Dataset build took 2.5+ hours then silently died (OOM killed)
+- **Fix needed**: Either (a) keep sparse CSR input for LightGBM (it supports sparse), or (b) apply 35% row subsample BEFORE dense conversion (reduces to 174GB), or (c) use bigger machine
+- Config already has `'4h': 0.35` row subsample but it's applied per-trial, not during Dataset construction
+- **TODO**: Fix run_optuna_local.py to apply row subsample before dense conversion for TFs with >2M features
+
+### BTC Data Source Priority: btc_prices.db Before multi_asset_prices.db (2026-03-29)
+- `data_access_v2.py` loaded BTC from `multi_asset_prices.db` first (4,380 4h rows from 2024)
+- `btc_prices.db` had full merged history (23,237 4h rows from 2017) but was only used as fallback when multi_asset empty
+- **Result**: 4h trained on 62% LESS data (8,794 rows vs 23,237). Missing 2017-2024 history.
+- **Fix**: For BTC/BTC-USDT, always check `btc_prices.db` FIRST. Fall back to `multi_asset_prices.db` only if empty.
+- **Rule**: ALWAYS verify parquet row count matches DB row count after rebuild. Missing rows = missing features = weaker model.
+
+### Cgroup Memory Limits on vast.ai (2026-03-29)
+- Physical RAM ≠ available RAM. vast.ai sets cgroup limits ~5-10% below physical.
+- 1032GB physical = 967GB cgroup. Processes killed at cgroup limit, NOT physical limit.
+- `cat /sys/fs/cgroup/memory.max` shows the real limit. `_get_available_ram_gb()` reads this.
+- OOM killer sends SIGKILL — no traceback, just "Killed" in the pipeline log.
+
 ## CLOUD DEPLOYMENT PROTOCOL — MANDATORY
 
 ### Pip + SCP Deployment (ONLY METHOD)

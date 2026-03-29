@@ -260,7 +260,16 @@ def load_tf_data(tf_name):
     exclude_cols = meta_cols | target_like
     feature_cols = [c for c in df.columns if c not in exclude_cols]
 
-    X_base = df[feature_cols].values.astype(np.float32)
+    # Per-TF feature filter: drop short-period noise features for low-row TFs (1w)
+    from config import apply_tf_feature_filter
+    _pre_filter = len(feature_cols)
+    _df_filtered = apply_tf_feature_filter(df[feature_cols], tf_name)
+    feature_cols = list(_df_filtered.columns)
+    if len(feature_cols) < _pre_filter:
+        log.info(f"  TF feature filter: {_pre_filter} → {len(feature_cols)} features ({_pre_filter - len(feature_cols)} dropped)")
+
+    X_base = _df_filtered.values.astype(np.float32)
+    del _df_filtered
     X_base = np.where(np.isinf(X_base), np.nan, X_base)
     n_base = len(feature_cols)
 
@@ -315,27 +324,12 @@ def load_tf_data(tf_name):
             X_all.indices = X_all.indices.astype(np.int32)
         feature_cols = feature_cols + cross_cols
         # Check if GPU fork will be used — keep sparse for GPU
-        if _HAS_GPU_FORK:
-            log.info("  GPU fork detected — keeping data sparse for GPU histograms")
-            is_sparse = True
-            # Skip dense conversion entirely
-        else:
-            # CPU path: convert to dense for multi-core Optuna if RAM allows
-            try:
-                import psutil
-                _dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32 (data is downcast)
-                _avail_ram = psutil.virtual_memory().available
-                if _dense_bytes < _avail_ram * 0.7:
-                    log.info(f"  Converting sparse->dense for multi-core Optuna ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
-                    X_all = X_all.toarray()
-                    is_sparse = False
-                else:
-                    log.warning(f"  Dense would need {_dense_bytes/1e9:.1f}GB, only {_avail_ram/1e9:.0f}GB avail — keeping sparse")
-                    is_sparse = True
-            except ImportError:
-                log.info(f"  Converting sparse->dense for multi-core Optuna...")
-                X_all = X_all.toarray()
-                is_sparse = False
+        # ALWAYS keep sparse CSR — LightGBM accepts scipy sparse natively via
+        # LGBM_DatasetCreateFromCSR. Dense conversion is unnecessary and OOMs on
+        # 4h+ (498GB for 5.3M features × 23K rows). With force_col_wise=True,
+        # sparse training is multi-threaded. EFB works on sparse input.
+        is_sparse = True
+        log.info(f"  Keeping sparse CSR for LightGBM (native support, no dense conversion needed)")
         log.info(f"  Combined: {X_all.shape[1]:,} features ({n_base} base + {len(cross_cols):,} crosses) [{'SPARSE' if is_sparse else 'DENSE'}]")
         del X_base_sparse, cross_matrix
     else:
@@ -462,16 +456,16 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
         _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
 
-        # Wide ranges — no narrowing in Phase 1
+        # Per-TF aware ranges — aggressive regularization for low-row TFs
         num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
-        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(1, _tf_mdil - 2), _tf_mdil + 20)
-        feature_fraction = trial.suggest_float('feature_fraction', 0.02, 0.3, log=True)
-        feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.2, 0.8)
+        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(3, _tf_mdil), _tf_mdil + 150)
+        feature_fraction = trial.suggest_float('feature_fraction', 0.005, 0.05, log=True)
+        feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.05, 0.3)
         bagging_fraction = trial.suggest_float('bagging_fraction', 0.5, 1.0)
-        lambda_l1 = trial.suggest_float('lambda_l1', 0.01, 1.0, log=True)
-        lambda_l2 = trial.suggest_float('lambda_l2', 0.1, 20.0, log=True)
-        min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.1, 5.0)
-        max_depth = trial.suggest_int('max_depth', 4, 12)
+        lambda_l1 = trial.suggest_float('lambda_l1', 1.0, 100.0, log=True)
+        lambda_l2 = trial.suggest_float('lambda_l2', 1.0, 100.0, log=True)
+        min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.5, 10.0)
+        max_depth = trial.suggest_int('max_depth', 2, 8)
 
         params = V3_LGBM_PARAMS.copy()
         params.update({

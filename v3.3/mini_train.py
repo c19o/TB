@@ -220,7 +220,14 @@ def main():
         from backtest_validation import validation_report
         with open(oos_path, 'rb') as f:
             oos_data = pickle.load(f)
-        report = validation_report(oos_data, tf_name=tf)
+        # Extract IS metrics for proper PBO (saved by ml_multi_tf.py)
+        is_metrics = None
+        if oos_data and 'is_accuracy' in oos_data[0]:
+            is_metrics = [{'path': p.get('path', i),
+                           'is_accuracy': p.get('is_accuracy', 0.0),
+                           'is_sharpe': p.get('is_sharpe', 0.0)}
+                          for i, p in enumerate(oos_data)]
+        report = validation_report(oos_data, tf_name=tf, is_metrics=is_metrics)
         pbo_val = report.get('pbo', {}).get('pbo', '?')
         dsr_p = report.get('deflated_sharpe', {}).get('p_value', '?')
         rec = report.get('overall', '?')

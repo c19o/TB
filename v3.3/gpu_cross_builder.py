@@ -31,12 +31,15 @@ parser.add_argument('--gpu', type=int, default=0)
 args = parser.parse_args()
 
 GPU = False
+os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')  # Blackwell sm_120 compat
 if os.environ.get('V2_SKIP_GPU') != '1':
     try:
         import subprocess as _sp
         _sp.check_output(['nvidia-smi'], stderr=_sp.DEVNULL)
         import cupy as cp
         cp.cuda.Device(args.gpu).use()
+        # Verify GPU actually works (catches sm_120 / driver mismatch)
+        cp.array([1.0]) + cp.array([2.0])
         GPU = True
         pool = cp.get_default_memory_pool()
         print(f'[GPU {args.gpu}] CuPy ready, VRAM free: {cp.cuda.runtime.memGetInfo()[0]/1e9:.1f} GB')

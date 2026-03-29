@@ -224,6 +224,138 @@ def validate_no_protected_removed(original_cols, final_cols):
         raise ValueError(f"PHILOSOPHY VIOLATION: {len(missing)} protected features removed: {missing[:10]}")
 
 
+# ── Per-TF Feature Filter ──
+# 1w has too few rows (1158) for thousands of features. Drop short-period TA noise.
+# The matrix thesis scales with DATA — more rows = more features add value.
+# Per-TF feature filtering strategy:
+# 1w: WHITELIST approach — too few rows (1158) for thousands of features.
+#     Only keep MAs, BBands, HMM/regime, macro, broad astro, month gematria.
+#     Drop 4-tier binarized variants (_HIGH/_LOW/_EXTREME_*) and DOY.
+# All other TFs: no filtering (full feature set + crosses).
+# 1w PROVEN feature list — only features with gain > 0 from model training,
+# plus broad astro cycles that may need more data to prove themselves.
+# 141 active features out of 621 tested. Dead features are pure noise on 1w.
+TF_1W_PROVEN_FEATURES = [
+    # ON-CHAIN (highest avg gain — cycle detection)
+    'puell_multiple', 'puell_multiple_high', 'onchain_miners_revenue',
+    'onchain_difficulty', 'onchain_hash_rate', 'onchain_n_transactions',
+    'hash_ribbon_60_128', 'hash_ribbon_compression',
+    # MA/BB (35 active — backbone of weekly analysis)
+    'sma_5', 'sma_10', 'sma_20', 'sma_50', 'sma_100', 'sma_200',
+    'sma_200_slope', 'sma_50_slope', 'sma_20_slope',
+    'ema_5', 'ema_10', 'ema_20', 'ema_50', 'ema_200',
+    'close_vs_sma_5', 'close_vs_sma_10', 'close_vs_sma_20',
+    'close_vs_sma_50', 'close_vs_sma_100', 'close_vs_sma_200',
+    'close_vs_ema_5', 'close_vs_ema_10', 'close_vs_ema_20',
+    'close_vs_ema_100', 'close_vs_ema_200',
+    'bb_lower_20', 'bb_upper_20', 'bb_pctb_20', 'bb_width_20',
+    'bb_pctb_20_lag4', 'bb_pctb_20_lag8',
+    'donchian_lower', 'donchian_upper', 'obv_sma_20',
+    # MOON (17 active — lunar cycles proven on weekly)
+    'return_since_full_moon', 'moon_phase_cos', 'moon_phase_sin',
+    'lunar_node_cycle_cos', 'lunar_node_cycle_sin', 'lunar_node_sign_idx',
+    'bars_since_full_moon', 'moon_approach_return_3d', 'moon_approach_return_5d',
+    'moon_modality', 'moon_x_trend', 'full_moon_decay_fast', 'full_moon_decay_slow',
+    'tweet_astro_moon_phase_day', 'cross_moon_x_sport_upset',
+    'cross_new_moon_x_bear', 'cross_sport_upset_x_full_moon',
+    # SPACE WEATHER (5 active — Schumann resonance cycles)
+    'schumann_783d_sin', 'schumann_783d_cos',
+    'schumann_133d_sin', 'schumann_133d_cos', 'schumann_143d_sin',
+    # ASTRO (10 active — specific aspects + arabic lots)
+    'arabic_lot_catastrophe', 'arabic_lot_treachery',
+    'asp_saturn_uranus_square', 'asp_sun_jupiter_trine', 'asp_sun_mars_square',
+    'eclipse_decay_fast', 'eclipse_proximity_days', 'equinox_proximity',
+    'west_soft_aspects', 'west_zodiac_sign_idx',
+    # MACRO (32 active)
+    'macro_coin', 'macro_coin_roc20d', 'macro_coin_roc5d',
+    'macro_dxy', 'macro_gold_roc20d',
+    'macro_hyg', 'macro_hyg_roc20d', 'macro_hyg_roc5d',
+    'macro_mstr_roc20d', 'macro_mstr_roc5d',
+    'macro_nasdaq_roc20d', 'macro_oil', 'macro_oil_roc20d', 'macro_oil_roc5d',
+    'macro_russell', 'macro_russell_roc20d',
+    'macro_silver', 'macro_silver_roc20d',
+    'macro_spx', 'macro_spx_roc20d',
+    'macro_tlt', 'macro_tlt_roc5d',
+    'macro_us10y', 'macro_us10y_roc20d', 'macro_vix_roc5d',
+    'btc_dxy_corr', 'btc_dxy_corr_13w_chg',
+    'btc_spx_corr', 'btc_spx_corr_13w_chg', 'btc_spx_corr_26w_chg',
+    'btc_tlt_corr_30d', 'btc_vix_corr',
+    # CYCLE
+    'halving_proximity', 'fib_13_from_high', 'fib_21_from_low',
+    'frac_diff_close_0.2', 'frac_diff_close_0.4', 'frac_diff_close_0.6',
+    'frac_diff_log_close_0.4', 'frac_diff_obv_0.3',
+    # REGIME / KNN
+    'knn_best_match_dist', 'knn_pattern_std',
+    # OTHER (proven useful)
+    'wyckoff_sc_bars_ago', 'avwap_from_swing_high', 'avwap_from_swing_low',
+    'avwap_position', 'keltner_lower',
+    'high_greed_decay_fast', 'high_fear_decay_fast', 'high_fear_decay_slow',
+    'bars_since_high_fear', 'bars_since_high_greed',
+    'chinese_year_animal', 'chinese_year_element',
+    'cross_schumann_peak_x_funding', 'cross_vol_score_x_trend',
+    'volume_sma_20', 'volume_ratio', 'volume_x_atr',
+    'adx_14', 'month_cos', 'year_dr', 'yield_curve_proxy',
+    'return_4bar', 'return_12bar', 'max_return_streak_10', 'streak_green',
+    # BROAD ASTRO TO TEST (not yet proven but theoretically relevant for weekly)
+    'saros_cycle', 'metonic_cycle',  # 18/19-year eclipse cycles
+    'asp_jupiter_saturn_conjunction',  # 20-year great conjunction cycle
+    'price_200w_ratio', 'price_200w_ratio_zscore',  # cycle position
+]
+
+# 1w: Run 2 config was best (380 features, 22.6% SHORT precision).
+# Pattern whitelist + drop 4-tier bins + drop DOY. NO cycle features (they diluted signal).
+TF_FEATURE_WHITELIST = {
+    '1w': [
+        'open', 'high', 'low', 'close', 'volume', 'quote_volume',
+        'sma_', 'ema_', 'close_vs_sma', 'close_vs_ema', 'golden_cross', 'death_cross',
+        'bb_', 'hmm', 'regime', 'vol_regime',
+        'return_1bar', 'return_4bar', 'return_12bar', 'return_streak', 'max_return',
+        'retrograde', 'eclipse', 'equinox', 'solstice', 'zodiac_sign',
+        'macro_', 'btc_spx', 'btc_dxy', 'btc_vix',
+        'fear_greed', 'funding', 'oi_', 'onchain_',
+        'month_num', 'month_gematria', 'caution_gematria', 'quarter',
+        'trend_strength', 'adx_14', 'halving', 'knn_',
+        'volume_', 'obv_', 'frac_diff_',
+        'px_', 'tx_', 'cross_',
+        'fib_', 'avwap', 'donchian', 'wyckoff',
+        'is_quarter', 'is_month', 'opex', 'tax',
+    ],
+}
+
+TF_DROP_SUFFIXES = {
+    '1w': ['_HIGH', '_LOW', '_EXTREME_HIGH', '_EXTREME_LOW'],
+}
+TF_DROP_PREFIXES = {
+    '1w': ['doy_'],
+}
+
+
+def apply_tf_feature_filter(df, tf_name):
+    """Filter features per-TF. Pattern whitelist for 1w, no-op for others."""
+    whitelist = TF_FEATURE_WHITELIST.get(tf_name)
+    if whitelist is None:
+        return df  # No filtering
+
+    keep = []
+    for col in df.columns:
+        cl = col.lower()
+        for pat in whitelist:
+            if pat.lower() in cl:
+                keep.append(col)
+                break
+
+    drop_suffixes = TF_DROP_SUFFIXES.get(tf_name, [])
+    if drop_suffixes:
+        keep = [c for c in keep if not any(c.endswith(s) for s in drop_suffixes)]
+
+    drop_prefixes = TF_DROP_PREFIXES.get(tf_name, [])
+    if drop_prefixes:
+        keep = [c for c in keep if not any(c.lower().startswith(p.lower()) for p in drop_prefixes)]
+
+    print(f"[config] TF feature filter ({tf_name}): {len(df.columns)} -> {len(keep)} features", flush=True)
+    return df[keep]
+
+
 # ── LightGBM Training Parameters ──
 # V3.0: LightGBM replaces XGBoost. CPU-only (GPU doesn't support sparse).
 # Rare signal friendly: min_data_in_leaf=3 + min_gain_to_split=2.0
@@ -258,18 +390,20 @@ V3_LGBM_PARAMS = {
 
 # Per-TF min_data_in_leaf overrides (rare astro conjunctions fire 10-20x on daily)
 TF_MIN_DATA_IN_LEAF = {
-    '1w': 5,   # was 3 — too aggressive with 2M+ features
-    '1d': 5,   # was 3
-    '4h': 5,
-    '1h': 8,
-    '15m': 15,
+    '1w': 30,   # 1158 rows — high for stability
+    '1d': 50,   # 5.7K rows — research says n/100 to n/20 = 57-285. Prevents noise memorization.
+    '4h': 20,   # 23K rows — moderate
+    '1h': 15,   # 75K rows — can be lower (more data per leaf)
+    '15m': 15,  # 294K rows — standard
 }
 
 # Per-TF class_weight — reweights by inverse class frequency
 # LightGBM: applied via is_unbalance=True or class_weight param
+# 1w: explicit SHORT upweight (3x) because model never predicts SHORT without it
 TF_CLASS_WEIGHT = {
-    '1d': 'balanced',
-    '1w': 'balanced',
+    '1d': {0: 3.0, 1: 1.0, 2: 1.0},  # SHORT=3x — force directional SHORT learning
+    '1w': {0: 3.0, 1: 1.0, 2: 1.0},  # SHORT=3x — worked great on 1w final run
+    '4h': {0: 2.0, 1: 1.0, 2: 1.0},  # SHORT=2x — insurance (v3.2 4h had SHORT accuracy issues)
 }
 
 # Per-TF CPCV group settings (n_groups, n_test_groups) — FINAL evaluation (K=2)
@@ -284,11 +418,11 @@ TF_CPCV_GROUPS = {
 
 # Per-TF num_leaves caps (scaled with data size — larger TFs support deeper trees)
 TF_NUM_LEAVES = {
-    '1w': 31,    # 818 rows — small trees optimal
-    '1d': 127,   # 5.7K rows — moderate complexity
-    '4h': 255,   # 23K rows — can handle more complexity
-    '1h': 511,   # 91K rows — deep trees viable
-    '15m': 511,  # 227K rows — deep trees viable
+    '1w': 7,     # 1158 rows — v3.2 best was 7. Max 7 leaves for weekly.
+    '1d': 15,    # 5.7K rows — moderate (EFB ratio 0.28:1)
+    '4h': 31,    # 23K rows — standard (EFB ratio 0.92:1)
+    '1h': 63,    # 75K rows — can handle complexity (EFB ratio 3.8:1)
+    '15m': 127,  # 294K rows — deep trees viable (EFB ratio 6.9:1)
 }
 
 # SHAP analysis config
@@ -321,11 +455,11 @@ OPTUNA_WARMSTART_VALIDATION_TOP_K = 2  # fewer validation runs
 
 # Row subsampling for search (final model always uses ALL rows)
 OPTUNA_TF_ROW_SUBSAMPLE = {
-    '1w': 1.0,    # 818 rows — can't subsample
-    '1d': 1.0,    # 5733 rows — too small
-    '4h': 0.35,   # 23K → ~8K rows
-    '1h': 0.20,   # 91K → ~18K rows
-    '15m': 0.15,  # 227K → ~34K rows
+    '1w': 1.0,    # 1158 rows — can't subsample
+    '1d': 1.0,    # 5733 rows — use all
+    '4h': 1.0,    # 23K rows — sparse fix eliminates OOM, use all data
+    '1h': 0.50,   # 75K → ~38K rows (sparse OK, subsample for speed)
+    '15m': 0.25,  # 294K → ~74K rows (sparse OK, subsample for speed)
 }
 
 # Per-TF overrides

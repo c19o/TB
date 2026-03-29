@@ -22,23 +22,20 @@ from concurrent.futures import ProcessPoolExecutor
 
 warnings.filterwarnings('ignore')
 
-# ── CUDA 13 detection (must run BEFORE any CuPy GPU calls) ──
-# feature_library.py sets V2_SKIP_GPU=1 on CUDA 13+, but it's imported lazily
-# inside build_base_features(). GPU ops in _gpu_gc() and build_single_asset()
-# run BEFORE that import, so we need early detection here too.
+# ── CUDA 13 detection — CuPy works with PTX JIT, cuDF does NOT ──
+# Set CUPY_COMPILE_WITH_PTX=1 so CuPy JIT-compiles for Blackwell sm_120
+os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')
 if os.environ.get('V2_SKIP_GPU') != '1':
     try:
-        import subprocess as _sp
-        _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
-                       capture_output=True, text=True, timeout=5)
-        _drv = int(_nv.stdout.strip().split('.')[0])
-        if _drv >= 580:  # CUDA 13.0+ — CuPy GPU ops segfault
-            os.environ['V2_SKIP_GPU'] = '1'
-            print(f"[build_features_v2] GPU DISABLED — driver {_drv} (CUDA 13+). Using CPU mode.")
-    except Exception:
+        import cupy as _cp_test
+        _cp_test.array([1.0]) + _cp_test.array([2.0])  # verify GPU works
+        del _cp_test
+        print(f"[build_features_v2] CuPy GPU verified")
+    except Exception as _e:
         if os.environ.get('ALLOW_CPU', '0') != '1':
-            raise RuntimeError("GPU REQUIRED: nvidia-smi check failed. Set ALLOW_CPU=1 to force CPU mode.")
-        print("[WARNING] nvidia-smi check failed, running on CPU (ALLOW_CPU=1)", flush=True)
+            raise RuntimeError(f"GPU REQUIRED: CuPy GPU test failed ({_e}). Set ALLOW_CPU=1 to force CPU mode.")
+        os.environ['V2_SKIP_GPU'] = '1'
+        print(f"[build_features_v2] ALLOW_CPU=1 — GPU unavailable ({_e}). Using CPU mode.")
 
 # Force CuPy memory pool cleanup helper
 def _gpu_gc():
@@ -112,7 +109,7 @@ def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=Fa
     # CUDA_VISIBLE_DEVICES is set per-subprocess by cloud runner (round-robin).
     # It remaps so the subprocess always sees its assigned GPU as device 0.
     # When called in-process (mini_train), gpu_id param is used directly.
-    # CUDA 13+ (driver 580+): skip GPU device selection — CuPy segfault.
+    # V2_SKIP_GPU=1: CuPy unavailable, skip GPU device selection.
     if os.environ.get('V2_SKIP_GPU') != '1':
         if os.environ.get('CUDA_VISIBLE_DEVICES'):
             _gpu_id = 0  # remapped by env var

@@ -431,11 +431,9 @@ def _cpcv_split_worker(args_tuple):
     import lightgbm as lgb
     from sklearn.metrics import accuracy_score, precision_score, log_loss
 
-    # Reconstruct matrix in worker
+    # Reconstruct matrix in worker — ALWAYS keep sparse CSR
+    # LightGBM accepts sparse natively, force_col_wise=True ensures multi-threaded
     X_all = sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
-    # If is_enable_sparse=False, convert to dense for multi-core LightGBM
-    if not lgb_params.get('is_enable_sparse', True):
-        X_all = X_all.toarray()
 
     y_train_raw = y_3class[train_idx]
     y_test_raw = y_3class[test_idx]
@@ -817,9 +815,18 @@ if __name__ == '__main__':
           exclude_cols = meta_cols | target_like
           feature_cols = [c for c in df.columns if c not in exclude_cols]
 
+          # Per-TF feature filter: drop short-period noise for low-row TFs (1w)
+          from config import apply_tf_feature_filter
+          _pre_filter = len(feature_cols)
+          _df_filtered = apply_tf_feature_filter(df[feature_cols], tf_name)
+          feature_cols = list(_df_filtered.columns)
+          if len(feature_cols) < _pre_filter:
+              log(f"  TF feature filter: {_pre_filter} → {len(feature_cols)} features ({_pre_filter - len(feature_cols)} dropped)")
+
           # --- Sparse matrix support for 150K+ features ---
           # Load base features as dense (typically a few hundred to a few thousand cols)
-          X_base = df[feature_cols].values.astype(np.float32)
+          X_base = _df_filtered.values.astype(np.float32)
+          del _df_filtered
           # Fix inf values which would break training (NaN kept for LightGBM missing branches)
           X_base = np.where(np.isinf(X_base), np.nan, X_base)
           n_base_features = len(feature_cols)
@@ -879,28 +886,13 @@ if __name__ == '__main__':
               X_all = sp_sparse.hstack([X_base_sparse, cross_matrix], format='csr')
               X_all = _ensure_lgbm_sparse_dtypes(X_all, "X_all")
               log(f"  Sparse dtypes: indices={X_all.indices.dtype}, indptr={X_all.indptr.dtype}")
-              # Dense conversion decision:
-              # - 1M+ features: NEVER convert (pickle serialization bottleneck kills parallel CPCV)
-              #   Sparse LightGBM histogram = O(2×NNZ), faster than dense O(rows×features) at low density
-              #   Perplexity-confirmed: dense+parallel on 6M features = 12-30h, sparse+sequential = 2-3h
-              # - <1M features: convert if fits in 70% of RAM (multi-core dense histogram)
-              import psutil
+              # ALWAYS keep sparse CSR — LightGBM accepts scipy sparse natively.
+              # Dense conversion is unnecessary and OOMs on 4h+ (498GB for 5.3M features).
+              # With force_col_wise=True, sparse training is multi-threaded.
               _n_total_features = X_all.shape[1]
-              _dense_bytes = X_all.shape[0] * _n_total_features * 4  # float32
-              _avail_ram = psutil.virtual_memory().available
-              if _dense_bytes < _avail_ram * 0.5:
-                  # Dense fits comfortably — convert for multi-core LightGBM histogram
-                  log(f"  Converting sparse to dense ({_dense_bytes/1e9:.1f} GB, RAM avail: {_avail_ram/1e9:.0f} GB)...")
-                  X_all = X_all.toarray()
-                  _converted_to_dense = True  # disable is_enable_sparse in LightGBM params
-              elif _n_total_features > 1_000_000:
-                  # Dense doesn't fit comfortably — stay sparse (sequential CPCV, single-thread histogram)
-                  log(f"  Keeping SPARSE ({_n_total_features:,} features, dense={_dense_bytes/1e9:.1f} GB > 50% of {_avail_ram/1e9:.0f} GB avail)")
-                  log(f"  Sparse histogram is single-threaded — expected ~15 min/fold for 2M+ features")
-              else:
-                  log(f"  Keeping SPARSE (dense would need {_dense_bytes/1e9:.1f} GB, only {_avail_ram/1e9:.0f} GB avail)")
+              log(f"  Keeping SPARSE CSR ({_n_total_features:,} features, LightGBM native sparse + force_col_wise)")
               feature_cols = feature_cols + cross_cols
-              _X_all_is_sparse = not _converted_to_dense  # True if still sparse CSR, False if converted to dense
+              _X_all_is_sparse = True  # ALWAYS sparse — no dense conversion
               nnz = X_all.nnz if hasattr(X_all, 'nnz') else int((X_all != 0).sum())
               if hasattr(X_all, 'nnz') and X_all.nnz > INT32_MAX:
                   log(f"  NNZ={X_all.nnz:,} exceeds int32 max ({INT32_MAX:,})")
@@ -1057,12 +1049,18 @@ if __name__ == '__main__':
           _base_lgb_params['num_leaves'] = TF_NUM_LEAVES.get(tf_name, 63)
           # Apply class weighting for imbalanced TFs (fix 2.3)
           from config import TF_CLASS_WEIGHT
-          if tf_name in TF_CLASS_WEIGHT:
+          _cw = TF_CLASS_WEIGHT.get(tf_name)
+          if isinstance(_cw, dict):
+              # Explicit per-class weights — apply as sample_weight multiplier
+              _class_weight_map = _cw
+              _cw_arr = np.array([_class_weight_map.get(int(y), 1.0) for y in y_3class[~np.isnan(y_3class)]])
+              sample_weights = sample_weights * np.pad(_cw_arr, (0, len(sample_weights) - len(_cw_arr)), constant_values=1.0)[:len(sample_weights)]
+              log(f"  Class weights: {_class_weight_map} (SHORT={_class_weight_map.get(0, 1.0)}x)")
+          elif _cw == 'balanced':
               _base_lgb_params['is_unbalance'] = True
-              log(f"  is_unbalance=True (TF_CLASS_WEIGHT['{tf_name}'] = '{TF_CLASS_WEIGHT[tf_name]}')")
-          if _converted_to_dense:
-              _base_lgb_params['is_enable_sparse'] = False  # dense data → use multi-threaded dense histogram
-              log(f"  is_enable_sparse=False (data converted to dense — enables multi-core LightGBM)")
+              log(f"  is_unbalance=True (balanced)")
+          # Sparse CSR always — force_col_wise ensures multi-threaded training
+          _base_lgb_params['force_col_wise'] = True
           # Cap num_threads for small datasets (LightGBM docs: >64 threads on <10K rows = poor scaling)
           _n_rows = X_all.shape[0] if not hasattr(X_all, 'nnz') else X_all.shape[0]
           if _n_rows < 10_000 and _base_lgb_params.get('num_threads', 0) == 0:
@@ -1737,8 +1735,7 @@ if __name__ == '__main__':
           final_params = V2_LGBM_PARAMS.copy()
           final_params['min_data_in_leaf'] = _MIN_DATA_IN_LEAF.get(tf_name, 3)
           final_params['num_threads'] = _total_cores  # explicit core count (cgroup-aware)
-          if _converted_to_dense:
-              final_params['is_enable_sparse'] = False
+          final_params['force_col_wise'] = True  # sparse multi-threaded
           # Copy interaction_constraints from CPCV params (fix 2.5)
           if 'interaction_constraints' in _base_lgb_params:
               final_params['interaction_constraints'] = _base_lgb_params['interaction_constraints']

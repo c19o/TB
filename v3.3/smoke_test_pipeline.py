@@ -446,7 +446,14 @@ def run_smoke_test(tf_name='1h', max_rows=None):
         from backtest_validation import compute_pbo, compute_deflated_sharpe
 
         if oos_preds:
-            pbo = compute_pbo(oos_preds)
+            # Extract IS metrics from OOS predictions (saved by ml_multi_tf.py)
+            is_metrics = None
+            if oos_preds and 'is_accuracy' in oos_preds[0]:
+                is_metrics = [{'path': p.get('path', i),
+                               'is_accuracy': p.get('is_accuracy', 0.0),
+                               'is_sharpe': p.get('is_sharpe', 0.0)}
+                              for i, p in enumerate(oos_preds)]
+            pbo = compute_pbo(oos_preds, is_metrics=is_metrics)
             dsr = compute_deflated_sharpe(
                 observed_sharpe=0.5, n_trials=100, n_observations=len(y_test),
             )

@@ -33,17 +33,20 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 # ---------------------------------------------------------------------------
 # GPU backend: try CuPy, fall back to NumPy
 # ---------------------------------------------------------------------------
+os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')  # Blackwell sm_120 compat
 try:
     import cupy as cp
+    # Verify GPU actually works (catches sm_120 / driver mismatch at import time)
+    cp.array([1.0]) + cp.array([2.0])
     xp = cp
     GPU_ARRAY = True
-    print(f"[GPU] CuPy + CUDA detected — RTX 3090 24GB — OPTUNA OPTIMIZER")
-except ImportError:
+    print(f"[GPU] CuPy + CUDA detected — GPU verified — OPTUNA OPTIMIZER")
+except Exception as e:
     if os.environ.get('ALLOW_CPU', '0') != '1':
-        raise RuntimeError("GPU REQUIRED: CuPy not installed for Optuna optimizer. Set ALLOW_CPU=1 for CPU mode.")
+        raise RuntimeError(f"GPU REQUIRED: CuPy failed ({e}). Set ALLOW_CPU=1 for CPU mode.")
     xp = np
     GPU_ARRAY = False
-    print("[ALLOW_CPU=1] CuPy not available — using NumPy (slower)")
+    print(f"[ALLOW_CPU=1] CuPy unavailable ({e}) — using NumPy (slower)")
 
 import lightgbm as lgb
 try:
@@ -55,7 +58,7 @@ except ImportError:
 from config import (FEE_RATE as CONFIG_FEE_RATE, STARTING_BALANCE as CONFIG_STARTING_BALANCE,
                     REGIME_MULT as CONFIG_REGIME_MULT, REGIME_SLOPE_THRESHOLD,
                     REGIME_CRASH_VOL_MULT, REGIME_CRASH_DD_THRESHOLD,
-                    OPTUNA_SEED, OPTUNA_N_STARTUP_TRIALS,
+                    OPTUNA_SEED, OPTUNA_PHASE1_N_STARTUP,
                     CONFIDENCE_SIZE_TIERS, TF_SLIPPAGE, DRAWDOWN_PROTOCOL)
 
 _HW = detect_hardware()
@@ -94,7 +97,7 @@ TF_GRIDS = {
         'rr': list(np.round(np.arange(1.0, 5.1, 0.40), 4)),                  # 11
         'hold': [1,2,4,8,12,20,30,42,48,60],                                  # 10
         'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
-        'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
+        'conf': list(np.round(np.arange(0.34, 0.56, 0.04), 4)),              # 6 — lowered: 3-class model peaks at 0.55
     },
     '1h': {
         'lev': list(range(1, 126, 5)),                                        # up to 125x
@@ -103,7 +106,7 @@ TF_GRIDS = {
         'rr': list(np.round(np.arange(1.0, 6.1, 0.50), 4)),                  # 11
         'hold': [1,2,4,8,12,20,30,48,60,72],                                  # 10
         'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
-        'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
+        'conf': list(np.round(np.arange(0.34, 0.56, 0.04), 4)),              # 6 — lowered: 3-class model peaks at 0.55
     },
     '4h': {
         'lev': list(range(1, 126, 5)),                                        # up to 125x
@@ -112,7 +115,7 @@ TF_GRIDS = {
         'rr': list(np.round(np.arange(1.0, 8.1, 0.70), 4)),                  # 11
         'hold': [1,2,4,8,12,20,30,48,66,84],                                  # 10
         'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
-        'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
+        'conf': list(np.round(np.arange(0.34, 0.56, 0.04), 4)),              # 6 — lowered: 3-class model peaks at 0.55
     },
     '1d': {
         'lev': list(range(1, 21)),                                            # 1-20x — daily swing trade
@@ -121,7 +124,7 @@ TF_GRIDS = {
         'rr': list(np.round(np.arange(1.5, 8.1, 0.60), 4)),                  # 11
         'hold': [3, 7, 14, 21, 30, 45, 60, 90],                               # days to months
         'exit_type': [0, 25, 50, 75, -2, -3],                                 # 6
-        'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
+        'conf': list(np.round(np.arange(0.34, 0.56, 0.04), 4)),              # 6 — lowered: 3-class model peaks at 0.55
     },
     '1w': {
         'lev': [1, 2, 3],                                                     # 1-3x only — weekly = patient position trade
@@ -130,7 +133,7 @@ TF_GRIDS = {
         'rr': list(np.round(np.arange(1.5, 10.1, 0.80), 4)),                 # big R:R — let winners run
         'hold': [4, 8, 13, 20, 26, 39, 52],                                   # 1 month to 1 year
         'exit_type': [0, 25, -2, -3],                                         # trailing stops preferred
-        'conf': list(np.round(np.arange(0.45, 0.91, 0.10), 4)),              # 5
+        'conf': list(np.round(np.arange(0.34, 0.56, 0.04), 4)),              # 6 — lowered: 3-class model peaks at 0.55
     },
 }
 
@@ -872,7 +875,7 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
         load_if_exists=True,
         direction='maximize',
         sampler=optuna.samplers.TPESampler(
-            n_startup_trials=min(OPTUNA_N_STARTUP_TRIALS, n_trials // 4),
+            n_startup_trials=min(OPTUNA_PHASE1_N_STARTUP, n_trials // 4),
             multivariate=True,
             seed=OPTUNA_SEED,
         ),

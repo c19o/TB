@@ -145,14 +145,21 @@ class V2OfflineDataLoader:
 
     def load_ohlcv(self, symbol: str, tf: str = '1d') -> pd.DataFrame:
         """
-        Load OHLCV for any asset. Checks multi_asset_prices.db first,
-        falls back to V1 btc_prices.db for BTC intraday.
+        Load OHLCV for any asset. For BTC, prefer btc_prices.db (full merged history
+        from 2010+). multi_asset_prices.db may have incomplete BTC data.
 
         Returns DatetimeIndex DataFrame: open, high, low, close, volume, etc.
         """
+        # BTC: always try btc_prices.db first (full merged history 2010-2026)
+        # multi_asset_prices.db may have incomplete BTC (e.g., 4h only from 2024)
+        if symbol in ('BTC', 'BTC/USDT'):
+            df = self._load_from_v1_btc(tf)
+            if not df.empty:
+                return df
+
         df = self._load_from_multi_asset(symbol, tf)
 
-        # Fallback to V1 btc_prices.db for BTC intraday
+        # Final fallback for BTC variants
         if df.empty and symbol in ('BTC', 'BTC/USDT'):
             df = self._load_from_v1_btc(tf)
 
