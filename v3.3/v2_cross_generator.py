@@ -1221,6 +1221,10 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         with open(_ckpt_names, 'w') as _f:
             _json_mod.dump([str(n) for n in _these_names], _f)
         log(f"    Checkpoint saved: {cross_prefix} ({_n_cols_this:,} features)")
+        # FREE the chunk from RAM — checkpoint file has it on disk
+        del _csr_chunks[-1]
+        gc.collect()
+        log(f"    RAM freed (chunk offloaded to disk)")
 
     def _cleanup_checkpoints():
         """Delete all checkpoint files after successful final save."""
@@ -1517,6 +1521,15 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     log(f"\n  TOTAL NEW FEATURES: {total_crosses:,}")
 
     t_assign = time.time()
+
+    # Reload checkpoint files into _csr_chunks (they were freed from RAM after each save)
+    _ckpt_files = sorted(glob.glob(os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*.npz')))
+    _ckpt_files = [f for f in _ckpt_files if '_names.json' not in f]
+    if _ckpt_files and not _csr_chunks:
+        log(f"  Reloading {len(_ckpt_files)} checkpoint files for final assembly...")
+        for _cf in _ckpt_files:
+            _csr_chunks.append(sparse.load_npz(_cf))
+        log(f"  Reloaded {len(_csr_chunks)} chunks ({sum(c.shape[1] for c in _csr_chunks):,} total features)")
 
     if total_crosses > 0 and _csr_chunks:
         cross_names = all_cross_names
