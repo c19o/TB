@@ -1,257 +1,95 @@
 # V3.3 GPU Histogram Fork — Session Resume
 
 ## INSTRUCTION TO NEW SESSION
-Read this file completely. Then read RESEARCH.md, ARCHITECTURE.md, and IMPLEMENTATION_PLAN.md in this directory. These files are the complete GPU fork context. The main pipeline context is in v3.3/SESSION_RESUME.md and v3.3/CLAUDE.md.
+Read this file completely. It contains the full state of training, cloud machines, and what needs doing next.
 
-**CRITICAL: The GPU fork is ISOLATED in v3.3/gpu_histogram_fork/. NEVER modify main pipeline files (ml_multi_tf.py, cloud_run_tf.py, config.py) for GPU fork work.**
+## ACTIVE MACHINES (2026-03-29)
 
----
+**1d: m:28851559** — 8× RTX 5090, Score 1423, 755GB RAM, $3.73/hr
+- SSH: `ssh -p 23400 -i ~/.ssh/id_ed25519 root@ssh6.vast.ai`
+- Monitor: `tail -f /workspace/train_1d.log`
+- Status: RELAUNCHED after OOM fix. Has checkpoints for dx, ax, ax2, ta2. Resuming from Cross 5 (ex2).
+- After 1d completes: RUN 4H ON THIS SAME MACHINE (755GB RAM is enough)
 
-## STATUS: Phase 4 COMPLETE — GPU histogram training WORKS with EFB
+**4h machine was destroyed** — OOM'd at 479GB. Will run on 1d machine after 1d finishes.
 
-### What Works
-- LightGBM fork builds successfully (42/42 objects + linking)
-- `device_type="cuda_sparse"` accepted by LightGBM
-- GPU detected: RTX 3090, sm_86, 82 SMs, 24GB VRAM
-- `SetExternalCSR()` C API exists (LGBM_BoosterSetExternalCSR in c_api.cpp)
-- `booster.set_external_csr(X_csr)` Python method exists
-- cuSPARSE SpMV histogram benchmark: **99x speedup on real 2.2M features** (1.68ms vs 166.5ms) — Phase 1 standalone only; integrated Phase 4 result is 78x
-- All 2.2M feature NPZ rebuilt with min_nonzero=3 (downloaded from cloud)
-- Pre-built DLL at: `_build/LightGBM/lib_lightgbm.dll`
-- CSR bridge between C API global and tree learner instance (Phase 3 fix)
-- DLL rebuilt with ninja (build_utf8 directory)
-- CPU training works: **77.64% accuracy** (GPU = CPU, exact match on real labels, verified). GPU fork is a nice-to-have optimization, not a blocker
+## TRAINING STATUS
 
-### Phase 2 Bug (RESOLVED) — Init() Crash
-**Was:** `Init()` crashed before `set_external_csr()` could be called. Deferred upload fix applied in Phase 2.
+| TF | Status | Machine | Accuracy | Notes |
+|----|--------|---------|----------|-------|
+| 1w | **DONE** | m:32572512 (destroyed) | 58% CPCV, 29% SHORT | Artifacts downloaded to v3.3/cloud_results_1w/ |
+| 1d | **RUNNING** | m:28851559 ($3.73/hr) | — | Cross gen with checkpoint fix, resuming Cross 5 |
+| 4h | **QUEUED** | Run on 1d machine after | — | Previous machine OOM'd at 479GB |
+| 1h | **QUEUED** | Run on 1d machine after 4h | — | 755GB should be enough |
+| 15m | **NOT STARTED** | Need 1TB+ machine | — | Separate machine needed |
 
-### Phase 3 Bugs
+## 1w RESULTS (Downloaded)
+- model_1w.json (90MB) — 58% CPCV, 62.5% final accuracy
+- Optuna params: num_leaves=29, lambda_l2=10.94, min_data_in_leaf=14
+- SHORT precision: 29% (was 0% with symmetric barriers) — WORKING
+- Trade optimizer: FAILED (CuPy incompatible with Blackwell sm_120)
+- PBO: FAILED (missing is_metrics parameter)
+- Artifacts in: C:\Users\C\Documents\Savage22 Server\v3.3\cloud_results_1w\
 
-**1. CSR Bridge Bug (FIXED):**
-The C API stored CSR in a global struct (`g_external_csr`) but the tree learner only checked its own member variable (`has_external_csr_`). The global was set by `LGBM_BoosterSetExternalCSR()` but the tree learner's `ConstructHistograms()` never read from it.
+## OOM LOG (CRITICAL — USE FOR MACHINE SELECTION)
 
-**Fix:** Added `extern "C"` declarations for the getter functions (`LGBM_GetExternalCSRIndptr`, `LGBM_GetExternalCSRIndices`, etc.) and a bridge in `ConstructHistograms()` that reads from the global and calls `SetExternalCSR()` on the tree learner instance.
+| TF | RAM | Cross Type | Result |
+|----|-----|------------|--------|
+| 1w | 193GB | Full pipeline | SUCCESS (818 rows, tiny) |
+| 1d | 193GB | Cross 2 (ax_) | OOM |
+| 1d | 193GB | Training | OOM |
+| 1d | 755GB | Cross 5 (ex2_) | OOM (chunks not freed — FIXED) |
+| 4h | 479GB | Cross 2 (ax_) | OOM (pre-fix AND post-fix) |
 
-**2. Dangling Pointer Bug (FIXED):**
-`basic.py`'s `set_external_csr()` created local numpy arrays whose pointers were stored in the C API global but could be garbage-collected after the method returned. The C++ side held raw pointers to freed memory.
+**Lesson**: Cross gen accumulates CSR chunks in RAM. The checkpoint fix (d449be9) now hstacks ALL chunks, saves to disk, clears entire list. Peak RAM should now be max(single batch within one cross type), not sum(all types).
 
-**Fix:** Store as Booster instance attributes (`self._external_csr_indptr`, `self._external_csr_indices`) so they live as long as the Booster object.
+## CUDA 13 STATUS: VERIFIED WORKING
+- Built + tested on RTX PRO 5000 Blackwell (driver 580.126.09, nvcc 13.2)
+- cuSPARSE 13.x backward compatible
+- Fix: std::max explicit cast for nvcc 13.2 + GCC 14.2
+- build_linux.sh ships pre-patched LightGBM source (14MB tar)
+- Must copy .so to BOTH lightgbm/ AND lightgbm/lib/
+- All vast.ai machines compatible
 
-**3. enable_bundle=False (APPLIED but INSUFFICIENT):**
-Disabling EFB bundling was attempted to make feature IDs map 1:1 to histogram bins. However, LightGBM still has a feature-to-bin offset mapping even with `enable_bundle=False` — constant/unused features get 0 bins, others get 2 (for binary features). The SpMV output is indexed by raw feature ID, but the histogram buffer is indexed by cumulative bin offsets.
+## KEY FIXES THIS SESSION
+1. **PROJECT_DIR undefined** in cloud_run_tf.py — added before stale cleanup
+2. **TF_MIN_RAM too high** — lowered after targeted crossing (4h: 768→256, 1h: 1024→512)
+3. **Cross gen OOM** — checkpoint saves ALL chunks (not just last), clears entire list, reloads for final assembly
+4. **std::max nvcc 13.2** — explicit cast for int64_t vs long long compatibility
+5. **SSH key re-registration** — vast.ai keys need re-creating when machines can't connect
 
-**4. Atomic Kernel Multiclass Stride Bug (FIXED — THE Bug 4 root cause):**
-Investigation revealed the scatter kernel and atomic kernel had dangerously wrong comments claiming `d_gradients_` contained "ordered" gradients when it actually contains RAW per-sample gradients indexed by original row ID. `gradients_` (from `SerialTreeLearner`) is set directly from GBDT::TrainOneIter() which pre-slices per class — it is NOT `ordered_gradients_` (which is a separate CPU reordering buffer used by `Dataset::ConstructHistograms`).
+## GPU FORK STATUS: COMPLETE
+- 7 bugs fixed, 78x SpMV speedup, EFB compatible
+- CUDA 13 verified working
+- GPU is SLOWER than CPU on 1w/1d (small data, overhead dominates)
+- GPU helps on 4h+ (23K+ rows)
+- Multi-GPU: gpu_device_id round-robin committed, true parallelism TODO
 
-**Root cause:** The atomic kernel used `gradients[row * num_classes + class_id]` stride indexing, but GBDT pre-slices gradients per class before passing to the tree learner. The gradient buffer already contains only the current class's gradients — no stride needed. This caused out-of-bounds reads for multiclass (worked by accident when num_classes=1).
+## OPTUNA STATUS: Phase 1 + Validation Gate
+- 20-30 trials total (was 150)
+- Dataset.subset() for instant fold construction
+- PatientPruner (patience=5)
+- Warm-start cascade: 1w→1d→4h→1h→15m
+- Optuna takes ~0.5x final training time (was 11x)
 
-**Fixes applied:**
-1. All comments corrected: "ordered" → "RAW" throughout both .cu and .h files
-2. Atomic kernel indexing fixed: `gradients[row * num_classes + class_id]` → `gradients[row]` (GBDT pre-slices, no stride needed)
-3. Parameter names corrected: `ordered_grad` → `raw_grad` / `d_raw_grad` in all forward declarations, definitions, and launch wrappers
-4. Overview comment block updated to document that we use `gradients_` (raw) not `ordered_gradients_` (CPU reorder buffer)
-
-**4b. EFB Histogram Offset Mismatch (FIXED — `feature_hist_offsets` remapping):**
-The `interleave_grad_kernel` now uses `d_feature_hist_offsets_` to map SpMV feature indices to cumulative bin offsets. Unused features have offset `UINT32_MAX` and are skipped.
-
-**NOTE: bin 1 vs bin 0 offset resolved as part of the extended offset table fix (step 5).**
-
-**5. Build Note:** `lightgbm.exe` target doesn't link `c_api` symbols — must build `_lightgbm` target (DLL) only.
-
-### Phase 4: Full GPU Pipeline Acceleration (COMPLETE)
-All GPU histogram bugs resolved. 10/10 training rounds completed on 1w (2.2M features, EFB enabled).
-
-**Phase 4 Results:**
-- cuSPARSE SpMV: **78x faster** than CPU for SpMV only, 1.34e-14 relative error (machine precision)
-- Performance: 7.46s/round GPU vs ~7s/round CPU — SpMV is fast but round-level GPU is roughly equal to CPU on 1w (small dataset, split finding still CPU)
-- GPU memory: 87MB allocated, properly freed
-- All 10 training rounds completed successfully with EFB bundling active
-- **GPU vs CPU accuracy: EXACT MATCH (77.64% on real labels, verified)**
-
-### Previous Decision (Phase 3): GPU Fork Was Deferred
-CPU training delivers 77.64% accuracy for 1w. Phase 3 deferred GPU fork because the EFB histogram mismatch was blocking. Phase 4 fixes the EFB mismatch — SpMV is 78x faster but round-level GPU is roughly equal to CPU on small 1w data (818 rows). GPU benefit grows with larger datasets (1d/4h/1h/15m).
-
-### Build Environment (Windows 11, user's local machine)
-- CUDA Toolkit 12.6 at `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6`
-- VS Build Tools 2025 (MSVC 19.50) — needs `--allow-unsupported-compiler`
-- CMake via VS Build Tools
-- Ninja via Python pip
-- Build command: `vcvarsall.bat x64` then `cmake -G Ninja -DUSE_CUDA_SPARSE=ON ...`
-- DLL installed to: `site-packages/lightgbm/bin/lib_lightgbm.dll` AND `site-packages/lightgbm/lib/lib_lightgbm.dll` (BOTH locations needed!)
-- Patched `basic.py` with `set_external_csr()` method
-
-### Build Gotchas (LEARNED THE HARD WAY)
-1. **CMakeLists.txt**: CUDA sparse source MUST be added to LGBM_SOURCES BEFORE `add_library(lightgbm_objs OBJECT)` at line 495. Appending at end = file never compiled.
-2. **FMT_UNICODE=0**: Must define in .cu file before includes. nvcc + MSVC 19.50 doesn't set `_MSVC_EXECUTION_CHARACTER_SET` correctly.
-3. **FORCE:MULTIPLE**: Linker needs this for OMP_NUM_THREADS symbol conflict between openmp_wrapper.cpp and our .cu.
-4. **config.cpp**: Must add "cuda_sparse" to `GetDeviceType()`, device enum, and force_row_wise block. The options comment in config.h is NOT enough.
-5. **DLL location**: LightGBM Python searches `bin/` before `lib/`. Must copy to BOTH.
-6. **CUDA headers in non-CUDA TUs**: Guard with `#ifdef __CUDACC__` and provide forward decls for c_api.cpp.
-
-### Files Modified in LightGBM Fork
-```
-_build/LightGBM/
-  src/treelearner/cuda_sparse_hist_tree_learner.cu  (NEW — 1470 lines CUDA)
-  src/treelearner/cuda_sparse_hist_tree_learner.h   (NEW — header)
-  src/treelearner/tree_learner.cpp                  (EDIT — factory dispatch)
-  src/io/config.cpp                                 (EDIT — cuda_sparse validation)
-  src/io/dataset.cpp                                (EDIT — preserve sparse for cuda_sparse)
-  src/c_api.cpp                                     (EDIT — SetExternalCSR C API)
-  src/c_api.h                                       (EDIT — SetExternalCSR declaration)
-  src/boosting/gbdt.h                               (EDIT — GetTreeLearner() public getter)
-  src/application/application.cpp                   (EDIT — CUDA allocator for cuda_sparse)
-  include/LightGBM/config.h                         (EDIT — device_type option)
-  CMakeLists.txt                                    (EDIT — USE_CUDA_SPARSE build option)
-  python-package/lightgbm/basic.py                  (EDIT — set_external_csr method)
-```
-
-### Real Data Available Locally
-- `v3.3/v2_crosses_BTC_1w.npz` — 818 rows × 2,195,129 features, 48M NNZ (FRESH, min_nonzero=3)
-- `v3.3/v2_cross_names_BTC_1w.json` — 2,195,129 feature names
-- `v3.3/features_BTC_1w.parquet` — 818 rows × 3,331 base features
-- All 16+ DBs present locally
-
-### Benchmark Results (measured on RTX 3090)
-| Data | CPU (scipy) | GPU (cuSPARSE) | Speedup |
-|------|------------|----------------|---------|
-| 1w real (2.2M features) | 166.5 ms | 1.68 ms | **99x** |
-| 1w old (1.1M features) | 46.4 ms | 0.65 ms | **71x** |
-| 1d synthetic (6M features) | 901 ms | 1.90 ms | **473x** |
-
-### Previous 1w Model Baselines
-- v3.3 cloud (CPCV, 2.2M features): 67.7% accuracy (4-fold avg, model failed to save due to _parent_ds bug)
-- v3.3 CPU (CPCV, 2.2M features): 77.64% accuracy (GPU = CPU exact match verified)
-- v3.2 (1.1M features): 71.9% accuracy (OLD model, stale NPZ)
-- v3.0 (658K features): unknown
-
-### Git Commits
-- `1f7db7c` — GPU fork Phase 1 (57 files, 25,537 lines)
-- `d6e30c3` — GPU fork Phase 2 (39 files, 9,763 lines)
-
-### Project Structure
-```
-gpu_histogram_fork/          ~70 files, ~30,000 lines
-├── Docs: README, RESEARCH, ARCHITECTURE, IMPLEMENTATION_PLAN, STATUS, VASTAI_DEPLOY, BUILD_WINDOWS
-├── Core fork: src/treelearner/ (cuda_sparse_hist_tree_learner.cu/.h, tree_learner.cpp patch)
-├── Python GPU: src/ (histogram_cusparse, histogram_atomic, memory_manager, leaf_partition, lgbm_csr_bridge, train_pipeline, cuda_compat, multi_gpu, cloud_gpu_integration)
-├── Benchmarks: benchmark/ + cupy_spmv_benchmark.py, benchmark_real_1w.py, quick_bench.py
-├── Tests: tests/ (equivalence, stress, integration, accuracy_validator, histogram_output_mapper)
-├── Deploy: deploy_vastai.sh, setup_universal.sh, vastai_oneliner.sh, build_linux_wheel.sh, Dockerfile
-├── Training: train_1w_gpu.py, train_1w_cached.py, cupy_gpu_train.py, test_real_1w.py, test_1w_end_to_end.py
-└── Build: CMakeLists.txt, Makefile, build_and_test.sh/.ps1, build_wheel.sh, build_windows.ps1
-```
-
----
+## ARCHITECTURAL CHANGES IMPLEMENTED
+- Asymmetric triple-barrier labels (tp/sl split per TF)
+- CPCV K=2 for final evaluation (5,2)/(6,2)
+- Targeted crossing (ALL→TA for crosses 6-12, rdx_ removed)
+- 4-tier binarization KEPT
+- Cross gen per-type checkpoint + resume
+- Model backup (_prev.json)
+- Accuracy floor (40% minimum)
+- save_binary bridge (Optuna→training)
 
 ## NEXT STEPS
+1. Wait for 1d to complete on m:28851559
+2. Run 4h on same machine
+3. Run 1h on same machine (if 755GB is enough)
+4. Pick 1TB+ machine for 15m
+5. Re-run 1w trade optimizer on a non-Blackwell machine
+6. Fix PBO (missing is_metrics parameter)
 
-1. [DONE] CSR bridge fix — global-to-instance bridge in ConstructHistograms()
-2. [DONE] Dangling pointer fix — store CSR arrays as Booster instance attributes
-3. [DONE] enable_bundle=False (later removed after offset fix)
-4. [DONE] feature_hist_offsets mapping — extract cumulative bin offset table from share_state_, upload to GPU, remap SpMV output indices in CUDA kernel
-5. [DONE] Extended offset table (used vs total features) — bin 1 vs bin 0 resolved
-6. [DONE] Gradient ordering comments (raw, not ordered) — all comments corrected throughout .cu and .h
-7. [DONE] Atomic kernel multiclass stride fix (THE Bug 4 root cause) — `gradients[row * num_classes]` → `gradients[row]` (GBDT pre-slices per class)
-8. [DONE] Integrate GPU path into ml_multi_tf.py for CPCV training
-9. [DONE] Integrate into run_optuna_local.py for GPU Optuna
-10. [DONE] Optuna optimizations: Dataset reuse, round-level pruning, CPU parallel search, warm-start cascade, ES patience fix
-11. [NEXT] Deploy to cloud, verify GPU fork on 1d/4h/1h/15m (larger datasets where GPU benefit grows)
-
-## FULL PIPELINE STATUS (2026-03-28, end of session)
-
-### Optuna v2 Architecture (Phase 1 + Validation Gate)
-- **Phase 1**: 20-30 trials, 2-fold CPCV, 60 rounds max, LR=0.15, ES patience=15
-- **Validation Gate**: Top 2-3 configs, 4-fold CPCV, 200 rounds, LR=0.08
-- **Final retrain**: Full K=2 CPCV (10-15 splits), 800 rounds, LR=0.03
-- **Result**: Optuna takes 0.3-0.7× final training time (was 11× before)
-- **CPU for search** (n_jobs=4), GPU for final retrain only
-- **PatientPruner** (patience=5, min_delta=0.001) wrapping MedianPruner
-- **Dataset.subset()** for instant fold construction (1000× faster than reference=)
-- **Row subsampling** for search: 4h=35%, 1h=20%, 15m=15% (final always 100%)
-- **Warm-start cascade**: 1w(cold)→1d→4h→1h→15m (enqueue + narrowed ranges)
-
-### Targeted Crossing (50% fewer features, matrix intact)
-- Crosses 6-12: right side changed from ALL→TA (removes self-referential noise)
-- Cross 13 (rdx_): REMOVED (redundant with DOY×ALL)
-- 4-tier binarization: KEPT (user preference — different market conditions)
-- All base features preserved, all cross-group interactions preserved
-- Expected: ~1-3M features per TF (was 2-6M)
-
-### Asymmetric Triple-Barrier Labels
-- 1w: tp=3.5×ATR, sl=1.2×ATR, max_hold=4 (was symmetric 3×)
-- Fixes 0% SHORT precision (56 samples → ~160-200 expected)
-- Tie-break fix: both barriers same bar → closest wins
-- ALL old parquets deleted (stale symmetric labels)
-
-### CPCV K=2 for Final Evaluation
-- 1w/1d: (5,2) = 10 splits, 4 PBO paths
-- 4h/1h/15m: (6,2) = 15 splits, 5 PBO paths
-- Optuna search stays 2-fold (Phase 1) and 4-fold (Validation Gate)
-- Enables real Probability of Backtest Overfitting detection
-
-### Resilience
-- Cross gen checkpoint: per-type NPZ save + resume on OOM
-- Model backup: _prev.json before overwrite
-- Accuracy floor: 40% minimum before saving model
-- save_binary bridge: Optuna→training Dataset sharing
-- Nuclear clean: TF-specific filter (preserves current TF artifacts)
-- is_unbalance=True added to Optuna search for 1w/1d
-
-### Config Changes (from this session)
-- num_leaves caps raised: 1d=127, 4h=255, 1h=511, 15m=511
-- min_data_in_leaf: 1w/1d raised 3→5
-- min_sum_hessian_in_leaf: 1.5 (new adaptive guard)
-- path_smooth: 0.1→2.0 (dampen extreme leaf predictions)
-- feature_fraction: 0.02-0.3 range (was 0.01-0.1)
-- num_leaves floor: 4 (was 15, v3.2 best was 7)
-- bagging_fraction ceiling: 1.0 (was 0.95, v3.2 best was 0.953)
-- Embargo: max_hold_bars instead of 1% (71× too wide for 15m)
-
-### GPU vs CPU per TF (Score 1200 + RTX 5090)
-| TF | Rows | CPU/round | GPU/round | Winner |
-|----|------|-----------|-----------|--------|
-| 1w | 818 | 0.27s | 2.3s | CPU (8.5×) |
-| 1d | 5,733 | 1.25s | 2.5s | CPU (2×) |
-| 4h | 23K | 3.6s | 2.0s | GPU (1.8×) |
-| 1h | 91K | 15s | 3.0s | GPU (5×) |
-| 15m | 227K | 25s | 3.5s | GPU (7×) |
-
-### LIVE TRAINING STATUS (2026-03-29)
-- 1w: DONE (58% CPCV, 29% SHORT precision — asymmetric barriers working)
-- 1d: RUNNING on m:28851559 (Score 1423, 755GB, $3.73/hr) — cross gen phase
-- 4h: RUNNING on m:33727995 (Score 1422, 479GB, $4.27/hr) — cross gen phase
-- 1h: NEXT — run on 1d machine after 1d completes (755GB RAM sufficient)
-- 15m: NEEDS separate 1TB+ machine
-
-### CUDA 13 VERIFIED (2026-03-29)
-- Built + tested on RTX PRO 5000 Blackwell (driver 580.126.09, nvcc 13.2)
-- cuSPARSE 13.x backward compatible with our SpMV calls
-- Fix: std::max explicit cast (int64_t vs long long)
-- Must copy .so to BOTH lightgbm/ AND lightgbm/lib/
-- build_linux.sh ships pre-patched LightGBM source (14MB tar)
-- Entire vast.ai fleet unlocked — no more CUDA 12 hunting
-
-### Cross Gen OOM Fix (2026-03-29)
-- After each cross type checkpoint: FREE CSR from RAM + gc.collect()
-- Before final assembly: reload all checkpoints from disk
-- Peak RAM = max(single_cross_type) not sum(all)
-- Zero accuracy impact, ~30-90s speed cost
-
-### ETAs (Score 1200 + 5090, with Optuna)
-| TF | Optuna | Final CPCV | Total |
-|----|--------|-----------|-------|
-| 1w | 6 min | 9 min | 20 min |
-| 1d | 21 min | 42 min | 1.2 hr |
-| 4h | 31 min | 1.7 hr | 2.5 hr |
-| 1h | 49 min | 2.5 hr | 4.8 hr |
-| 15m | 58 min | 2.9 hr | 6.8 hr |
-| **All 5** | **2.8 hr** | **7.8 hr** | **15.3 hr** |
-
-## KEY FILES
-- Binary cache: `v3.3/lgbm_dataset_1w.bin` (252MB, skips 4.5min EFB)
-- Fresh NPZ: `v3.3/v2_crosses_BTC_1w.npz` (75MB, 2.2M features)
-- Fork DLL: `_build/LightGBM/lib_lightgbm.dll`
-- Must go to BOTH: `site-packages/lightgbm/bin/` AND `site-packages/lightgbm/lib/`
-- Training script: `gpu_histogram_fork/train_1w_cached.py`
-- CPU training script: `v3.3/cloud_run_tf.py` (production pipeline)
-- Optuna script: `v3.3/run_optuna_local.py` (GPU final retrain integrated)
+## GIT STATUS
+Latest commit: d449be9 — fix: checkpoint saves ALL chunks not just last
+Branch: v3.3, pushed to origin
