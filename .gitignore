@@ -1,0 +1,96 @@
+# Secrets
+.env
+*.env
+
+# Databases (large binary files)
+*.db
+
+# Feature data (large)
+*.parquet
+*.npz
+
+# Model files (large binary)
+*.pt
+*.pth
+*.pkl
+*.ubj
+
+# Cached/compiled
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+logs/
+
+# Node modules (dashboard)
+node_modules/
+.next/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Backup files
+*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.swp
+
+# RunPod output
+runpod_output/
+
+# Large data
+kp_history.txt
+
+# Training artifacts (tar.gz, binary datasets, zips)
+*.tar.gz
+*.bin
+*.zip
+*.npy
+
+# Cross names (regenerated at inference, 100-500MB each)
+v2_cross_names_*.json
+inference_*_cross_names.json
+
+# Model files (JSON/txt format, 100MB+)
+model_*.json
+model_*.txt
+lgbm_ckpt_*.txt
+*_cpcv_backup.json
+
+# Feature lists (regenerated)
+features_*_all.json
+features_*_pruned.json
+feature_importance_stability_*.json
+
+# ML config snapshots (500MB+)
+ml_multi_tf_configs.json
+
+# Cloud results (training artifacts, not source)
+cloud_results_*/
+old_run_holddominated/
+v2_run_balanced_labels/
+
+# Socraticode index
+.socraticodecontextartifacts.json
+.socraticodeignore
+.socraticodecontextartifacts.json
+
+# Analysis results / images / logs (not source)
+*.csv
+*.png
+*.jpg
+*.jpeg
+tweet_images/
+*_results.txt
+*_results_v2.txt
+optimization_log.txt
+kp_history_gfz.txt
+simulation_chart*

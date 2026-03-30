@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:UsersC.claudeprojects -name *vast* -o -name *memory*)",
+      "Bash(grep -r vast 'C:\\\\Users\\\\C\\\\Documents\\\\Savage22 Server' --include=*.py --include=*.sh --include=*.txt)",
+      "Bash(find 'C:\\\\Users\\\\C\\\\Documents\\\\Savage22 Server' -type f \\\\\\(-name *config* -o -name *setup* \\\\\\))",
+      "Bash(python -c \":*)",
+      "Bash(PYTHONUNBUFFERED=1 python download_multi_asset.py)",
+      "Bash(tee download_v2.log)",
+      "Bash(python data_access_v2.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''v2_feature_layers.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''v2/v2_multi_asset_trainer.py'', doraise=True\\); print\\(''trainer OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''v2/v2_feature_layers.py'', doraise=True\\); print\\(''layers OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''v2/v2_cross_generator.py'', doraise=True\\); print\\(''cross OK''\\)\")",
+      "Bash(du -sh C:UsersCAppDataLocalTemp/*)",
+      "Bash(pip cache:*)",
+      "Bash(du -sh C:UsersC.cache/*)",
+      "Read(//c/Users/C/.cache/lm-studio/**)",
+      "Read(//c/Users/C/.lmstudio/models/**)",
+      "Bash(du -sh C:UsersC.lmstudiomodels/*/*)",
+      "Bash(du -sh C:UsersC.lmstudio/*/)",
+      "Bash(find C:UsersC.lmstudio -maxdepth 1 -type d -exec du -sh {})",
+      "Bash(2)",
+      "Bash(find C:UsersC.lmstudiomodels -name *.gguf -exec ls -lh {})",
+      "Bash(find C:UsersC.lmstudiomodels -name *.safetensors -exec ls -lh {})",
+      "Bash(ssh:*)",
+      "Bash(SSH_OPTS=\"-o StrictHostKeyChecking=no -o IdentityFile=/c/Users/C/.ssh/vast_key -o IdentitiesOnly=yes -o ConnectTimeout=15\")",
+      "Bash(tar czf:*)"
+    ]
+  }
+}
