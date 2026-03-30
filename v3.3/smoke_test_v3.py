@@ -276,7 +276,7 @@ def step_lgbm_mini_train(df, filtered_sparse, tmp_dir):
                 "boosting_type": "gbdt",
                 "device": "cpu",
                 "force_col_wise": True,
-                "max_bin": 255,
+                "max_bin": 7,
                 "num_threads": 0,
                 "is_enable_sparse": True,
                 "min_data_in_leaf": 3,

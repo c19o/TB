@@ -160,7 +160,7 @@ def train_dual_models(features, forward_return, direction, use_gpu, tf_name='1d'
     # --- Model A: Direction classifier ---
     print(f"  {elapsed_str(start)} Training Model A (direction classifier)...")
     params_a = {**base_params, "objective": "binary", "metric": "auc"}
-    _ds_params = {'feature_pre_filter': False, 'max_bin': 255}  # CRITICAL: must be in Dataset(), not just train()
+    _ds_params = {'feature_pre_filter': False, 'max_bin': 7}  # CRITICAL: must be in Dataset(), not just train()
     dtrain_a = lgb.Dataset(X_train, label=y_dir_train, params=_ds_params)
     dtest_a = lgb.Dataset(X_test, label=y_dir_test, reference=dtrain_a)
     model_a = lgb.train(params_a, dtrain_a, num_boost_round=500,

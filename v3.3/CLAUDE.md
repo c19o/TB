@@ -55,6 +55,14 @@
 - Sparse CSR: indptr=int64 (NNZ > 2^31 fix), indices=int32
 - NO 5m timeframe (only 1w, 1d, 4h, 1h, 15m)
 
+## 4b. RUNTIME RULES (discovered during v2 training)
+
+- `runtime_checks.py` must guard ALL `.nnz` calls with `issparse()` — dense arrays (1w, no crosses) crash otherwise
+- NEVER use `--no-parallel-splits` as CLI arg — use env var `V3_FORCE_SEQUENTIAL=1` instead
+- `ALLOW_CPU=1` is REQUIRED on CUDA 13+ environments (cuDF dropped) — must be in all setup/deploy scripts
+- Constant features for 1w (hour_sin/cos, dow, etc.) must be gated via `SKIP_FEATURES_1W` in config.py
+- Every bug found during training gets a `check()` in validate.py BEFORE the fix is deployed
+
 ## 5. AUDIT PIPELINE
 
 When the user says "audit", execute this multi-pass pipeline:

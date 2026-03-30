@@ -75,6 +75,22 @@ first_good = btc[btc['volume'] > 0].index[0]
 btc = btc.loc[first_good:]
 print(f"  1W candles: {len(btc)} ({btc.index.min()} to {btc.index.max()})")
 
+# --- Daily candles (for daily-resolution features aggregated to weekly) ---
+print(f"{elapsed()} Loading 1D BTC/USDT candles (for daily-resolution features)...")
+conn = sqlite3.connect(f'{DB_DIR}/btc_prices.db')
+btc_1d = pd.read_sql_query("""
+    SELECT open_time, open, high, low, close, volume
+    FROM ohlcv WHERE timeframe='1d' AND symbol='BTC/USDT'
+    ORDER BY open_time
+""", conn)
+conn.close()
+btc_1d['timestamp'] = pd.to_datetime(btc_1d['open_time'], unit='ms', utc=True)
+btc_1d = btc_1d.drop_duplicates(subset='open_time', keep='last').set_index('timestamp').sort_index()
+for col in ['open', 'high', 'low', 'close', 'volume']:
+    btc_1d[col] = pd.to_numeric(btc_1d[col], errors='coerce')
+btc_1d = btc_1d[btc_1d['volume'] > 0]
+print(f"  1D candles: {len(btc_1d)} ({btc_1d.index.min()} to {btc_1d.index.max()})")
+
 # --- Auxiliary data ---
 print(f"{elapsed()} Loading auxiliary data...")
 
@@ -314,8 +330,12 @@ astro_cache = {
 # 1W is the highest timeframe -- no higher TF data
 htf_data = {}
 
+# Daily-resolution features: daily TA aggregated per ISO week (AlphaNumetrix approach)
+ltf_data = {'1d': btc_1d}
+
 print(f"{elapsed()} Calling build_all_features(tf_name='1w', mode='backfill')...")
 print(f"  OHLCV: {len(ohlcv)} rows")
+print(f"  Daily candles (ltf_data): {len(btc_1d)} rows")
 print(f"  Space weather: {len(space_weather_df) if space_weather_df is not None else 0} rows")
 
 df = build_all_features(
@@ -324,6 +344,7 @@ df = build_all_features(
     tf_name='1w',
     mode='backfill',
     htf_data=htf_data,
+    ltf_data=ltf_data,
     astro_cache=astro_cache,
     space_weather_df=space_weather_df,
     include_targets=True,

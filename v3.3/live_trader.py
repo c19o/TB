@@ -176,12 +176,20 @@ def compute_features_live(tf_name, feat_names):
         # Bug fix: pass space weather data to build_all_features
         space_weather_df = live_dal.get_space_weather()
 
+        # Daily-resolution features for 1w (AlphaNumetrix approach)
+        ltf_data = None
+        if tf_name == '1w':
+            _daily_ohlcv = live_dal.get_ohlcv_window('1d', 500)
+            if _daily_ohlcv is not None and len(_daily_ohlcv) > 10:
+                ltf_data = {'1d': _daily_ohlcv}
+
         df_features = build_all_features(
             ohlcv=ohlcv,
             esoteric_frames=esoteric_frames,
             tf_name=tf_name,
             mode='live',
             htf_data=htf_data,
+            ltf_data=ltf_data,
             astro_cache=astro_cache,
             space_weather_df=space_weather_df,
         )

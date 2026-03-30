@@ -578,7 +578,7 @@ def main():
             "boosting_type": "gbdt",
             "device": "cpu",
             "force_col_wise": True,
-            "max_bin": 255,
+            "max_bin": 7,
             "max_depth": -1,
             "num_threads": 0,
             "deterministic": True,
@@ -615,7 +615,7 @@ def main():
             weight=sample_weights[valid_mask],
             feature_name=feature_cols,
             free_raw_data=True,
-            params={'feature_pre_filter': False, 'max_bin': lgb_params.get('max_bin', 255)},
+            params={'feature_pre_filter': False, 'max_bin': lgb_params.get('max_bin', 7)},
         )
         parent_ds.construct()
         parent_time = time.perf_counter() - t0

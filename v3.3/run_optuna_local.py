@@ -95,6 +95,10 @@ from config import (
     OPTUNA_N_JOBS, TF_CPCV_GROUPS, TF_CLASS_WEIGHT,
     CPCV_OPTUNA_SAMPLE_PATHS, CPCV_SAMPLE_PATHS, CPCV_SAMPLE_SEED,
     CPCV_PARALLEL_GPUS,
+    TF_MIN_DATA_IN_LEAF_MAX,
+    OPTUNA_TF_PHASE1_LR, OPTUNA_TF_PHASE1_ROUNDS,
+    OPTUNA_TF_MAX_DEPTH_RANGE, OPTUNA_TF_LR_SEARCH_RANGE,
+    OPTUNA_TF_FINAL_ROUNDS,
 )
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 from multi_gpu_optuna import (
@@ -485,13 +489,21 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                            use_gpu=False, gpu_cfg=None, actual_n_jobs=1):
     """Build an Optuna objective for Phase 1 rapid search.
 
-    Uses LR=0.15, ES=15, max 60 rounds, 2-fold CPCV.
+    Uses LR=0.15 (TF-overrideable), ES=15, max 60 rounds (TF-overrideable), 2-fold CPCV.
     Pre-computes CPCV fold indices ONCE for all trials.
     """
     n_groups = OPTUNA_PHASE1_CPCV_GROUPS
-    lr = OPTUNA_PHASE1_LR
-    rounds = OPTUNA_PHASE1_ROUNDS
+    lr = OPTUNA_TF_PHASE1_LR.get(tf_name, OPTUNA_PHASE1_LR)
+    rounds = OPTUNA_TF_PHASE1_ROUNDS.get(tf_name, OPTUNA_PHASE1_ROUNDS)
     es_patience = OPTUNA_PHASE1_ES_PATIENCE
+    # Per-TF searchable LR range (None = use fixed lr from phase config)
+    _lr_search_range = OPTUNA_TF_LR_SEARCH_RANGE.get(tf_name)
+    # Per-TF max_depth search range (default [2, 8])
+    _max_depth_lo, _max_depth_hi = OPTUNA_TF_MAX_DEPTH_RANGE.get(tf_name, (2, 8))
+    # Per-TF min_data_in_leaf max (default 10)
+    _mdil_max = TF_MIN_DATA_IN_LEAF_MAX.get(tf_name, 10)
+    log.info(f"  Phase 1 config for {tf_name}: lr={'search '+str(_lr_search_range) if _lr_search_range else lr}, "
+             f"rounds={rounds}, max_depth=[{_max_depth_lo},{_max_depth_hi}], mdil_max={_mdil_max}")
 
     # ── Pre-compute CPCV fold data ONCE ──
     valid_mask = ~np.isnan(y)
@@ -549,17 +561,23 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
 
         # Per-TF aware ranges — aggressive regularization for low-row TFs
         num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
-        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(3, _tf_mdil), 10)
+        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(2, _tf_mdil), _mdil_max)
         feature_fraction = trial.suggest_float('feature_fraction', 0.7, 1.0)
         feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.7, 1.0)
         bagging_fraction = trial.suggest_float('bagging_fraction', 0.7, 1.0)
         lambda_l1 = trial.suggest_float('lambda_l1', 1e-4, 4.0, log=True)   # T-1: capped at 4.0 — [1,100] zeroed rare signals firing ≤15 times
         lambda_l2 = trial.suggest_float('lambda_l2', 1e-4, 10.0, log=True)  # T-1: capped at 10.0 — log-scale, mass near zero
         min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.0, 5.0)
-        max_depth = trial.suggest_int('max_depth', 2, 8)
+        max_depth = trial.suggest_int('max_depth', _max_depth_lo, _max_depth_hi)
         # OPT-11: extra_trees as searchable boolean — safe diversity injection
         # For binary features (0/1), extra_trees is a no-op (only 1 possible threshold)
         extra_trees = trial.suggest_categorical('extra_trees', [True, False])
+
+        # Per-TF searchable learning rate (1w: [0.05, 0.3]) or fixed from phase config
+        if _lr_search_range is not None:
+            trial_lr = trial.suggest_float('learning_rate', _lr_search_range[0], _lr_search_range[1], log=True)
+        else:
+            trial_lr = lr
 
         params = V3_LGBM_PARAMS.copy()
         params.update({
@@ -574,10 +592,10 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
             'lambda_l1': lambda_l1,
             'lambda_l2': lambda_l2,
             'min_gain_to_split': min_gain_to_split,
-            'max_bin': 255,  # LOCKED — EFB bundle size
+            'max_bin': 7,  # LOCKED — binary features need 2 bins, 4-tier needs ~5
             'max_depth': max_depth,
             'extra_trees': extra_trees,
-            'learning_rate': lr,
+            'learning_rate': trial_lr,
             'seed': OPTUNA_SEED,
         })
         # Wave 3: force_row_wise for 15m (high rows/bundles ratio)
@@ -765,7 +783,7 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
               'extra_trees']:
         if k in params_dict:
             params[k] = params_dict[k]
-    params['max_bin'] = 255  # LOCKED
+    params['max_bin'] = 7  # LOCKED — binary features need 2 bins, 4-tier needs ~5
 
     fold_scores = []
 
@@ -911,13 +929,18 @@ def build_warmstart_enqueue_params(parent_params, tf_name):
     enqueue['num_leaves'] = min(_tf_nl_cap, max(4, _tf_nl_cap // 2))
     enqueue['min_data_in_leaf'] = _tf_mdil
 
+    # If this TF has searchable LR, seed with the TF-specific Phase 1 LR
+    _lr_range = OPTUNA_TF_LR_SEARCH_RANGE.get(tf_name)
+    if _lr_range is not None:
+        enqueue['learning_rate'] = OPTUNA_TF_PHASE1_LR.get(tf_name, OPTUNA_PHASE1_LR)
+
     return enqueue
 
 
 def build_default_enqueue_params(tf_name):
     """Build a param dict from V3_LGBM_PARAMS defaults for seeding."""
     _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
-    return {
+    params = {
         'num_leaves': V3_LGBM_PARAMS.get('num_leaves', 63),
         'min_data_in_leaf': _tf_mdil,
         'feature_fraction': V3_LGBM_PARAMS.get('feature_fraction', 0.9),
@@ -928,6 +951,11 @@ def build_default_enqueue_params(tf_name):
         'min_gain_to_split': V3_LGBM_PARAMS.get('min_gain_to_split', 2.0),
         'max_depth': -1 if V3_LGBM_PARAMS.get('max_depth', -1) == -1 else V3_LGBM_PARAMS.get('max_depth', 8),
     }
+    # If this TF has searchable LR, seed with the TF-specific Phase 1 LR
+    _lr_range = OPTUNA_TF_LR_SEARCH_RANGE.get(tf_name)
+    if _lr_range is not None:
+        params['learning_rate'] = OPTUNA_TF_PHASE1_LR.get(tf_name, OPTUNA_PHASE1_LR)
+    return params
 
 
 # ============================================================
@@ -936,7 +964,8 @@ def build_default_enqueue_params(tf_name):
 def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
                   tf_name, max_hold, best_params, use_gpu=False, parent_ds=None):
     """Retrain with best params using full CPCV + full rounds + final LR."""
-    log.info(f"  FINAL RETRAIN: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
+    _final_rounds = OPTUNA_TF_FINAL_ROUNDS.get(tf_name, OPTUNA_FINAL_ROUNDS)
+    log.info(f"  FINAL RETRAIN: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={_final_rounds}")
 
     n_groups, n_test_groups = TF_CPCV_GROUPS.get(tf_name, (10, 2))
     valid_mask = ~np.isnan(y)
@@ -1020,7 +1049,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
             best_score = float('inf')
             best_iter = 0
             no_improve = 0
-            for rnd in range(OPTUNA_FINAL_ROUNDS):
+            for rnd in range(_final_rounds):
                 booster.update()
                 val_result = booster.eval_valid()[0]
                 val_score = val_result[2]
@@ -1037,7 +1066,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
             # CPU path
             model = lgb.train(
                 params, dtrain,
-                num_boost_round=OPTUNA_FINAL_ROUNDS,
+                num_boost_round=_final_rounds,
                 valid_sets=[dtrain, dval],
                 valid_names=['train', 'val'],
                 callbacks=[lgb.early_stopping(_es_patience_final), lgb.log_evaluation(0)],
@@ -1119,7 +1148,7 @@ def _parallel_dataset_construct(X_csr, y, sample_weights=None, n_workers=None):
     if n_cols < 100_000:
         log.info(f"  Dataset has {n_cols:,} cols -- using single-threaded construction")
         ds = lgb.Dataset(X_csr, label=y, weight=sample_weights,
-                         params={'feature_pre_filter': False, 'max_bin': 255,
+                         params={'feature_pre_filter': False, 'max_bin': 7,
                                  'min_data_in_bin': 1, 'is_enable_sparse': True,
                                  'force_col_wise': True},
                          free_raw_data=False)
@@ -1133,7 +1162,7 @@ def _parallel_dataset_construct(X_csr, y, sample_weights=None, n_workers=None):
     tmp_dir = tempfile.mkdtemp(prefix='lgbm_parallel_')
 
     params = {
-        'max_bin': 255,
+        'max_bin': 7,
         'feature_pre_filter': False,
         'is_enable_sparse': True,
         'force_col_wise': True,
@@ -1164,7 +1193,7 @@ def _parallel_dataset_construct(X_csr, y, sample_weights=None, n_workers=None):
 
     # Sequential merge (fast -- metadata only, no re-binning)
     t1 = time.time()
-    _ds_params = {'min_data_in_bin': 1, 'max_bin': 255, 'feature_pre_filter': False, 'is_enable_sparse': True}
+    _ds_params = {'min_data_in_bin': 1, 'max_bin': 7, 'feature_pre_filter': False, 'is_enable_sparse': True}
     base_ds = lgb.Dataset(paths[0], params=_ds_params).construct()
     for p in paths[1:]:
         chunk_ds = lgb.Dataset(p, params=_ds_params).construct()
@@ -1206,6 +1235,15 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
 
     # Load data
     X_all, y, sample_weights, feature_cols, is_sparse, max_hold = load_tf_data(tf_name)
+
+    # Dense→sparse conversion BEFORE Optuna — LightGBM prefers CSR, and runtime_checks
+    # expects sparse for memory estimation. Dense is fine for small TFs (1w) but
+    # converting early ensures consistent code paths through the entire pipeline.
+    if not is_sparse:
+        log.info(f"  Dense matrix ({X_all.shape}) — converting to sparse CSR before Optuna")
+        X_all = sp_sparse.csr_matrix(X_all)
+        is_sparse = True
+
     n_valid = (~np.isnan(y)).sum()
     log.info(f"  Features: {len(feature_cols):,} ({'SPARSE' if is_sparse else 'DENSE'})")
     log.info(f"  Valid samples: {int(n_valid):,} / {len(y):,}")
@@ -1309,7 +1347,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         log.info(f"  Loading parent Dataset from binary: {bin_path}")
         t0_ds = time.time()
         _parent_ds = lgb.Dataset(bin_path, params={
-            'min_data_in_bin': 1, 'max_bin': 255,
+            'min_data_in_bin': 1, 'max_bin': 7,
             'feature_pre_filter': False, 'is_enable_sparse': True,
         })
         _parent_ds.construct()
@@ -1552,7 +1590,8 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
     # ═══════════════════════════════════════════════════════════
     # FINAL RETRAIN with best config
     # ═══════════════════════════════════════════════════════════
-    log.info(f"\n  FINAL RETRAIN: best params with lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
+    _tf_final_rounds = OPTUNA_TF_FINAL_ROUNDS.get(tf_name, OPTUNA_FINAL_ROUNDS)
+    log.info(f"\n  FINAL RETRAIN: best params with lr={OPTUNA_FINAL_LR}, rounds={_tf_final_rounds}")
     final_start = time.time()
 
     final_result = final_retrain(
@@ -1676,7 +1715,7 @@ def main():
              f"top-{OPTUNA_WARMSTART_VALIDATION_TOP_K} (warm), "
              f"{OPTUNA_VALIDATION_CPCV_GROUPS}-fold CPCV, "
              f"lr={OPTUNA_VALIDATION_LR}, rounds={OPTUNA_VALIDATION_ROUNDS}")
-    log.info(f"  Final: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS}")
+    log.info(f"  Final: full CPCV, lr={OPTUNA_FINAL_LR}, rounds={OPTUNA_FINAL_ROUNDS} (TF overrides: {OPTUNA_TF_FINAL_ROUNDS})")
     log.info(f"  Row subsample: {OPTUNA_TF_ROW_SUBSAMPLE}")
 
     all_results = {}

@@ -25,7 +25,7 @@ _fail = 0
 _warn = 0
 _failures = []
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(os.path.realpath(__file__))
 VALID_TFS = {'1w', '1d', '4h', '1h', '15m'}
 
 
@@ -79,10 +79,10 @@ def check_config_params():
           f"feature_pre_filter={p.get('feature_pre_filter')} -- True silently kills rare esoteric features. "
           f"FIX: config.py V3_LGBM_PARAMS, set feature_pre_filter=False")
 
-    check("max_bin == 255",
-          p.get('max_bin') == 255,
-          f"max_bin={p.get('max_bin')} -- must be 255 for maximum EFB compression. "
-          f"Binary features get 2 bins regardless. FIX: config.py V3_LGBM_PARAMS")
+    check("max_bin == 7",
+          p.get('max_bin') == 7,
+          f"max_bin={p.get('max_bin')} -- must be 7 (binary features need 2 bins, 4-tier needs ~5). "
+          f"36x less memory than 255. FIX: config.py V3_LGBM_PARAMS")
 
     check("force_col_wise == True",
           p.get('force_col_wise') is True,
@@ -162,8 +162,8 @@ def check_config_params():
 
     # -- Per-TF num_leaves caps --
     nl = cfg.TF_NUM_LEAVES
-    check("1w num_leaves <= 7", nl.get('1w', 999) <= 7,
-          f"1w num_leaves={nl.get('1w')} -- max 7 (1158 rows). FIX: config.py TF_NUM_LEAVES")
+    check("1w num_leaves <= 31", nl.get('1w', 999) <= 31,
+          f"1w num_leaves={nl.get('1w')} -- max 31 (819 rows, Optuna needs [4,31] search range). FIX: config.py TF_NUM_LEAVES")
     check("1d num_leaves <= 15", nl.get('1d', 999) <= 15,
           f"1d num_leaves={nl.get('1d')} -- max 15 (5.7K rows). FIX: config.py TF_NUM_LEAVES")
     check("4h num_leaves <= 31", nl.get('4h', 999) <= 31,
@@ -183,9 +183,9 @@ def check_config_params():
 
     # -- Class weights (SHORT upweighting) --
     cw = cfg.TF_CLASS_WEIGHT
-    check("1w SHORT weight >= 3.0",
-          cw.get('1w', {}).get(0, 0) >= 3.0,
-          f"1w SHORT weight={cw.get('1w', {}).get(0)} -- needs 3x for directional learning. FIX: config.py")
+    check("1w SHORT weight >= 2.0",
+          cw.get('1w', {}).get(0, 0) >= 2.0,
+          f"1w SHORT weight={cw.get('1w', {}).get(0)} -- needs 2x+ for directional learning. FIX: config.py")
     check("1d SHORT weight >= 3.0",
           cw.get('1d', {}).get(0, 0) >= 3.0,
           f"1d SHORT weight={cw.get('1d', {}).get(0)} -- needs 3x. FIX: config.py")
@@ -554,6 +554,50 @@ def check_environment(tf=None, cloud=False):
     except Exception:
         pass
 
+    # -- ALLOW_CPU env var when cuDF unavailable (CUDA 13+ drops cuDF) --
+    cudf_available = False
+    try:
+        __import__('cudf')
+        cudf_available = True
+    except (ImportError, Exception):
+        pass
+    if not cudf_available:
+        allow_cpu = os.environ.get('ALLOW_CPU', '')
+        check("ALLOW_CPU=1 when cuDF unavailable",
+              allow_cpu == '1',
+              f"ALLOW_CPU={allow_cpu!r} but cuDF is not importable (CUDA 13+ dropped it). "
+              f"feature_library.py needs ALLOW_CPU=1 to use pandas fallback. "
+              f"FIX: export ALLOW_CPU=1 before running pipeline.")
+
+    # -- DB files must exist in BOTH root and v3.3/ (symlinked) --
+    # cloud_run_tf.py runs from v3.3/ but some code references root-level DBs
+    workspace_root = os.path.dirname(PROJECT_DIR)  # /workspace
+    dual_dbs = ['multi_asset_prices.db', 'v2_signals.db']
+    for db_name in dual_dbs:
+        root_path = os.path.join(workspace_root, db_name)
+        v33_path = os.path.join(PROJECT_DIR, db_name)
+        root_exists = os.path.exists(root_path)
+        v33_exists = os.path.exists(v33_path)
+        check(f"{db_name} in both root and v3.3/",
+              root_exists and v33_exists,
+              f"{db_name}: root={root_exists}, v3.3/={v33_exists}. "
+              f"Code references both locations. "
+              f"FIX: ln -sf /workspace/{db_name} /workspace/v3.3/{db_name}")
+
+    # -- Flat workspace layout: all .py files accessible from /workspace/ --
+    # cloud_run_tf.py expects flat layout with symlinks from /workspace/*.py -> /workspace/v3.3/*.py
+    if os.path.exists('/workspace'):
+        critical_py = ['config.py', 'feature_library.py', 'ml_multi_tf.py', 'astrology_engine.py']
+        for py_name in critical_py:
+            ws_path = os.path.join('/workspace', py_name)
+            v33_path = os.path.join(PROJECT_DIR, py_name)
+            if os.path.exists(v33_path):
+                check(f"{py_name} accessible from /workspace/",
+                      os.path.exists(ws_path),
+                      f"{py_name} exists in v3.3/ but not in /workspace/. "
+                      f"cloud_run_tf.py needs flat layout. "
+                      f"FIX: ln -sf /workspace/v3.3/{py_name} /workspace/{py_name}")
+
     # Disk space
     try:
         import shutil
@@ -751,6 +795,21 @@ def check_data_integrity(tf):
         except Exception:
             pass
 
+    # -- Stale cross files must not block TFs that skip cross gen --
+    # 1w skips cross gen (too few rows). Stale NPZ/JSON from previous runs
+    # can trick validation or cloud_run_tf.py into thinking crosses exist.
+    # If a TF is configured to skip cross gen, any existing cross files are stale.
+    tfs_no_cross = {'1w'}  # TFs that should NOT have cross gen
+    if tf in tfs_no_cross:
+        stale_npz = os.path.join(PROJECT_DIR, f'v2_crosses_BTC_{tf}.npz')
+        stale_json = os.path.join(PROJECT_DIR, f'v2_cross_names_BTC_{tf}.json')
+        if os.path.exists(stale_npz) or os.path.exists(stale_json):
+            warn(f"stale cross files for {tf} (no cross gen TF)",
+                 False,
+                 f"Cross files exist for {tf} but this TF skips cross gen. "
+                 f"Stale files from previous runs may confuse the pipeline. "
+                 f"FIX: rm {stale_npz} {stale_json}")
+
     # -- pipeline_manifest.json contamination --
     manifest_path = os.path.join(PROJECT_DIR, 'pipeline_manifest.json')
     warn("no stale pipeline_manifest.json",
@@ -928,6 +987,19 @@ def check_training_consistency():
               f"{fname}: CPCV purge must read max_hold from TRIPLE_BARRIER_CONFIG[tf]['max_hold_bars']. "
               f"FIX: tb_cfg = TRIPLE_BARRIER_CONFIG.get(tf_name, ...); max_hold = tb_cfg['max_hold_bars']")
 
+    # -- Dense data must auto-convert to sparse for parallel CPCV --
+    # 1w has no cross gen → dense DataFrame. Parallel CPCV with dense data crashes
+    # (pickle serialization bottleneck on large matrices). ml_multi_tf.py must
+    # auto-convert dense to sparse CSR before parallel CPCV.
+    ml_content_cpcv = all_py_contents.get('ml_multi_tf.py', '')
+    has_dense_to_sparse = ('issparse' in ml_content_cpcv and
+                           'csr_matrix' in ml_content_cpcv or 'csr_array' in ml_content_cpcv)
+    check("ml_multi_tf.py: dense→sparse CSR conversion for parallel CPCV",
+          has_dense_to_sparse,
+          "ml_multi_tf.py must convert dense data to sparse CSR before parallel CPCV. "
+          "1w (no cross gen) produces dense DataFrames that crash parallel pickle serialization. "
+          "FIX: if not issparse(X): X = scipy.sparse.csr_matrix(X) before parallel CPCV loop.")
+
     # -- No row-partitioned init_model boosting --
     init_model_files = []
     for fname, content in file_contents.items():
@@ -1059,6 +1131,98 @@ def check_training_consistency():
           "FIX: isinstance(TF_CLASS_WEIGHT.get(tf), dict) -> fold into sample_weights; "
           "only set is_unbalance=True when TF_CLASS_WEIGHT.get(tf) == 'balanced'.")
 
+    # -- runtime_checks.py: .nnz guarded by issparse (dense arrays have no .nnz) --
+    # Bug: runtime_checks.py:51 called X.nnz on dense ndarray → AttributeError.
+    # 1w has no cross features = dense matrix. Optuna never ran.
+    # Fix: issparse(X) guard before .nnz, else np.count_nonzero(X).
+    rc_content = all_py_contents.get('runtime_checks.py', '')
+    if rc_content:
+        rc_has_issparse_guard = ('issparse(X)' in rc_content or 'issparse( X )' in rc_content)
+        rc_has_raw_nnz = False
+        rc_lines = rc_content.split('\n')
+        for _ri, _rl in enumerate(rc_lines):
+            _rc = _rl.split('#')[0]
+            if '.nnz' in _rc and 'issparse' not in _rc and 'if _is_sparse' not in _rc:
+                # Check if the .nnz is inside a conditional block guarded by issparse
+                # Look back up to 5 lines for an issparse guard
+                _guarded = False
+                for _bi in range(max(0, _ri - 5), _ri):
+                    _bl = rc_lines[_bi].split('#')[0]
+                    if 'issparse' in _bl or '_is_sparse' in _bl or 'if _is_sparse' in _bl:
+                        _guarded = True
+                        break
+                if not _guarded:
+                    rc_has_raw_nnz = True
+        check("runtime_checks.py: .nnz guarded by issparse (no dense crash)",
+              rc_has_issparse_guard and not rc_has_raw_nnz,
+              "runtime_checks.py calls .nnz without issparse guard. "
+              "Dense arrays (1w, no crosses) have no .nnz → AttributeError kills Optuna. "
+              "FIX: _nnz = X.nnz if issparse(X) else np.count_nonzero(X)")
+
+    # -- No --no-parallel-splits in subprocess commands --
+    # Bug: --no-parallel-splits CLI arg broke downstream scripts (optimizer, PBO, meta, audit).
+    # Fix: replaced with env var V3_FORCE_SEQUENTIAL=1.
+    no_parallel_splits_files = []
+    for fname, content in all_py_contents.items():
+        if fname == 'validate.py':
+            continue
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            code_part = line.split('#')[0]
+            if '--no-parallel-splits' in code_part:
+                no_parallel_splits_files.append(f"{fname}:{i+1}")
+    check("no --no-parallel-splits in code (use V3_FORCE_SEQUENTIAL env var)",
+          len(no_parallel_splits_files) == 0,
+          f"--no-parallel-splits found in: {', '.join(no_parallel_splits_files[:5])}. "
+          f"This CLI arg breaks downstream scripts. Use env var V3_FORCE_SEQUENTIAL=1 instead. "
+          f"FIX: replace --no-parallel-splits with os.environ.get('V3_FORCE_SEQUENTIAL')")
+
+    # -- ALLOW_CPU=1 documented as required when cuDF unavailable --
+    # Bug: CUDA 13+ drops cuDF. feature_library.py needs ALLOW_CPU=1 for pandas fallback.
+    # validate.py already checks the env var at runtime (Category 3), but the setup scripts
+    # and cloud deploy docs must also mention it.
+    setup_files = ('setup.sh', 'cloud_run_tf.py', 'cloud_setup.sh')
+    for _sf in setup_files:
+        _sf_content = all_py_contents.get(_sf, '')
+        if not _sf_content:
+            # Try reading .sh files too
+            _sf_path = os.path.join(PROJECT_DIR, _sf)
+            if os.path.exists(_sf_path):
+                try:
+                    with open(_sf_path, 'r', encoding='utf-8') as f:
+                        _sf_content = f.read()
+                except Exception:
+                    continue
+        if _sf_content and 'ALLOW_CPU' not in _sf_content:
+            warn(f"{_sf}: documents ALLOW_CPU=1",
+                 False,
+                 f"{_sf} does not mention ALLOW_CPU=1. "
+                 f"CUDA 13+ drops cuDF — pandas fallback requires ALLOW_CPU=1. "
+                 f"FIX: add 'export ALLOW_CPU=1' to {_sf}")
+
+    # -- Constant features gated for 1w (SKIP_FEATURES_1W in config.py) --
+    # Bug: 10 constant features for 1w (hour_sin/cos, dow_sin/cos, etc.) waste tree splits.
+    # Fix: config.py SKIP_FEATURES_1W frozenset, checked by feature builder.
+    sys.path.insert(0, PROJECT_DIR)
+    import config as _cfg_skip
+    _has_skip_1w = hasattr(_cfg_skip, 'SKIP_FEATURES_1W') and len(getattr(_cfg_skip, 'SKIP_FEATURES_1W', set())) > 0
+    check("config.py: SKIP_FEATURES_1W defined with constant features",
+          _has_skip_1w,
+          "config.py must define SKIP_FEATURES_1W frozenset with features that are constant at weekly "
+          "resolution (hour_sin, hour_cos, dow_sin, dow_cos, day_of_week, is_monday, is_friday, "
+          "is_weekend, day_of_month, is_month_end). These waste tree splits on 1w. "
+          "FIX: add SKIP_FEATURES_1W = frozenset([...]) to config.py")
+
+    # Verify SKIP_FEATURES_1W is referenced in feature builder
+    fl_content = all_py_contents.get('feature_library.py', '')
+    if fl_content:
+        _fl_uses_skip = 'SKIP_FEATURES_1W' in fl_content or 'TF_SKIP_FEATURES' in fl_content or 'SKIP_FEATURES_BY_TF' in fl_content
+        check("feature_library.py: uses SKIP_FEATURES_1W to gate constant features",
+              _fl_uses_skip,
+              "feature_library.py must check SKIP_FEATURES_1W (or TF_SKIP_FEATURES[tf]) and skip "
+              "constant features for 1w. Without this, 10 constant columns waste tree splits. "
+              "FIX: if tf == '1w': skip features in SKIP_FEATURES_1W")
+
     # -- TIER 1.5: lgb.Dataset() construction must include feature_pre_filter=False in params= --
     # feature_pre_filter is a DATASET parameter baked at construction time.
     # Passing it only in lgb.train() params has NO effect on already-constructed Datasets.
@@ -1104,7 +1268,7 @@ def check_training_consistency():
               f"{_ds_fname}: Dataset() calls without feature_pre_filter=False: {_ds_violations[:5]}. "
               f"LightGBM permanently drops rare esoteric features at Dataset construction — "
               f"train() params have no effect on already-constructed Datasets. "
-              f"Fix: lgb.Dataset(X, label=y, params={{'feature_pre_filter': False, 'max_bin': 255}})")
+              f"Fix: lgb.Dataset(X, label=y, params={{'feature_pre_filter': False, 'max_bin': 7}})")
 
 
 # ══════════════════════════════════════════════════════════════

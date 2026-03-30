@@ -72,11 +72,13 @@ from scipy import sparse as sp_sparse
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 
 # Wave 3: Lift MKL/OpenBLAS thread caps — lets LightGBM's OpenMP use all cores
-try:
-    from threadpoolctl import threadpool_limits
-    threadpool_limits(limits=os.cpu_count() or 64, user_api='blas')
-except ImportError:
-    pass
+# Guard: skip in spawn'd CPCV workers (they set their own per-worker caps)
+if os.environ.get('_CPCV_WORKER') != '1':
+    try:
+        from threadpoolctl import threadpool_limits
+        threadpool_limits(limits=os.cpu_count() or 64, user_api='blas')
+    except ImportError:
+        pass
 
 # ============================================================
 # GPU SPARSE HISTOGRAM DETECTION
@@ -471,15 +473,29 @@ def _cpcv_split_worker(args_tuple):
      hmm_overlay, hmm_overlay_names) = args_tuple
 
     import os, sys, traceback
+
+    # Cap ALL thread env vars BEFORE importing numerical libraries.
+    # With spawn context, module-level code re-runs during import — setting these
+    # env vars first prevents threadpool_limits(128) and OpenMP auto-detect(128)
+    # from giving each worker 128 threads (causes oversubscription crashes).
+    _nth = str(lgb_params.get('num_threads', 1))
+    os.environ['OMP_NUM_THREADS'] = _nth
+    os.environ['MKL_NUM_THREADS'] = _nth
+    os.environ['OPENBLAS_NUM_THREADS'] = _nth
+    os.environ['NUMEXPR_NUM_THREADS'] = _nth
+    os.environ['_CPCV_WORKER'] = '1'  # tells module-level code to skip threadpool_limits(128)
+
     import numpy as np
     from scipy import sparse
     import lightgbm as lgb
     from sklearn.metrics import accuracy_score, precision_score, log_loss
 
-    # Isolate OpenMP thread count per worker (safety net against fork inheritance)
-    _nth = str(lgb_params.get('num_threads', 1))
-    os.environ['OMP_NUM_THREADS'] = _nth
-    os.environ['MKL_NUM_THREADS'] = _nth
+    # Re-apply thread cap after imports (some libs reset on import)
+    try:
+        from threadpoolctl import threadpool_limits
+        threadpool_limits(limits=int(_nth), user_api='blas')
+    except ImportError:
+        pass
 
     try:
         # Wave 3: SharedMemory IPC — reconstruct CSR from shared memory if available
@@ -549,11 +565,14 @@ def _cpcv_split_worker(args_tuple):
         y_train_es = y_train[:-val_size]
         w_train_es = w_train[:-val_size]
 
-        _w_ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
+        _w_ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 7), 'min_data_in_bin': 1}
         dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
                              feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
         dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
         _es_rounds_w = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+        from config import TF_ES_PATIENCE as _tf_es_cfg
+        if tf_name in _tf_es_cfg:
+            _es_rounds_w = _tf_es_cfg[tf_name]
 
         # GPU sparse path: detect in-worker (subprocess doesn't inherit parent globals)
         _worker_gpu = hasattr(lgb.Booster, 'set_external_csr') and os.environ.get('ALLOW_CPU', '0') != '1'
@@ -709,12 +728,15 @@ def _isolated_fold_worker(shared_dir, wi, train_idx, test_idx,
     y_train_es = y_train[:-val_size]
     w_train_es = w_train[:-val_size]
 
-    _ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
+    _ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 7), 'min_data_in_bin': 1}
     dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
                          feature_name=feature_cols, free_raw_data=False, params=_ds_params)
     dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
                        feature_name=feature_cols, free_raw_data=False, params=_ds_params)
     _es_rounds = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+    from config import TF_ES_PATIENCE as _tf_es_cfg2
+    if tf_name in _tf_es_cfg2:
+        _es_rounds = _tf_es_cfg2[tf_name]
 
     model = lgb.train(
         params, dtrain,
@@ -858,12 +880,15 @@ def _gpu_fold_worker(fold_id, gpu_id, shared_dir, train_idx, test_idx,
         y_train_es = y_train[:-val_size]
         w_train_es = w_train[:-val_size]
 
-        _ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
+        _ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 7), 'min_data_in_bin': 1}
         dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
                              feature_name=feature_cols, free_raw_data=False, params=_ds_params)
         dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
                            feature_name=feature_cols, free_raw_data=False, params=_ds_params)
         _es_rounds = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+        from config import TF_ES_PATIENCE as _tf_es_cfg3
+        if tf_name in _tf_es_cfg3:
+            _es_rounds = _tf_es_cfg3[tf_name]
 
         # GPU cuda_sparse training — after CUDA_VISIBLE_DEVICES isolation,
         # the visible GPU is always device 0 from this process's perspective
@@ -1127,7 +1152,9 @@ if __name__ == '__main__':
   # TF CONFIGS (Perplexity-adjusted regularization)
   # ============================================================
   # ── LightGBM base params — single source of truth from config.py ──
-  from config import V3_LGBM_PARAMS as _CFG_LGBM, TF_MIN_DATA_IN_LEAF as _CFG_MIN_LEAF
+  from config import (V3_LGBM_PARAMS as _CFG_LGBM, TF_MIN_DATA_IN_LEAF as _CFG_MIN_LEAF,
+                      TF_LEARNING_RATE as _CFG_TF_LR, TF_NUM_BOOST_ROUND as _CFG_TF_ROUNDS,
+                      TF_ES_PATIENCE as _CFG_TF_ES)
   V2_LGBM_PARAMS = _CFG_LGBM.copy()
   _MIN_DATA_IN_LEAF = _CFG_MIN_LEAF.copy()
 
@@ -1188,23 +1215,24 @@ if __name__ == '__main__':
                         help='Use OPTUNA_PHASE1_CPCV_GROUPS for faster Optuna search trials')
   _parser.add_argument('--parallel-splits', action='store_true', default=False,
                         help='(legacy, now auto-detected) Kept for backward compat')
-  _parser.add_argument('--no-parallel-splits', action='store_true', default=False,
-                        help='Force sequential CPCV splits even with multiple GPUs')
+  # --no-parallel-splits removed: auto-detected from matrix type or env V3_FORCE_SEQUENTIAL=1
   _parser.add_argument('--subprocess-folds', action='store_true', default=False,
                         help='Train each CPCV fold in isolated subprocess (OS reclaims all memory per fold)')
   _args, _unknown = _parser.parse_known_args()  # ignore unknown args (e.g. from smoke_test)
   _tf_filter = set(_args.tf) if _args.tf else None
 
   # LightGBM CPU mode: parallel splits use ProcessPoolExecutor across CPU cores
-  _use_parallel_splits = not _args.no_parallel_splits
+  # Auto-detect: env V3_FORCE_SEQUENTIAL=1 or dense data → sequential
+  _force_sequential = os.environ.get('V3_FORCE_SEQUENTIAL', '0') == '1'
+  _use_parallel_splits = not _force_sequential
   try:
       from hardware_detect import get_cpu_count
       _total_cores = get_cpu_count()
   except ImportError:
       import multiprocessing as _mp
       _total_cores = _mp.cpu_count() or 24
-  if _args.no_parallel_splits:
-      log("PARALLEL SPLITS: disabled (--no-parallel-splits)")
+  if _force_sequential:
+      log("PARALLEL SPLITS: disabled (V3_FORCE_SEQUENTIAL=1)")
   else:
       log(f"PARALLEL SPLITS: enabled (dynamic workers per TF, {_total_cores} cores detected)")
 
@@ -1413,6 +1441,13 @@ if __name__ == '__main__':
               X_all = X_base
           del X_base
 
+          # Dense→sparse conversion EARLY — ensures consistent code paths through
+          # runtime_checks, Optuna, and CPCV. Small TFs (1w) without crosses are dense.
+          if not _X_all_is_sparse:
+              log(f"  Dense matrix ({X_all.shape}) — converting to sparse CSR early")
+              X_all = sp_sparse.csr_matrix(X_all)
+              _X_all_is_sparse = True
+
           timestamps = df['timestamp'].values if 'timestamp' in df.columns else np.arange(len(df))
           closes = pd.to_numeric(df['close'], errors='coerce').values
 
@@ -1553,6 +1588,10 @@ if __name__ == '__main__':
           # Apply per-TF num_leaves cap (fix 2.8)
           from config import TF_NUM_LEAVES
           _base_lgb_params['num_leaves'] = TF_NUM_LEAVES.get(tf_name, 63)
+          # Apply per-TF learning_rate override (1w: 0.1, others: global 0.03)
+          if tf_name in _CFG_TF_LR:
+              _base_lgb_params['learning_rate'] = _CFG_TF_LR[tf_name]
+              log(f"  learning_rate override: {_CFG_TF_LR[tf_name]} (per-TF config)")
           # Apply class weighting for imbalanced TFs (fix 2.3)
           from config import TF_CLASS_WEIGHT
           _cw = TF_CLASS_WEIGHT.get(tf_name)
@@ -1644,6 +1683,16 @@ if __name__ == '__main__':
           else:
               log(f"  Interaction constraints: DISABLED ({_n_total_features:,} features — constraint checking too slow)")
 
+          # Per-TF num_boost_round override (1w: 300, others: CLI default 800)
+          _tf_boost_rounds = _CFG_TF_ROUNDS.get(tf_name, _args.boost_rounds)
+          if tf_name in _CFG_TF_ROUNDS:
+              log(f"  num_boost_round override: {_tf_boost_rounds} (per-TF config, CLI default was {_args.boost_rounds})")
+
+          # Per-TF ES patience override (1w: 50, others: dynamic formula)
+          _tf_es_patience = _CFG_TF_ES.get(tf_name)
+          if _tf_es_patience:
+              log(f"  ES patience override: {_tf_es_patience} (per-TF config)")
+
           # Default: final feature cols = feature_cols (parallel path keeps HMM in X_all)
           # Sequential sparse path overrides this after stripping HMM into overlay
           _final_feature_cols = feature_cols
@@ -1665,7 +1714,17 @@ if __name__ == '__main__':
               _multi_gpu_mode = False
               log(f"  Single GPU — sequential CPCV")
           else:
-              # CPU path — dense matrices must be converted to sparse CSR for parallel workers
+              # CPU path
+              # Tiny dataset guard: subprocess startup + module reimport (numba, lightgbm,
+              # feature_library) takes 10-20s per worker. For < 2000 rows, actual training
+              # is ~1s — sequential is both faster and avoids spawn/thread crashes.
+              _MIN_ROWS_PARALLEL = int(os.environ.get('V3_MIN_ROWS_PARALLEL', 2000))
+              if _use_parallel_splits and X_all.shape[0] < _MIN_ROWS_PARALLEL:
+                  log(f"  Tiny dataset ({X_all.shape[0]} rows < {_MIN_ROWS_PARALLEL}) "
+                      f"— forcing sequential CPCV (subprocess overhead >> training time)")
+                  _use_parallel_splits = False
+
+              # Dense matrices must be converted to sparse CSR for parallel workers
               if not _X_all_is_sparse and _use_parallel_splits:
                   import scipy.sparse as _sp_convert
                   log(f"  Converting dense matrix to sparse CSR for parallel CPCV ({X_all.shape})")
@@ -1754,7 +1813,7 @@ if __name__ == '__main__':
               # Run GPU-parallel CPCV
               _gpu_results = run_cpcv_gpu_parallel(
                   splits, _completed_folds, _gpu_shared_dir, _gpu_lgb_params,
-                  feature_cols, _args.boost_rounds, tf_name,
+                  feature_cols, _tf_boost_rounds, tf_name,
                   _hmm_overlay_names_gpu, DB_DIR, n_gpus=_num_gpus,
               )
 
@@ -1916,8 +1975,8 @@ if __name__ == '__main__':
               if not sp_sparse.issparse(X_all):
                   raise RuntimeError(
                       f"PARALLEL CPCV requires sparse X_all but got {type(X_all).__name__} "
-                      f"shape={X_all.shape}. Convert to sparse BEFORE training or use "
-                      f"--no-parallel-splits for dense matrices."
+                      f"shape={X_all.shape}. Convert to sparse BEFORE training or set "
+                      f"V3_FORCE_SEQUENTIAL=1 for dense matrices."
                   )
               X_csr = X_all.tocsr() if not isinstance(X_all, sp_sparse.csr_matrix) else X_all
 
@@ -1967,7 +2026,7 @@ if __name__ == '__main__':
                           wi, train_idx, test_idx,
                           _shm_info, None, None, None,  # SharedMemory info in slot 3, rest None
                           y_3class, sample_weights, feature_cols, _base_lgb_params,
-                          _args.boost_rounds, tf_name, gpu_id,
+                          _tf_boost_rounds, tf_name, gpu_id,
                           _fold_hmm_overlays.get(wi),
                           _hmm_overlay_names_par,
                       ))
@@ -1976,7 +2035,7 @@ if __name__ == '__main__':
                           wi, train_idx, test_idx,
                           X_csr.data, X_csr.indices, X_csr.indptr, X_csr.shape,
                           y_3class, sample_weights, feature_cols, _base_lgb_params,
-                          _args.boost_rounds, tf_name, gpu_id,
+                          _tf_boost_rounds, tf_name, gpu_id,
                           _fold_hmm_overlays.get(wi),
                           _hmm_overlay_names_par,
                       ))
@@ -1985,6 +2044,19 @@ if __name__ == '__main__':
               # OpenMP runtime is in undefined state, causes hangs/crashes in LightGBM).
               import multiprocessing as _mp_ctx
               _spawn_ctx = _mp_ctx.get_context('spawn')
+
+              # Set worker env BEFORE spawning — spawn'd children inherit parent env at fork.
+              # This prevents module-level threadpool_limits(128) in each worker and caps
+              # OMP threads to per-worker allocation (total_cores / n_workers).
+              _saved_env = {}
+              for _ek in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                          'NUMEXPR_NUM_THREADS', '_CPCV_WORKER'):
+                  _saved_env[_ek] = os.environ.get(_ek)
+              os.environ['OMP_NUM_THREADS'] = str(_threads_per_worker)
+              os.environ['MKL_NUM_THREADS'] = str(_threads_per_worker)
+              os.environ['OPENBLAS_NUM_THREADS'] = str(_threads_per_worker)
+              os.environ['NUMEXPR_NUM_THREADS'] = str(_threads_per_worker)
+              os.environ['_CPCV_WORKER'] = '1'
 
               _n_failed_folds = 0
               try:
@@ -2052,20 +2124,85 @@ if __name__ == '__main__':
               except (BrokenProcessPool, Exception) as _pool_err:
                   log(f"\n  PARALLEL CPCV POOL ERROR: {type(_pool_err).__name__}: {_pool_err}")
                   log(f"  Completed {len(_completed_folds)} folds before crash — checkpoint saved")
-                  # If zero folds completed, this is a hard failure — propagate to cloud_run_tf.py
-                  if not window_results:
-                      for _sb in _shm_blocks:
+                  # Cleanup SharedMemory before fallback
+                  for _sb in _shm_blocks:
+                      try:
+                          _sb.close()
+                          _sb.unlink()
+                      except Exception:
+                          pass
+                  _shm_blocks = []
+
+                  # Fallback: run remaining folds SEQUENTIALLY in main process
+                  _remaining = [a for a in worker_args if a[0] not in _completed_folds]
+                  if _remaining:
+                      log(f"  FALLBACK: running {len(_remaining)} remaining folds sequentially in main process")
+                      for _fb_args in _remaining:
+                          _fb_wi = _fb_args[0]
+                          # Rebuild args with raw arrays (SharedMemory is cleaned up)
+                          if isinstance(_fb_args[3], dict):
+                              _fb_args = (
+                                  _fb_args[0], _fb_args[1], _fb_args[2],
+                                  X_csr.data, X_csr.indices, X_csr.indptr, X_csr.shape,
+                              ) + _fb_args[7:]
                           try:
-                              _sb.close()
-                              _sb.unlink()
-                          except Exception:
-                              pass
+                              result = _cpcv_split_worker(_fb_args)
+                              (wi, acc, prec_long, prec_short, mlogloss_val, best_iter,
+                               model_bytes, preds_3c, y_test, test_idx_valid,
+                               importance, is_acc, is_mlogloss, is_sharpe) = result
+                              if acc is None:
+                                  log(f"  Fallback fold {_fb_wi+1}: SKIP (not enough samples)")
+                                  _n_failed_folds += 1
+                                  continue
+                              oos_predictions.append({
+                                  'path': wi, 'test_indices': test_idx_valid,
+                                  'y_true': y_test, 'y_pred_probs': preds_3c,
+                                  'y_pred_labels': np.argmax(preds_3c, axis=1),
+                                  'is_accuracy': is_acc, 'is_mlogloss': is_mlogloss, 'is_sharpe': is_sharpe,
+                              })
+                              window_results.append({
+                                  'window': wi + 1, 'accuracy': acc,
+                                  'prec_long': prec_long, 'prec_short': prec_short,
+                                  'mlogloss': mlogloss_val,
+                                  'train_size': 0, 'test_size': len(y_test),
+                                  'n_trees': best_iter, 'importance': importance,
+                              })
+                              log(f"  Fallback fold {_fb_wi+1}: Acc={acc:.3f} PrecL={prec_long:.3f} "
+                                  f"PrecS={prec_short:.3f} mlogloss={mlogloss_val:.4f}")
+                              if acc > best_acc:
+                                  best_acc = acc
+                                  import tempfile as _tmpmod
+                                  _tmp = _tmpmod.NamedTemporaryFile(suffix='.txt', delete=False)
+                                  _tmp.write(model_bytes)
+                                  _tmp.close()
+                                  best_model_obj = lgb.Booster(model_file=_tmp.name)
+                                  os.unlink(_tmp.name)
+                              _completed_folds.add(wi)
+                              try:
+                                  from atomic_io import atomic_save_pickle
+                                  atomic_save_pickle({
+                                      'oos_predictions': oos_predictions,
+                                      'window_results': window_results,
+                                      'completed_folds': list(_completed_folds),
+                                      'best_acc': best_acc,
+                                  }, _cpcv_ckpt_path)
+                              except ImportError:
+                                  with open(_cpcv_ckpt_path, 'wb') as _ckf:
+                                      pickle.dump({
+                                          'oos_predictions': oos_predictions,
+                                          'window_results': window_results,
+                                          'completed_folds': list(_completed_folds),
+                                          'best_acc': best_acc,
+                                      }, _ckf)
+                          except Exception as _fb_err:
+                              log(f"  Fallback fold {_fb_wi+1} FAILED: {type(_fb_err).__name__}: {_fb_err}")
+                              _n_failed_folds += 1
+                      log(f"  FALLBACK complete: {len(window_results)} folds succeeded")
+
+                  if not window_results:
                       raise RuntimeError(
-                          f"Parallel CPCV failed with 0 completed folds: {_pool_err}"
+                          f"Parallel CPCV failed AND sequential fallback failed: {_pool_err}"
                       ) from _pool_err
-                  else:
-                      log(f"  WARNING: {len(worker_args) - len(window_results)} folds lost — "
-                          f"continuing with {len(window_results)} completed folds")
 
               if _n_failed_folds > 0:
                   log(f"  WARNING: {_n_failed_folds} folds returned None (skipped or worker error)")
@@ -2078,8 +2215,15 @@ if __name__ == '__main__':
                   except Exception:
                       pass
 
+              # Restore parent env after parallel CPCV
+              for _ek, _ev in _saved_env.items():
+                  if _ev is None:
+                      os.environ.pop(_ek, None)
+                  else:
+                      os.environ[_ek] = _ev
+
           else:
-              # ── Sequential CPCV path (dense matrix or --no-parallel-splits) ──
+              # ── Sequential CPCV path (dense matrix or V3_FORCE_SEQUENTIAL=1) ──
 
               # ── FIX: Separate HMM columns from the big sparse matrix ──
               # Instead of tolil()/tocsr() on a 1M x 2M matrix EVERY fold (150-450s),
@@ -2152,7 +2296,7 @@ if __name__ == '__main__':
                   bin_path = os.path.join(DB_DIR, f'lgbm_dataset_{tf_name}.bin')
                   if os.path.exists(bin_path):
                       log(f"  Loading parent Dataset from binary: {bin_path}")
-                      _parent_ds = lgb.Dataset(bin_path, params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255), 'min_data_in_bin': 1})
+                      _parent_ds = lgb.Dataset(bin_path, params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 7), 'min_data_in_bin': 1})
                       _parent_ds.construct()
                       log(f"  Parent Dataset loaded from binary in {time.time() - _parent_t0:.1f}s "
                           f"(EFB reconstruction skipped). Folds reuse via reference=.")
@@ -2188,7 +2332,7 @@ if __name__ == '__main__':
                               weight=sample_weights[_parent_valid],
                               feature_name=_parent_feature_cols,
                               free_raw_data=True,
-                              params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255), 'min_data_in_bin': 1},
+                              params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 7), 'min_data_in_bin': 1},
                           )
                           _parent_ds.construct()
                       log(f"  Parent Dataset: {_Xp.shape[1]:,} features, EFB bins computed "
@@ -2265,7 +2409,7 @@ if __name__ == '__main__':
                           target=_isolated_fold_worker,
                           args=(_shared_fold_dir, wi, train_idx, test_idx,
                                 _base_lgb_params, feature_cols,
-                                _args.boost_rounds, tf_name,
+                                _tf_boost_rounds, tf_name,
                                 _hmm_overlay_names if _hmm_overlay is not None else [],
                                 _fold_result_path, DB_DIR),
                       )
@@ -2413,20 +2557,22 @@ if __name__ == '__main__':
                   w_train_es = w_train[:-val_size]
 
                   _ds_kwargs = dict(feature_name=_fold_feature_cols, free_raw_data=False,
-                                    params={'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1})
+                                    params={'feature_pre_filter': False, 'max_bin': params.get('max_bin', 7), 'min_data_in_bin': 1})
                   if _parent_ds is not None:
                       _ds_kwargs['reference'] = _parent_ds  # reuse EFB bundles + bin thresholds
                   dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es, **_ds_kwargs)
                   dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, **_ds_kwargs)
                   _ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_fold{wi}.txt')
                   _es_rounds = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+                  if tf_name in _CFG_TF_ES:
+                      _es_rounds = _CFG_TF_ES[tf_name]
                   if _use_gpu_sparse() and hasattr(X_train_es, 'tocsr'):
                       # GPU sparse histogram path — keep CSR, use manual update loop
                       _X_csr_fold = X_train_es.tocsr() if not isinstance(X_train_es, sp_sparse.csr_matrix) else X_train_es
                       _gpu_id = wi % _num_gpus if _multi_gpu_mode else 0
                       model = _train_gpu(
                           params, dtrain, dval, _X_csr_fold,
-                          num_boost_round=_args.boost_rounds,
+                          num_boost_round=_tf_boost_rounds,
                           early_stopping_rounds=_es_rounds,
                           checkpoint_cb=CheckpointCallback(_ckpt_path, period=100),
                           log_period=100,
@@ -2438,7 +2584,7 @@ if __name__ == '__main__':
                           log(f"    WARNING: GPU fork available but data is dense — using CPU training")
                       model = lgb.train(
                           params, dtrain,
-                          num_boost_round=_args.boost_rounds,
+                          num_boost_round=_tf_boost_rounds,
                           valid_sets=[dtrain, dval],
                           valid_names=['train', 'val'],
                           callbacks=[
@@ -2719,19 +2865,21 @@ if __name__ == '__main__':
           y_tr_f = y_final_all[:-val_sz]
           w_tr_f = w_final_all[:-val_sz]
           _final_ds_kwargs = dict(feature_name=_final_feature_cols, free_raw_data=False,
-                                  params={'feature_pre_filter': False, 'max_bin': final_params.get('max_bin', 255), 'min_data_in_bin': 1})
+                                  params={'feature_pre_filter': False, 'max_bin': final_params.get('max_bin', 7), 'min_data_in_bin': 1})
           if _parent_ds is not None:
               _final_ds_kwargs['reference'] = _parent_ds  # reuse EFB from parent
           dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f, **_final_ds_kwargs)
           dval = lgb.Dataset(X_val_f, label=y_val_f, weight=w_val_f, **_final_ds_kwargs)
           _final_ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_final.txt')
           _final_es_rounds = max(50, int(100 * (0.1 / final_params.get('learning_rate', 0.03))))
+          if tf_name in _CFG_TF_ES:
+              _final_es_rounds = _CFG_TF_ES[tf_name]
           if _use_gpu_sparse() and hasattr(X_tr_f, 'tocsr'):
               # GPU sparse histogram path for final model
               _X_csr_final = X_tr_f.tocsr() if not isinstance(X_tr_f, sp_sparse.csr_matrix) else X_tr_f
               final_model = _train_gpu(
                   final_params, dtrain, dval, _X_csr_final,
-                  num_boost_round=_args.boost_rounds,
+                  num_boost_round=_tf_boost_rounds,
                   early_stopping_rounds=_final_es_rounds,
                   checkpoint_cb=CheckpointCallback(_final_ckpt_path, period=100),
                   log_period=100,
@@ -2741,7 +2889,7 @@ if __name__ == '__main__':
               if _GPU_SPARSE_AVAILABLE and not hasattr(X_tr_f, 'tocsr'):
                   log(f"  WARNING: GPU fork available but final data is dense — using CPU training")
               final_model = lgb.train(
-                  final_params, dtrain, num_boost_round=_args.boost_rounds,
+                  final_params, dtrain, num_boost_round=_tf_boost_rounds,
                   valid_sets=[dtrain, dval], valid_names=['train', 'val'],
                   callbacks=[
                       lgb.early_stopping(_final_es_rounds),

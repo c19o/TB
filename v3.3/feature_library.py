@@ -1379,6 +1379,165 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
 
 
 # ============================================================
+# SAR-NUMEROLOGY HYBRID FEATURES (AlphaNumetrix-inspired)
+# ============================================================
+# AlphaNumetrix on TradingView combines Parabolic SAR + moving averages
+# with numerological digit analysis. These features capture the same
+# SAR-numerology and MA-numerology hybrid signals.
+#
+# Features:
+#   sar_digit_sum         — digital root of floor(SAR). Numerological energy of SAR level.
+#   sar_price_digit_diff  — digit_sum(close) - digit_sum(SAR). Alignment = 0 means resonance.
+#   sar_angel_pattern     — SAR value contains angel numbers (111,222,...,999). Repeating digits = amplified energy.
+#   sar_gematria_value    — Hebrew gematria mapping of SAR digits (1-9 -> aleph-tet values).
+#   sar_fibonacci_proximity — distance from SAR to nearest Fibonacci number. Fib levels are natural support/resistance.
+#   sar_x_ma_digit        — digit_sum(SAR) * is_above_SMA200. Numerological signal amplified by trend direction.
+#   sma200_digit_sum      — digital root of SMA(200). Numerological energy of the long-term trend level.
+#   ema_cross_digit       — digit_sum at EMA 12/26 crossover moments. Captures numerological state at trend changes.
+#   ma_price_ratio_numerology — digit_sum(floor(close/SMA200 * 100)). Numerological reading of price vs trend ratio.
+#
+# All features work on ALL timeframes (1w, 1d, 4h, 1h, 15m).
+
+# Hebrew gematria digit mapping (mispar hechrachi / absolute value)
+# 1=Aleph(1), 2=Bet(2), 3=Gimel(3), 4=Dalet(4), 5=He(5),
+# 6=Vav(6), 7=Zayin(7), 8=Chet(8), 9=Tet(9), 0=0
+_HEBREW_DIGIT_VALUES = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=np.int64)
+
+# Pre-computed Fibonacci numbers up to 1e12 (covers any BTC price level)
+_FIB_NUMBERS = np.array([
+    1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987,
+    1597, 2584, 4181, 6765, 10946, 17711, 28657, 46368, 75025,
+    121393, 196418, 317811, 514229, 832040, 1346269, 2178309,
+    3524578, 5702887, 9227465, 14930352, 24157817, 39088169,
+    63245986, 102334155, 165580141, 267914296, 433494437,
+    701408733, 1134903170,
+], dtype=np.float64)
+
+_ANGEL_PATTERNS = ['111', '222', '333', '444', '555', '666', '777', '888', '999']
+
+
+def _digit_sum_int_vec(arr_int):
+    """Sum all digits of each integer in array. Vectorized, no loops."""
+    result = np.zeros(len(arr_int), dtype=np.int64)
+    temp = arr_int.copy()
+    while np.any(temp > 0):
+        result += temp % 10
+        temp //= 10
+    return result
+
+
+def _hebrew_gematria_of_digits(arr_int):
+    """Hebrew gematria value from individual digits of each integer, summed."""
+    result = np.zeros(len(arr_int), dtype=np.int64)
+    temp = arr_int.copy()
+    while np.any(temp > 0):
+        digit = temp % 10
+        result += _HEBREW_DIGIT_VALUES[digit]
+        temp //= 10
+    return result
+
+
+def _nearest_fib_distance(values):
+    """Distance from each value to its nearest Fibonacci number. Vectorized, chunked."""
+    vals = np.abs(values).reshape(-1, 1)
+    fibs = _FIB_NUMBERS.reshape(1, -1)
+    n = len(values)
+    result = np.empty(n, dtype=np.float64)
+    chunk = 10000
+    for i in range(0, n, chunk):
+        end = min(i + chunk, n)
+        dists = np.abs(vals[i:end] - fibs)
+        result[i:end] = dists.min(axis=1)
+    return result
+
+
+def compute_sar_numerology_features(ta_result: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    SAR-Numerology hybrid features inspired by AlphaNumetrix indicator.
+    Combines Parabolic SAR and MA values with numerological digit analysis.
+
+    Args:
+        ta_result: DataFrame from compute_ta_features (contains sar_value, sma_200, etc.)
+        df: Original OHLCV DataFrame (for close prices).
+
+    Returns:
+        DataFrame with SAR-numerology hybrid feature columns.
+    """
+    idx = ta_result.index
+    out = {}
+
+    c_vals = _np(df['close']).astype(np.float64)
+    c_not_nan = ~np.isnan(c_vals)
+
+    sar_vals = ta_result['sar_value'].values.astype(np.float64)
+    sar_not_nan = ~np.isnan(sar_vals)
+    sar_int = np.where(sar_not_nan, np.floor(np.abs(sar_vals)).astype(np.int64), 0)
+    c_int = np.where(c_not_nan, np.floor(np.abs(c_vals)).astype(np.int64), 0)
+
+    # 1. sar_digit_sum — digital root of floor(SAR)
+    out['sar_digit_sum'] = np.where(sar_not_nan, digital_root_vec(sar_int), np.nan)
+
+    # 2. sar_price_digit_diff — digit_sum(close) - digit_sum(SAR)
+    c_dr = digital_root_vec(c_int)
+    sar_dr = digital_root_vec(sar_int)
+    both_valid = sar_not_nan & c_not_nan
+    out['sar_price_digit_diff'] = np.where(both_valid,
+                                           c_dr.astype(np.float64) - sar_dr.astype(np.float64),
+                                           np.nan)
+
+    # 3. sar_angel_pattern — SAR contains angel numbers (111, 222, ..., 999)
+    sar_str = pd.Series(np.where(sar_not_nan, sar_int, 0)).astype(str)
+    angel_match = np.zeros(len(idx), dtype=np.int32)
+    for pat in _ANGEL_PATTERNS:
+        angel_match |= sar_str.str.contains(pat, regex=False).values.astype(np.int32)
+    out['sar_angel_pattern'] = np.where(sar_not_nan, angel_match, np.nan)
+
+    # 4. sar_gematria_value — Hebrew gematria of SAR digits
+    out['sar_gematria_value'] = np.where(sar_not_nan,
+                                         _hebrew_gematria_of_digits(sar_int).astype(np.float64),
+                                         np.nan)
+
+    # 5. sar_fibonacci_proximity — distance to nearest Fibonacci number
+    out['sar_fibonacci_proximity'] = np.where(sar_not_nan,
+                                              _nearest_fib_distance(sar_vals),
+                                              np.nan)
+
+    # 6. sar_x_ma_digit — digit_sum(SAR) * is_above_SMA200
+    above_sma200 = ta_result['above_sma200'].values.astype(np.float64) if 'above_sma200' in ta_result.columns else np.ones(len(idx))
+    out['sar_x_ma_digit'] = np.where(sar_not_nan,
+                                     sar_dr.astype(np.float64) * above_sma200,
+                                     np.nan)
+
+    # 7. sma200_digit_sum — digital root of SMA(200)
+    if 'sma_200' in ta_result.columns:
+        sma200_vals = ta_result['sma_200'].values.astype(np.float64)
+        sma200_not_nan = ~np.isnan(sma200_vals)
+        sma200_int = np.where(sma200_not_nan, np.floor(np.abs(sma200_vals)).astype(np.int64), 0)
+        out['sma200_digit_sum'] = np.where(sma200_not_nan,
+                                           digital_root_vec(sma200_int),
+                                           np.nan)
+
+        # 9. ma_price_ratio_numerology — digit_sum(floor(close/SMA200 * 100))
+        ratio_valid = sma200_not_nan & c_not_nan & (sma200_vals > 0)
+        ratio = np.where(ratio_valid,
+                         np.floor(c_vals / np.where(sma200_vals > 0, sma200_vals, 1) * 100).astype(np.int64),
+                         0)
+        out['ma_price_ratio_numerology'] = np.where(ratio_valid,
+                                                    digital_root_vec(np.abs(ratio).astype(np.int64)),
+                                                    np.nan)
+
+    # 8. ema_cross_digit — digit_sum at EMA crossover moments
+    if 'macd_cross_up' in ta_result.columns and 'macd_cross_down' in ta_result.columns:
+        ema_cross = (ta_result['macd_cross_up'].values.astype(int) |
+                     ta_result['macd_cross_down'].values.astype(int))
+        out['ema_cross_digit'] = np.where(c_not_nan,
+                                          c_dr.astype(np.float64) * ema_cross.astype(np.float64),
+                                          np.nan)
+
+    return pd.DataFrame(out, index=idx)
+
+
+# ============================================================
 # COMPUTE TIME FEATURES
 # ============================================================
 
@@ -1402,11 +1561,12 @@ def compute_time_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame
     month = idx.month
     day_of_month = idx.day
 
-    # Cyclical encoding
-    out['hour_sin'] = np.sin(2 * np.pi * hour_utc / 24)
-    out['hour_cos'] = np.cos(2 * np.pi * hour_utc / 24)
-    out['dow_sin'] = np.sin(2 * np.pi * dow / 7)
-    out['dow_cos'] = np.cos(2 * np.pi * dow / 7)
+    # ── Cyclical encoding (skip hour/dow for 1w — constant at weekly resolution) ──
+    if tf_name != '1w':
+        out['hour_sin'] = np.sin(2 * np.pi * hour_utc / 24)
+        out['hour_cos'] = np.cos(2 * np.pi * hour_utc / 24)
+        out['dow_sin'] = np.sin(2 * np.pi * dow / 7)
+        out['dow_cos'] = np.cos(2 * np.pi * dow / 7)
     out['month_sin'] = np.sin(2 * np.pi * month / 12)
     out['month_cos'] = np.cos(2 * np.pi * month / 12)
     out['doy_sin'] = np.sin(2 * np.pi * doy / 365)
@@ -1427,13 +1587,63 @@ def compute_time_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame
     out['day_of_year'] = doy
     out['day_of_month'] = day_of_month
     out['month'] = month
-    out['day_of_week'] = dow
+    if tf_name != '1w':
+        out['day_of_week'] = dow
 
     out['is_month_end'] = idx.is_month_end.astype(int)
     out['is_quarter_end'] = idx.is_quarter_end.astype(int)
-    out['is_monday'] = (dow == 0).astype(int)
-    out['is_friday'] = (dow == 4).astype(int)
-    out['is_weekend'] = (dow >= 5).astype(int)
+    if tf_name != '1w':
+        out['is_monday'] = (dow == 0).astype(int)
+        out['is_friday'] = (dow == 4).astype(int)
+        out['is_weekend'] = (dow >= 5).astype(int)
+
+    # ── Halving-cycle & seasonal features (all timeframes) ─────────────────
+    if True:  # compute for ALL timeframes — BTC cycle/seasonal patterns
+        week_of_year = pd.Series(idx.isocalendar().week.values, index=idx, dtype=int)
+        # Week-of-year cyclical encoding
+        out['week_of_year_sin'] = np.sin(2 * np.pi * week_of_year / 52)
+        out['week_of_year_cos'] = np.cos(2 * np.pi * week_of_year / 52)
+        # Week digital root (week_number mod 9, reduced to 1-9)
+        _wk_vals = week_of_year.values.astype(np.int64)
+        out['week_digital_root'] = digital_root_vec(_wk_vals)
+        # Month digital root
+        _month_vals = month.values.astype(np.int64) if hasattr(month, 'values') else np.array(month, dtype=np.int64)
+        out['month_digital_root'] = digital_root_vec(_month_vals)
+        # Quarter cyclical encoding (Q1-Q4 seasonal)
+        quarter = ((month - 1) // 3).astype(np.float64)  # 0-3
+        out['quarter_sin'] = np.sin(2 * np.pi * quarter / 4)
+        out['quarter_cos'] = np.cos(2 * np.pi * quarter / 4)
+        # Year in halving cycle (0-3: which year of the 4-year BTC halving cycle)
+        # Last halving: 2024-04-19, cycle = ~4 years
+        _halving_ref = datetime(2024, 4, 19)
+        _days_since_halving = np.array(
+            [(d.to_pydatetime().replace(tzinfo=None) - _halving_ref).days for d in idx],
+            dtype=np.float64)
+        # For dates before 2024 halving, compute from prior halvings
+        _halving_epochs = [datetime(2012, 11, 28), datetime(2016, 7, 9),
+                           datetime(2020, 5, 11), datetime(2024, 4, 19),
+                           datetime(2028, 4, 15)]
+        _year_in_cycle = np.zeros(len(idx), dtype=np.float64)
+        _weeks_since_halving = np.zeros(len(idx), dtype=np.float64)
+        for i, d in enumerate(idx):
+            dt_naive = d.to_pydatetime().replace(tzinfo=None) if hasattr(d, 'to_pydatetime') else d
+            # Find most recent halving
+            last_h = None
+            for h in _halving_epochs:
+                if dt_naive >= h:
+                    last_h = h
+            if last_h is not None:
+                days_since = (dt_naive - last_h).days
+                _year_in_cycle[i] = min(days_since // 365, 3)  # 0-3
+                _weeks_since_halving[i] = days_since / 7.0
+            else:
+                _year_in_cycle[i] = np.nan
+                _weeks_since_halving[i] = np.nan
+        # Halving era: which epoch (0=pre-first-halving, 1=post-first, 2=post-second, ...)
+        _halving_era = np.floor((idx.year - 2009) / 4).astype(np.float64)
+        out['year_in_halving_cycle'] = _year_in_cycle
+        out['weeks_since_halving'] = _weeks_since_halving
+        out['halving_era'] = _halving_era
 
     return out.to_pandas() if hasattr(out, 'to_pandas') else out
 
@@ -1973,7 +2183,7 @@ def compute_vortex_sacred_geometry_features(df: pd.DataFrame, tf_name: str = '1d
 # COMPUTE ASTROLOGY FEATURES (from pre-loaded caches)
 # ============================================================
 
-def compute_astrology_features(df: pd.DataFrame, astro_cache: dict) -> pd.DataFrame:
+def compute_astrology_features(df: pd.DataFrame, astro_cache: dict, tf_name: str = '1h') -> pd.DataFrame:
     """
     Compute astrology features from pre-loaded ephemeris/astrology DataFrames.
 
@@ -1985,6 +2195,7 @@ def compute_astrology_features(df: pd.DataFrame, astro_cache: dict) -> pd.DataFr
             'fear_greed': DataFrame (date-indexed) from fear_greed.db
             'google_trends': DataFrame (date-indexed) from google_trends.db
             'funding_daily': DataFrame (date-indexed) avg daily funding rate
+        tf_name: timeframe name (e.g. '1w', '1d', '4h', '1h', '15m')
     """
     _gpu = _is_gpu(df)
     # Astrology merges with external pandas DataFrames — extract CPU index/values, avoid full _to_cpu()
@@ -2030,6 +2241,8 @@ def compute_astrology_features(df: pd.DataFrame, astro_cache: dict) -> pd.DataFr
         moon_phase = pd.to_numeric(out['west_moon_phase'], errors='coerce')
         out['lunar_phase_sin'] = np.sin(2 * np.pi * moon_phase / 30)
         out['lunar_phase_cos'] = np.cos(2 * np.pi * moon_phase / 30)
+        # Waxing/waning binary: phase_day 0-14 = waxing (new->full), 15-29 = waning (full->new)
+        out['lunar_waxing_flag'] = (moon_phase <= 14).astype(np.int32)
 
     # --- Vedic Astrology (from astrology_full) ---
     for col in ['nakshatra', 'tithi', 'yoga', 'karana']:
@@ -2181,8 +2394,9 @@ def compute_astrology_features(df: pd.DataFrame, astro_cache: dict) -> pd.DataFr
     out['west_zodiac_sign_idx'] = df_dates_w.map(zodiac_map)
 
     # --- Planetary hour (standalone bar feature) ---
-    # Uses hour from each bar's timestamp; only meaningful for intraday, but
-    # for daily bars the noon (12:00) approximation still yields a valid planetary hour.
+    # Open-time planetary hour: computed at bar open for all TFs.
+    # For 1w (Monday 00:00 UTC) this is constant — the 4 multi-perspective
+    # variants below provide real variance on weekly/daily bars.
     _ph_day_start = np.array([0, 1, 2, 3, 4, 5, 6], dtype=np.int32)  # indexed by dow (Mon=0)
     _ph_hours = _cpu_idx.hour.values
     _ph_dows = _cpu_idx.dayofweek.values  # Mon=0
@@ -2197,6 +2411,124 @@ def compute_astrology_features(df: pd.DataFrame, astro_cache: dict) -> pd.DataFr
     #             Fri=Venus(5), Sat=Saturn(6), Sun=Sun(0)
     _day_ruler_idx = _ph_day_start[_ph_dows]
     out['planetary_double_power'] = (_ph_planet_idx == _day_ruler_idx).astype(np.int32)
+
+    # --- Planetary hour multi-perspective variants (real variance on 1w/1d) ---
+    # These compute planetary hours at different moments within each bar,
+    # giving the model multiple planetary-time perspectives per candle.
+    #
+    # Variant 1: planetary_hour_at_close — hour at bar CLOSE time.
+    #   For 1w: Sunday 23:59 UTC (varies from open). For 1d: 23:59 UTC.
+    #   Formula: close_dt = open + bar_duration - 1min, then standard planetary hour calc.
+    _tf_durations = {'1w': pd.Timedelta(weeks=1), '1d': pd.Timedelta(days=1),
+                     '4h': pd.Timedelta(hours=4), '1h': pd.Timedelta(hours=1),
+                     '15m': pd.Timedelta(minutes=15)}
+    _bar_dur = _tf_durations.get(tf_name, pd.Timedelta(hours=1))
+    _close_idx = _cpu_idx + _bar_dur - pd.Timedelta(minutes=1)
+    _ph_close_hours = _close_idx.hour.values
+    _ph_close_dows = _close_idx.dayofweek.values
+    _ph_close_offset = np.where(_ph_close_hours >= 6, _ph_close_hours - 6, _ph_close_hours + 18)
+    out['planetary_hour_at_close'] = (_ph_day_start[_ph_close_dows] + _ph_close_offset) % 7
+
+    # Variant 2: planetary_hour_at_midweek — Wednesday 12:00 UTC for 1w,
+    #   bar midpoint for shorter TFs. Gives a "middle of the action" perspective.
+    #   For 1w: always Wed noon (varies week-to-week only by planetary cycle).
+    #   For others: midpoint = open + half_duration.
+    _mid_idx = _cpu_idx + _bar_dur / 2
+    _ph_mid_hours = _mid_idx.hour.values
+    _ph_mid_dows = _mid_idx.dayofweek.values
+    _ph_mid_offset = np.where(_ph_mid_hours >= 6, _ph_mid_hours - 6, _ph_mid_hours + 18)
+    out['planetary_hour_at_midpoint'] = (_ph_day_start[_ph_mid_dows] + _ph_mid_offset) % 7
+
+    # Variant 3: planetary_week_ruler — which planet "rules" this week in the
+    #   Chaldean 7-week cycle. Based on ISO week number mod 7, mapped to
+    #   Chaldean order: Saturn(0), Jupiter(1), Mars(2), Sun(3), Venus(4),
+    #   Mercury(5), Moon(6). Cycles every 7 weeks.
+    #   KEY INSIGHT: The Chaldean planetary hour system has a period of exactly
+    #   168 hours = 1 week, making ALL hour-based variants constant on weekly
+    #   bars (Mon 00:00 always → same planet). This week-ruler breaks that
+    #   periodicity by using a 7-week cycle — genuine variance on 1w.
+    #   Varies on 1w: YES (7 unique values cycling every 7 weeks).
+    #   Varies on 1d: YES (changes every Monday). Varies on shorter: YES.
+    _iso_weeks = np.array(_cpu_idx.isocalendar().week, dtype=np.int32)
+    out['planetary_week_ruler'] = _iso_weeks % 7
+
+    # Variant 4: planetary_day_ruler — traditional Chaldean day ruler.
+    #   Mon=Moon(1), Tue=Mars(2), Wed=Mercury(3), Thu=Jupiter(4),
+    #   Fri=Venus(5), Sat=Saturn(6), Sun=Sun(0).
+    #   Varies on 1d and shorter (different days of week).
+    #   For 1w: constant (Monday=Moon=1) — but still valid as a signal baseline.
+    #   The model can cross this with planetary_week_ruler for weekly variance.
+    _DAY_RULER_MAP = np.array([1, 2, 3, 4, 5, 6, 0], dtype=np.int32)  # Mon..Sun
+    out['planetary_day_ruler'] = _DAY_RULER_MAP[_ph_dows]
+
+    # ── Astrology engine features (eclipse window, BTC transit, Jupiter-Saturn regime, mercury retro days) ──
+    # These call the astrology_engine directly — computed per unique date, then mapped
+    try:
+        from astrology_engine import (
+            is_eclipse_window as _ae_eclipse_window,
+            get_btc_transit_score as _ae_btc_transit,
+            is_mercury_retrograde as _ae_merc_retro,
+            get_planet_position as _ae_planet_pos,
+        )
+
+        unique_dates_ae = pd.Series(_cpu_idx.date).unique()
+        _ae_map = {}
+        for d in unique_dates_ae:
+            try:
+                dt = datetime.combine(d, datetime.min.time())
+                # Eclipse window (from astrology engine — ephemeris-based, not hardcoded list)
+                in_ecl, ecl_type, ecl_days = _ae_eclipse_window(dt, window_days=7)
+                # BTC natal transit score
+                btc_score, _ = _ae_btc_transit(dt)
+                # Mercury retrograde days_into
+                is_retro, retro_days = _ae_merc_retro(dt)
+                # Jupiter-Saturn angle for regime categorization
+                jup_lon = _ae_planet_pos('Jupiter', dt)
+                sat_lon = _ae_planet_pos('Saturn', dt)
+                js_angle = abs(jup_lon - sat_lon) % 360
+                if js_angle > 180:
+                    js_angle = 360 - js_angle
+                _ae_map[d] = (
+                    1 if in_ecl else 0,
+                    ecl_days if ecl_days is not None else np.nan,
+                    float(btc_score),
+                    1 if is_retro else 0,
+                    float(retro_days) if retro_days is not None else 0.0,
+                    js_angle,
+                )
+            except Exception:
+                _ae_map[d] = (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
+
+        _ae_dates = pd.Series(_cpu_idx.date, index=_cpu_idx)
+
+        # Eclipse window (ephemeris-computed, complements the hardcoded list in cycle features)
+        out['ae_eclipse_window'] = _ae_dates.map(lambda d: _ae_map.get(d, (np.nan,)*6)[0]).astype(np.float32)
+        out['ae_eclipse_days'] = _ae_dates.map(lambda d: _ae_map.get(d, (np.nan,)*6)[1]).astype(np.float64)
+
+        # BTC natal transit score (continuous: negative=bearish, positive=bullish)
+        out['btc_transit_score'] = _ae_dates.map(lambda d: _ae_map.get(d, (np.nan,)*6)[2]).astype(np.float64)
+
+        # Mercury retrograde: binary + days_into_retrograde (continuous intensity)
+        out['ae_mercury_retrograde'] = _ae_dates.map(lambda d: _ae_map.get(d, (np.nan,)*6)[3]).astype(np.float32)
+        out['mercury_retro_days_into'] = _ae_dates.map(lambda d: _ae_map.get(d, (np.nan,)*6)[4]).astype(np.float64)
+
+        # Jupiter-Saturn regime categories (better than raw sin/cos for slow-moving planets)
+        _js_angles = _ae_dates.map(lambda d: _ae_map.get(d, (np.nan,)*6)[5]).astype(np.float64)
+        out['jupiter_saturn_angle'] = _js_angles
+        # Regime: conjunction(0-30), sextile(50-70), square(80-100), trine(110-130),
+        #         opposition(150-180), waning trine(130-150), waning square(100-130)
+        _js_regime = np.full(len(_js_angles), np.nan)
+        _jsv = _js_angles.values
+        _js_regime[_jsv <= 30] = 0   # conjunction zone
+        _js_regime[(_jsv > 30) & (_jsv <= 70)] = 1   # sextile zone
+        _js_regime[(_jsv > 70) & (_jsv <= 100)] = 2  # square zone
+        _js_regime[(_jsv > 100) & (_jsv <= 130)] = 3  # trine zone
+        _js_regime[(_jsv > 130) & (_jsv <= 160)] = 4  # quincunx zone
+        _js_regime[_jsv > 160] = 5  # opposition zone
+        out['jupiter_saturn_regime'] = _js_regime.astype(np.float32)
+
+    except ImportError:
+        print("[feature_library] WARN: astrology_engine not available — skipping ae_* features")
 
     return out
 
@@ -3663,6 +3995,198 @@ def compute_event_astrology(df, tweets_df, news_df, sports_df,
 
 
 # ============================================================
+# DAILY-RESOLUTION FEATURES FOR WEEKLY (AlphaNumetrix approach)
+# ============================================================
+# Uses DAILY TA signals aggregated per ISO week for 1w bars.
+# Daily SAR/EMA/RSI respond faster than weekly — gives 1w the SPEED
+# of daily signals with WEEKLY decision frequency.
+# Same pattern applies to any higher TF: 1d could use hourly, etc.
+# ============================================================
+
+def _digit_sum_int64(arr):
+    """Sum digits of each int64 element in an array. Vectorized."""
+    arr = np.abs(arr).astype(np.int64)
+    result = np.zeros(len(arr), dtype=np.int64)
+    temp = arr.copy()
+    while np.any(temp > 0):
+        result += temp % 10
+        temp //= 10
+    return result
+
+
+def compute_daily_resolution_features(df_weekly: pd.DataFrame,
+                                       df_daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute daily-resolution TA features aggregated to weekly bars.
+
+    For each ISO week, computes TA indicators on DAILY candles and aggregates:
+    - Last daily SAR/EMA/RSI values (faster-responding than weekly)
+    - SAR flip count (choppy = many flips)
+    - Overbought/oversold day counts
+    - EMA cross detection (golden/death cross within the week)
+    - Price-vs-SAR alignment days (bullish strength)
+    - Intra-week volatility (daily ATR mean, close range)
+    - Numerology on daily-derived values (digital roots)
+
+    Args:
+        df_weekly: Weekly OHLCV with DatetimeIndex (the base 1w bars)
+        df_daily: Daily OHLCV with DatetimeIndex (must have open, high, low, close, volume)
+
+    Returns:
+        DataFrame indexed like df_weekly with daily-resolution features.
+    """
+    if df_daily is None or len(df_daily) < 10:
+        return pd.DataFrame(index=df_weekly.index)
+
+    # Work on CPU copies
+    d = df_daily.copy()
+    if hasattr(d.index, 'tz') and d.index.tz is not None:
+        d.index = d.index.tz_localize(None)
+
+    d_close = d['close'].astype(np.float64)
+    d_high = d['high'].astype(np.float64)
+    d_low = d['low'].astype(np.float64)
+
+    # ── Compute daily TA indicators ──────────────────────────
+    # SAR (Numba JIT)
+    h_vals = d_high.values
+    l_vals = d_low.values
+    sar_arr, sar_bull_arr = _sar_loop(h_vals, l_vals, 0.02, 0.02, 0.2)
+    d['_sar'] = sar_arr
+    d['_sar_bull'] = sar_bull_arr.astype(int)
+    d['_sar_flip'] = (d['_sar_bull'] != d['_sar_bull'].shift(1)).astype(int)
+    d.iloc[0, d.columns.get_loc('_sar_flip')] = 0
+
+    # EMAs
+    d['_ema21'] = d_close.ewm(span=21, adjust=False).mean()
+    d['_ema50'] = d_close.ewm(span=50, adjust=False).mean()
+    d['_ema200'] = d_close.ewm(span=200, adjust=False).mean()
+
+    # RSI 14
+    d['_rsi14'] = compute_rsi(d_close, 14)
+
+    # ATR 14
+    tr = pd.concat([
+        d_high - d_low,
+        (d_high - d_close.shift(1)).abs(),
+        (d_low - d_close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    d['_atr14'] = tr.rolling(14).mean()
+
+    # EMA cross detection (21 crosses 50)
+    d['_ema21_above_50'] = (d['_ema21'] > d['_ema50']).astype(int)
+    d['_ema_cross'] = (d['_ema21_above_50'] != d['_ema21_above_50'].shift(1)).astype(int)
+    d.iloc[0, d.columns.get_loc('_ema_cross')] = 0
+
+    # Price above SAR
+    d['_price_above_sar'] = (d_close > d['_sar']).astype(int)
+
+    # ── Assign ISO week key to each daily bar ────────────────
+    _iso = d.index.isocalendar()
+    d['_iso_yw'] = _iso.year.values * 100 + _iso.week.values
+
+    # ISO week key for weekly bars
+    w_idx = df_weekly.index
+    if hasattr(w_idx, 'tz') and w_idx.tz is not None:
+        w_idx = w_idx.tz_localize(None)
+    _w_iso = w_idx.isocalendar()
+    w_iso_yw = _w_iso.year.values * 100 + _w_iso.week.values
+
+    # ── Aggregate daily → weekly ─────────────────────────────
+    agg = d.groupby('_iso_yw').agg(
+        sar_last=('_sar', 'last'),
+        sar_bull_last=('_sar_bull', 'last'),
+        sar_flip_count=('_sar_flip', 'sum'),
+        ema21_last=('_ema21', 'last'),
+        ema50_last=('_ema50', 'last'),
+        ema200_last=('_ema200', 'last'),
+        rsi14_last=('_rsi14', 'last'),
+        rsi_ob_days=('_rsi14', lambda x: (x > 70).sum()),
+        rsi_os_days=('_rsi14', lambda x: (x < 30).sum()),
+        ema_cross_happened=('_ema_cross', 'max'),
+        price_above_sar_days=('_price_above_sar', 'sum'),
+        atr14_mean=('_atr14', 'mean'),
+        close_max=('close', 'max'),
+        close_min=('close', 'min'),
+        close_last=('close', 'last'),
+        day_count=('close', 'count'),
+    )
+
+    # Daily close range = (max_daily_close - min_daily_close) / weekly_close
+    agg['close_range'] = np.where(
+        agg['close_last'] > 0,
+        (agg['close_max'] - agg['close_min']) / agg['close_last'],
+        np.nan,
+    )
+
+    # ── Map aggregated values back to weekly bars ────────────
+    out = pd.DataFrame(index=df_weekly.index)
+    _yw_series = pd.Series(w_iso_yw, index=df_weekly.index)
+
+    # Feature 1: Daily SAR last value (Friday's SAR — faster than weekly)
+    out['dres_sar_last'] = _yw_series.map(agg['sar_last'])
+    # Feature 2: Daily EMA21/50/200 last values (faster-responding EMAs)
+    out['dres_ema21_last'] = _yw_series.map(agg['ema21_last'])
+    out['dres_ema50_last'] = _yw_series.map(agg['ema50_last'])
+    out['dres_ema200_last'] = _yw_series.map(agg['ema200_last'])
+    # Feature 3: Daily RSI14 last value
+    out['dres_rsi14_last'] = _yw_series.map(agg['rsi14_last'])
+    # Feature 4: SAR flip count (0-5 flips; high = choppy week)
+    out['dres_sar_flip_count'] = _yw_series.map(agg['sar_flip_count'])
+    # Feature 5: RSI overbought days count (>70)
+    out['dres_rsi_ob_days'] = _yw_series.map(agg['rsi_ob_days'])
+    # Feature 6: RSI oversold days count (<30)
+    out['dres_rsi_os_days'] = _yw_series.map(agg['rsi_os_days'])
+    # Feature 7: EMA21 x EMA50 cross this week (binary: golden/death cross)
+    out['dres_ema_cross_week'] = _yw_series.map(agg['ema_cross_happened'])
+    # Feature 8: Days price above SAR (0-5 = bullish strength)
+    out['dres_price_above_sar_days'] = _yw_series.map(agg['price_above_sar_days'])
+    # Feature 9: Daily ATR mean (intra-week volatility)
+    out['dres_atr14_mean'] = _yw_series.map(agg['atr14_mean'])
+    # Feature 10: Daily close range (max-min daily close / weekly close)
+    out['dres_close_range'] = _yw_series.map(agg['close_range'])
+
+    # Extra: carry last SAR bullish state + day count
+    out['dres_sar_bull_last'] = _yw_series.map(agg['sar_bull_last'])
+    out['dres_day_count'] = _yw_series.map(agg['day_count'])
+
+    # ── Relative features (daily vs weekly) ──────────────────
+    w_close = df_weekly['close'].astype(np.float64).values
+    _sar_last_v = out['dres_sar_last'].values.astype(np.float64)
+    out['dres_sar_dist_pct'] = np.where(
+        w_close > 0, (_sar_last_v - w_close) / w_close, np.nan)
+    _ema200_v = out['dres_ema200_last'].values.astype(np.float64)
+    out['dres_ema200_dist_pct'] = np.where(
+        _ema200_v > 0, (w_close - _ema200_v) / _ema200_v, np.nan)
+
+    # ── Numerology on daily-derived values ───────────────────
+    # Feature 11: Digital root of last daily SAR
+    _sar_int = np.where(np.isnan(out['dres_sar_last'].values),
+                        0, np.abs(out['dres_sar_last'].values).astype(np.int64))
+    out['dres_sar_digit_sum'] = digital_root_vec(_digit_sum_int64(_sar_int))
+
+    # Feature 12: Digital root of floor(daily RSI)
+    _rsi_int = np.where(np.isnan(out['dres_rsi14_last'].values),
+                        0, np.floor(np.abs(out['dres_rsi14_last'].values)).astype(np.int64))
+    out['dres_rsi_digit_sum'] = digital_root_vec(_digit_sum_int64(_rsi_int))
+
+    # Feature 13: Digital root of floor(daily EMA200)
+    _ema200_int = np.where(np.isnan(out['dres_ema200_last'].values),
+                           0, np.abs(out['dres_ema200_last'].values).astype(np.int64))
+    out['dres_ema200_digit_sum'] = digital_root_vec(_digit_sum_int64(_ema200_int))
+
+    # Feature 14: SAR flip numerology — digital root of flip count ("chaos number")
+    _flip_int = np.where(np.isnan(out['dres_sar_flip_count'].values),
+                         0, out['dres_sar_flip_count'].values.astype(np.int64))
+    out['dres_sar_flip_dr'] = digital_root_vec(_flip_int)
+
+    print(f"    Daily-resolution features: {len(out.columns)} cols "
+          f"({len(df_daily)} daily bars → {len(df_weekly)} weekly bars)")
+
+    return out
+
+
+# ============================================================
 # COMPUTE HIGHER TIMEFRAME FEATURES
 # ============================================================
 
@@ -5112,6 +5636,118 @@ def compute_targets(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
 
 
 # ============================================================
+# SAR-NUMEROLOGY HYBRIDS (AlphaNumetrix-inspired)
+# ============================================================
+
+def compute_sar_numerology_features(result: pd.DataFrame) -> pd.DataFrame:
+    """SAR-numerology hybrid features (AlphaNumetrix-inspired).
+
+    Takes the result DataFrame AFTER TA + numerology features are computed,
+    and creates hybrid features that apply numerological interpretation to
+    SAR, EMA, and RSI values — the backbone of the AlphaNumetrix approach.
+
+    Returns DataFrame with new hybrid columns only.
+    """
+    out = pd.DataFrame(index=result.index)
+    n = len(result)
+
+    # Helper: digit sum (sum of all digits in integer part)
+    def _digit_sum_arr(arr):
+        int_arr = np.where(np.isnan(arr), 0, np.abs(arr).astype(np.int64))
+        sums = np.zeros(len(int_arr), dtype=np.int64)
+        temp = int_arr.copy()
+        while np.any(temp > 0):
+            sums += temp % 10
+            temp //= 10
+        return sums.astype(np.float64)
+
+    # Helper: digital root
+    def _dr_arr(arr):
+        int_arr = np.where(np.isnan(arr), 0, np.abs(arr).astype(np.int64))
+        dr = np.where(int_arr > 0, ((int_arr - 1) % 9 + 1), 0).astype(np.float64)
+        return np.where(np.isnan(arr), np.nan, dr)
+
+    # Helper: angel number pattern match (111, 222, ..., 999)
+    def _angel_match_arr(arr):
+        int_arr = np.where(np.isnan(arr), 0, np.abs(arr).astype(np.int64))
+        str_series = pd.Series(int_arr).astype(str)
+        match = np.zeros(len(arr), dtype=np.int32)
+        for pat in ['111', '222', '333', '444', '555', '666', '777', '888', '999']:
+            match |= str_series.str.contains(pat, regex=False).values.astype(np.int32)
+        return np.where(np.isnan(arr), np.nan, match.astype(np.float64))
+
+    close_vals = result['close'].values.astype(np.float64) if 'close' in result.columns else np.full(n, np.nan)
+
+    # --- SAR numerology ---
+    if 'sar_value' in result.columns:
+        sar = result['sar_value'].values.astype(np.float64)
+        out['sar_digit_sum'] = _digit_sum_arr(sar)
+        out['sar_digital_root'] = _dr_arr(sar)
+        out['sar_angel_match'] = _angel_match_arr(sar)
+        # SAR-close ratio and its digital root
+        sar_safe = np.where((sar == 0) | np.isnan(sar), np.nan, sar)
+        ratio = close_vals / sar_safe
+        out['sar_close_ratio'] = ratio
+        out['sar_close_ratio_dr'] = _dr_arr(ratio * 1000)  # scale for meaningful digits
+        # Price-SAR digit difference
+        out['price_sar_digit_diff'] = _digit_sum_arr(close_vals) - _digit_sum_arr(sar)
+        out['price_sar_dr_diff'] = _dr_arr(close_vals) - _dr_arr(sar)
+
+    # --- RSI numerology ---
+    if 'rsi_14' in result.columns:
+        rsi = result['rsi_14'].values.astype(np.float64)
+        out['rsi_digit_sum'] = _digit_sum_arr(rsi)
+        out['rsi_digital_root'] = _dr_arr(rsi)
+        # Numerology zone: which single-digit zone (1-9) RSI maps to
+        # RSI 0-100 -> zone 1-9 (each zone ~11.1 RSI points)
+        out['rsi_numerology_zone'] = np.where(
+            np.isnan(rsi), np.nan,
+            np.clip(np.floor(rsi / 11.112) + 1, 1, 9))
+
+    # --- EMA 200 numerology ---
+    if 'ema_200' in result.columns:
+        ema200 = result['ema_200'].values.astype(np.float64)
+        out['ema200_digit_sum'] = _digit_sum_arr(ema200)
+        out['ema200_digital_root'] = _dr_arr(ema200)
+
+    # --- Price level gematria (positional digit weighting) ---
+    price_int = np.where(np.isnan(close_vals), 0, np.abs(close_vals).astype(np.int64))
+    gem_sum = np.zeros(n, dtype=np.float64)
+    temp = price_int.copy()
+    pos = 1
+    while np.any(temp > 0):
+        gem_sum += (temp % 10) * pos
+        temp //= 10
+        pos += 1
+    out['price_level_gematria'] = np.where(np.isnan(close_vals), np.nan, gem_sum)
+
+    # --- EMA crossover signals ---
+    if 'ema_20' in result.columns and 'ema_50' in result.columns:
+        ema20 = result['ema_20'].values.astype(np.float64)
+        ema50 = result['ema_50'].values.astype(np.float64)
+        cross_21_50 = np.zeros(n, dtype=np.float64)
+        cross_21_50[1:] = ((ema20[1:] > ema50[1:]) & (ema20[:-1] <= ema50[:-1])).astype(np.float64)
+        cross_21_50[1:] -= ((ema20[1:] < ema50[1:]) & (ema20[:-1] >= ema50[:-1])).astype(np.float64)
+        out['ema_cross_21_50'] = cross_21_50
+
+    if 'ema_50' in result.columns and 'ema_200' in result.columns:
+        ema50 = result['ema_50'].values.astype(np.float64)
+        ema200 = result['ema_200'].values.astype(np.float64)
+        cross_50_200 = np.zeros(n, dtype=np.float64)
+        cross_50_200[1:] = ((ema50[1:] > ema200[1:]) & (ema50[:-1] <= ema200[:-1])).astype(np.float64)
+        cross_50_200[1:] -= ((ema50[1:] < ema200[1:]) & (ema50[:-1] >= ema200[:-1])).astype(np.float64)
+        out['ema_cross_50_200'] = cross_50_200
+
+    # --- SAR flip + digital root interaction ---
+    if 'sar_flip' in result.columns:
+        sar_flip = result['sar_flip'].values.astype(np.float64)
+        price_dr = _dr_arr(close_vals)
+        out['price_vs_sar_flip_dr'] = sar_flip * price_dr
+
+    print(f"    SAR-numerology hybrid features: {len(out.columns)} cols")
+    return out
+
+
 # ============================================================
 # MAIN ENTRY POINT
 # ============================================================
@@ -5119,6 +5755,7 @@ def compute_targets(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
 def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
                        tf_name: str, mode: str = 'backfill',
                        htf_data: dict = None,
+                       ltf_data: dict = None,
                        astro_cache: dict = None,
                        space_weather_df: pd.DataFrame = None,
                        market_signals: dict = None,
@@ -5141,6 +5778,9 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         tf_name: '5m', '15m', '1h', '4h', '1d', '1w'
         mode: 'backfill' (full history) or 'live' (small window)
         htf_data: {'4h': df_4h, '1d': df_1d, '1w': df_1w}
+        ltf_data: Lower-TF candles for daily-resolution features.
+            {'1d': df_daily} for 1w bars (daily TA aggregated per ISO week).
+            Future: {'1h': df_hourly} for 1d bars.
         astro_cache: {
             'ephemeris': df,       # from ephemeris_cache.db (date-indexed)
             'astrology': df,       # from astrology_full.db (date-indexed)
@@ -5229,6 +5869,13 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     # ALL compute functions handle GPU/CPU internally — pass df (cuDF) directly
     # Each function detects _is_gpu(df) and converts to CPU as needed
 
+    # 1a. SAR-Numerology hybrid features (AlphaNumetrix-inspired, needs ta_feats)
+    t0 = time.time()
+    sar_num_feats = compute_sar_numerology_features(ta_feats, df)
+    print(f"    SAR-Numerology features: {time.time()-t0:.1f}s ({len(sar_num_feats.columns)} cols)")
+    for col in sar_num_feats.columns:
+        result[col] = sar_num_feats[col]
+
     # 1b. Fractional differentiation features (after TA, needs close/volume)
     t0 = time.time()
     frac_feats = compute_frac_diff_features(df)
@@ -5266,7 +5913,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
 
     # 4. Astrology features (from cached daily data)
     t0 = time.time()
-    astro_feats = compute_astrology_features(df, astro_cache)
+    astro_feats = compute_astrology_features(df, astro_cache, tf_name=tf_name)
     print(f"    Astrology features: {time.time()-t0:.1f}s ({len(astro_feats.columns)} cols)")
     for col in astro_feats.columns:
         result[col] = astro_feats[col]
@@ -5315,6 +5962,15 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         print(f"    Higher TF features: {time.time()-t0:.1f}s ({len(htf_feats.columns)} cols)")
         for col in htf_feats.columns:
             result[col] = htf_feats[col]
+
+    # 6b. Daily-resolution features (lower TF aggregated to higher TF)
+    # For 1w: aggregate daily TA → weekly (AlphaNumetrix approach)
+    if ltf_data and tf_name == '1w' and '1d' in (ltf_data or {}):
+        t0 = time.time()
+        dres_feats = compute_daily_resolution_features(ohlcv, ltf_data['1d'])
+        print(f"    Daily-resolution features: {time.time()-t0:.1f}s ({len(dres_feats.columns)} cols)")
+        for col in dres_feats.columns:
+            result[col] = dres_feats[col]
 
     # 7. Regime features
     t0 = time.time()
@@ -5456,6 +6112,13 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         result['tx_knn_bear_x_bull'] = _knn_bear_sig * _b
         result['tx_knn_bear_x_bear'] = _knn_bear_sig * _br
 
+    # 13c. SAR-numerology hybrid features (AlphaNumetrix-inspired)
+    # Must run AFTER TA + numerology are in result (needs sar_value, rsi_14, ema_200)
+    t0 = time.time()
+    sar_num_feats = compute_sar_numerology_features(result)
+    for col in sar_num_feats.columns:
+        result[col] = sar_num_feats[col]
+
     # 14. Targets (only for backfill)
     if include_targets and mode == 'backfill':
         t0 = time.time()
@@ -5479,6 +6142,27 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     for col in result.columns:
         if result[col].dtype not in ['float64', 'int64', 'float32', 'int32', 'bool']:
             result[col] = pd.to_numeric(result[col], errors='coerce')
+
+    # ── TF-aware zero-variance feature trimming ──
+    # Drop features that are STRUCTURALLY constant at this TF resolution.
+    # These have zero variance (same value every row) so they're pure noise.
+    # Also prevents thousands of useless cross features from being generated.
+    from config import SKIP_FEATURES_BY_TF
+    _skip_set = SKIP_FEATURES_BY_TF.get(tf_name)
+    if _skip_set:
+        _to_drop = [c for c in result.columns if c in _skip_set]
+        if _to_drop:
+            result = result.drop(columns=_to_drop)
+            print(f"    TF trimmer: dropped {len(_to_drop)} zero-variance features for {tf_name}: {_to_drop}")
+
+    # ── Lean 1W filter (AlphaNumetrix-inspired) ──
+    # For 1w: drop redundant TA, keep only SAR/EMA/RSI backbone + all esoteric + hybrids.
+    # Reduces ~3500 features to ~200-300 for better signal-to-noise on 819 rows.
+    from config import apply_lean_1w_filter
+    _pre_lean = len(result.columns)
+    result = apply_lean_1w_filter(result, tf_name)
+    if len(result.columns) < _pre_lean:
+        print(f"    [LEAN 1W] {_pre_lean} -> {len(result.columns)} features after lean filter")
 
     # Downcast float64 → float32: LightGBM uses float32 histograms internally,
     # so float64 wastes 2x RAM with zero benefit. On 217K rows × 3000 cols,

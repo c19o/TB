@@ -49,6 +49,24 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 log = logging.getLogger(__name__)
 
+
+def _safe_cuda_device():
+    """Return cuda device if supported, else cpu. Handles unsupported GPU archs (e.g. sm_120)."""
+    if not HAS_TORCH or not torch.cuda.is_available():
+        return torch.device('cpu')
+    try:
+        _test = torch.zeros(1, device='cuda')
+        _ = _test + 1
+        return torch.device('cuda')
+    except RuntimeError as e:
+        _arch = torch.cuda.get_device_capability()
+        log.warning("=" * 80)
+        log.warning(f"LSTM SKIPPED GPU: sm_{_arch[0]}{_arch[1]} not supported by PyTorch {torch.__version__}")
+        log.warning(f"FIX: pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128")
+        log.warning(f"LSTM falling back to CPU — ensemble signal will be SLOWER")
+        log.warning("=" * 80)
+        return torch.device('cpu')
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -349,7 +367,20 @@ def train_lstm(tf_name, device=None):
     batch_size = cfg['batch']
 
     if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if torch.cuda.is_available():
+            # Smoke test: verify GPU arch is supported (RTX 5090 sm_120 may not be)
+            try:
+                _test = torch.zeros(1, device='cuda')
+                _ = _test + 1
+                device = torch.device('cuda')
+            except RuntimeError as _cuda_err:
+                _arch = torch.cuda.get_device_capability()
+                log.warning(f"WARNING: CUDA available but GPU compute sm_{_arch[0]}{_arch[1]} "
+                            f"not supported by this PyTorch build: {_cuda_err}")
+                log.warning(f"WARNING: Falling back to CPU for LSTM training")
+                device = torch.device('cpu')
+        else:
+            device = torch.device('cpu')
     log.info(f"Device: {device}")
 
     # Walk-forward split (80% train, 20% test — no shuffling for time series)
@@ -478,7 +509,7 @@ class LSTMFeatureExtractor:
 
     def __init__(self, tf_name, device=None):
         self.tf_name = tf_name
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device or _safe_cuda_device()
         self.model = None
         self.feature_names = None
         self.means = None

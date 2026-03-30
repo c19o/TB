@@ -140,10 +140,10 @@ def run_training(tf, output_dir, boost_rounds=50):
     env['PYTHONUNBUFFERED'] = '1'
     env['SKIP_LLM'] = '1'
 
+    env['V3_FORCE_SEQUENTIAL'] = '1'
     cmd = [
         sys.executable, '-u', os.path.join(output_dir, 'ml_multi_tf.py'),
         '--tf', tf,
-        '--no-parallel-splits',
         '--boost-rounds', str(boost_rounds),
     ]
 

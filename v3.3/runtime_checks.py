@@ -47,16 +47,23 @@ def preflight_training(X, y, tf, params, n_jobs=1):
         if not condition:
             log.warning(f"[WARN] {name} -- {msg}")
 
+    import scipy.sparse as sp
+    _is_sparse = sp.issparse(X)
+    _nnz = X.nnz if _is_sparse else int(np.count_nonzero(X))
+
     log.info(f"{'='*55}")
-    log.info(f"  RUNTIME PRE-FLIGHT: {tf} | shape={X.shape} | nnz={X.nnz:,}")
+    log.info(f"  RUNTIME PRE-FLIGHT: {tf} | shape={X.shape} | nnz={_nnz:,} | {'SPARSE' if _is_sparse else 'DENSE'}")
     log.info(f"{'='*55}")
 
     # ── Memory estimation ──
     ram_gb = _get_ram_gb()
-    csr_bytes = X.nnz * 5 + (X.shape[0] + 1) * 8  # data + indices + indptr
-    csr_gb = csr_bytes / (1024**3)
-    peak_gb = csr_gb * 2.5  # LightGBM internal overhead (binning, sorting, histograms)
     dense_gb = X.shape[0] * X.shape[1] * 8 / (1024**3)
+    if _is_sparse:
+        csr_bytes = _nnz * 5 + (X.shape[0] + 1) * 8  # data + indices + indptr
+        csr_gb = csr_bytes / (1024**3)
+    else:
+        csr_gb = dense_gb  # dense uses full memory
+    peak_gb = csr_gb * 2.5  # LightGBM internal overhead (binning, sorting, histograms)
 
     log.info(f"  RAM: {ram_gb:.0f}GB | CSR: {csr_gb:.1f}GB | Peak est: {peak_gb:.1f}GB | Dense would be: {dense_gb:.0f}GB")
 
@@ -77,23 +84,27 @@ def preflight_training(X, y, tf, params, n_jobs=1):
              f"Each of {n_jobs} parallel trials needs ~{per_job_gb:.1f}GB. "
              f"Total {per_job_gb * n_jobs:.1f}GB may exceed {ram_gb:.0f}GB RAM.")
 
-    # ── Sparse matrix integrity ──
-    import scipy.sparse as sp
-    check("matrix is CSR format",
-          sp.issparse(X) and X.format == 'csr',
-          f"Matrix format is {getattr(X, 'format', type(X).__name__)}. Must be CSR for LightGBM.")
+    # ── Matrix format checks ──
+    if _is_sparse:
+        _sparse_nnz = X.nnz  # issparse(X) guaranteed True here
+        check("matrix is CSR format",
+              X.format == 'csr',
+              f"Matrix format is {getattr(X, 'format', type(X).__name__)}. Must be CSR for LightGBM.")
 
-    if hasattr(X, 'nnz'):
-        if X.nnz > 2**31 - 1:
+        if _sparse_nnz > 2**31 - 1:
             check("int64 indptr for large NNZ",
                   X.indptr.dtype == np.int64,
-                  f"NNZ={X.nnz:,} > 2^31 but indptr is {X.indptr.dtype}. Will overflow.")
+                  f"NNZ={_sparse_nnz:,} > 2^31 but indptr is {X.indptr.dtype}. Will overflow.")
         else:
-            log.info(f"  NNZ={X.nnz:,} (within int32 range)")
+            log.info(f"  NNZ={_sparse_nnz:,} (within int32 range)")
+    else:
+        log.info(f"  Matrix is DENSE ndarray ({X.shape[0]}x{X.shape[1]}, dtype={X.dtype})")
+        log.info(f"  Dense is OK for small TFs without crosses (e.g. 1w)")
 
+    _dtype = X.dtype if hasattr(X, 'dtype') else type(X)
     check("matrix dtype is float",
-          X.dtype in (np.float32, np.float64, np.bool_, np.uint8),
-          f"Matrix dtype={X.dtype}. LightGBM expects float32/64. FIX: X = X.astype(np.float32)")
+          _dtype in (np.float32, np.float64, np.bool_, np.uint8),
+          f"Matrix dtype={_dtype}. LightGBM expects float32/64. FIX: X = X.astype(np.float32)")
 
     # ── Label checks ──
     nan_count = np.sum(np.isnan(y))
@@ -229,10 +240,12 @@ def _check_gpu_budget(X, params, n_gpus, n_jobs):
         min_vram_mb = min(vram_mbs)
 
         # CSR resident on GPU
-        csr_mb = (X.nnz * 5 + (X.shape[0] + 1) * 8) / (1024**2)
+        import scipy.sparse as _sp_gpu
+        _nnz_gpu = X.nnz if _sp_gpu.issparse(X) else int(np.count_nonzero(X))
+        csr_mb = (_nnz_gpu * 5 + (X.shape[0] + 1) * 8) / (1024**2)
         # Histogram pool: num_leaves * total_bins * 12 bytes
         num_leaves = params.get('num_leaves', 63)
-        max_bin = params.get('max_bin', 255)
+        max_bin = params.get('max_bin', 7)
         # Rough estimate: EFB reduces features 100x for binary
         efb_bundles = max(1000, X.shape[1] // max_bin)
         hist_mb = num_leaves * efb_bundles * 12 / (1024**2)

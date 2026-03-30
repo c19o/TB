@@ -65,12 +65,27 @@ Analyzing: LightGBM hyperparams, Optuna search space, CPCV config, class weights
 
 ---
 
+## BUG FIX STATUS (v2 training session)
+
+| Bug | Status | Fix |
+|-----|--------|-----|
+| runtime_checks.py:51 `.nnz` on dense | FIXED | `issparse(X)` guard already in place (line 52) |
+| `--no-parallel-splits` CLI arg | FIXED | Removed, replaced with env var `V3_FORCE_SEQUENTIAL=1` |
+| LSTM + RTX 5090 (sm_120) | OPEN | PyTorch CUDA incompatible with SM 120 |
+
+### Validation Checks Added (validate.py)
+4 new checks added to prevent bug recurrence:
+1. **runtime_checks .nnz guard** — verifies issparse() before .nnz (dense 1w crash)
+2. **no --no-parallel-splits** — greps all .py for banned CLI arg
+3. **ALLOW_CPU=1 documentation** — warns if setup/deploy scripts don't mention it
+4. **SKIP_FEATURES_1W gating** — verifies config.py has constant feature skip list + feature_library uses it
+
+---
+
 ## WHAT NEEDS TO BE DONE NEXT SESSION
 
-### Priority 1: Fix 3 Bugs
-1. `runtime_checks.py:51` — add `scipy.sparse.issparse(X)` guard before `.nnz`
-2. LSTM + RTX 5090 — upgrade PyTorch or graceful skip with WARNING
-3. Remove `--no-parallel-splits` CLI arg, use env var instead
+### Priority 1: Fix Remaining Bug
+1. LSTM + RTX 5090 — upgrade PyTorch or graceful skip with WARNING
 
 ### Priority 2: Add Weekly Features (feature_library.py)
 - TRIM: 10 constant features for 1w (hour_sin/cos, dow_sin/cos, day_of_week, is_monday, is_friday, is_weekend, day_of_month, is_month_end)

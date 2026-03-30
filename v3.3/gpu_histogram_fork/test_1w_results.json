@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-03-28 11:33:29",
+  "cpu_accuracy": 77.64,
+  "cpu_train_time_s": 283.79,
+  "best_iteration": 45,
+  "gpu_name": "NVIDIA GeForce RTX 3090",
+  "gpu_vram_gb": 24.0,
+  "spmv_speedup": 78.2,
+  "gpu_histogram_correct": true,
+  "gpu_median_ms": 2.565,
+  "cpu_histogram_median_ms": 200.4,
+  "estimated_gpu_train_s": 98.5,
+  "estimated_speedup": 78.2,
+  "effective_bandwidth_gbs": 716.5
+}

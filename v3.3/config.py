@@ -308,6 +308,166 @@ def apply_tf_feature_filter(df, tf_name):
     return df
 
 
+# ── TF-Aware Zero-Variance Feature Trimming ──
+# These features are STRUCTURALLY constant (zero variance) at the given TF resolution.
+# NOT signal filtering — these literally produce one value for every row.
+# Removing them also eliminates thousands of useless cross features downstream.
+#
+# 1w (weekly candles close same day/hour every week):
+#   hour_sin, hour_cos  — same UTC hour every bar (constant)
+#   dow_sin, dow_cos    — same day-of-week every bar (constant)
+#   day_of_week         — same integer every bar (constant)
+#   is_monday           — always 0 (weekly bars close Sunday/Monday depending on exchange)
+#   is_friday           — always 0 (same reason)
+#   is_weekend          — always 0 or always 1 (same reason)
+#   day_of_month        — weekly bars land on 7 possible days, but exchange weekly close
+#                         is always the same weekday, so day_of_month varies BUT
+#                         is perfectly predicted by week_of_year (redundant, not constant).
+#                         Included here per audit: empirically zero variance in training data.
+#   is_month_end        — weekly bar rarely lands exactly on month end (near-zero variance)
+#
+# 1d (daily candles always close at same hour):
+#   hour_sin, hour_cos  — same UTC hour every bar (constant)
+SKIP_FEATURES_1W = frozenset([
+    'hour_sin', 'hour_cos',
+    'dow_sin', 'dow_cos',
+    'day_of_week',
+    'is_monday', 'is_friday', 'is_weekend',
+    'day_of_month', 'is_month_end',
+])
+
+SKIP_FEATURES_1D = frozenset([
+    'hour_sin', 'hour_cos',
+])
+
+# Combined lookup: tf_name -> set of features to drop
+SKIP_FEATURES_BY_TF = {
+    '1w': SKIP_FEATURES_1W,
+    '1d': SKIP_FEATURES_1D,
+}
+
+
+# ── Lean 1W Mode (AlphaNumetrix-inspired) ──
+# PROBLEM: 1w has ~3500 features but only 819 rows — terrible signal-to-noise.
+# SOLUTION: Keep ONLY core TA backbone (SAR, EMA, RSI) + ALL esoteric + numerology-on-TA hybrids.
+# Drops redundant TA (Ichimoku, Bollinger, MACD, Stochastic, etc.) that add noise on weekly.
+# AlphaNumetrix proves: EMAs + RSI + SAR backbone + numerology interpretation = edge.
+# Result: ~200-300 features (from ~3500) — much better for 819 rows.
+LEAN_1W_MODE = True
+
+# TA features to KEEP in lean 1w mode (everything else gets dropped).
+# These are the AlphaNumetrix backbone: SAR + EMAs + RSI + price-relative measures.
+LEAN_1W_TA_KEEPLIST = frozenset([
+    # --- Parabolic SAR (core backbone) ---
+    'sar_value', 'sar_bullish', 'sar_flip',
+    # --- EMAs (21≈20, 50, 200 — the AlphaNumetrix trio) ---
+    'ema_20', 'ema_50', 'ema_200',
+    'close_vs_ema_20', 'close_vs_ema_50', 'close_vs_ema_200',
+    'sma_200', 'sma_200_slope', 'sma_50_slope',
+    'above_sma200', 'golden_cross', 'death_cross',
+    # --- RSI (the momentum backbone) ---
+    'rsi_14', 'rsi_14_ob', 'rsi_14_os',
+    # --- Price action essentials (keep minimal) ---
+    'return_1bar', 'return_4bar', 'return_12bar',
+    'atr_14',
+    'volume', 'volume_ratio', 'volume_sma_20', 'volume_x_atr',
+    # --- Regime (needed for position sizing) ---
+    'adx_14',
+    # --- Streaks (proven in 1w SHAP) ---
+    'streak_green', 'max_return_streak_10',
+    # --- SAR-numerology hybrids (NEW — computed in feature_library) ---
+    'sar_digit_sum', 'sar_angel_match', 'sar_digital_root',
+    'rsi_digit_sum', 'rsi_digital_root', 'rsi_numerology_zone',
+    'ema200_digit_sum', 'ema200_digital_root',
+    'price_sar_digit_diff', 'price_sar_dr_diff',
+    'price_level_gematria',
+    'sar_close_ratio', 'sar_close_ratio_dr',
+    'ema_cross_21_50', 'ema_cross_50_200', 'price_vs_sar_flip_dr',
+])
+
+# Prefixes for features that are ALWAYS kept in lean 1w mode regardless of TA keeplist.
+# All esoteric, numerology, astrology, space weather, cross features, etc.
+LEAN_1W_ALWAYS_KEEP_PREFIXES = tuple(PROTECTED_FEATURE_PREFIXES) + (
+    # Additional esoteric/numerology prefixes not in PROTECTED list
+    'date_dr', 'date_palindrome', 'digital_root', 'price_dr', 'price_contains',
+    'price_is_master', 'price_near_round', 'price_repeating',
+    'volume_dr', 'pump_date', 'vortex', 'sephirah', 'shemitah', 'jubilee',
+    'lo_shu', 'pythagorean', 'haramein', 'angel_prox', 'base_tension',
+    'year_dr', 'week_digital_root', 'month_digital_root',
+    'candle_body_dr', 'candle_range_dr', 'body_dr', 'range_dr',
+    'is_doji', 'is_hammer', 'is_engulfing', 'bull_engulfing', 'bear_engulfing',
+    'shooting_star', 'morning_star', 'evening_star',
+    # Time/calendar features (proven on weekly)
+    'month_cos', 'month_sin', 'quarter',
+    'halving', 'fib_',
+    # Macro (proven in 1w SHAP)
+    'macro_', 'btc_dxy', 'btc_spx', 'btc_tlt', 'btc_vix', 'yield_curve',
+    # On-chain (highest gain in 1w)
+    'puell', 'hash_ribbon', 'onchain_',
+    # Fear/greed (proven)
+    'high_greed', 'high_fear', 'bars_since_high',
+    # KNN (proven)
+    'knn_',
+    # Frac diff (proven)
+    'frac_diff',
+    # Cycle features
+    'chinese_', 'diwali', 'ramadan',
+    # Regime features (needed for trading)
+    'regime_', 'hmm_',
+    # Decay features
+    'decay_',
+    # Higher-TF features
+    'htf_',
+    # Wyckoff/AVWAP (proven in 1w SHAP)
+    'wyckoff_', 'avwap_',
+    # DOY flags (binary, handled by EFB)
+    'doy_', 'is_',
+    # SAR-numerology hybrids
+    'sar_digit', 'sar_angel', 'sar_digital', 'sar_close_ratio',
+    'rsi_digit', 'rsi_digital', 'rsi_numerology',
+    'ema200_digit', 'ema200_digital',
+    'price_sar_d', 'price_level_gematria', 'price_vs_sar_flip',
+    'ema_cross_',
+    # Target columns (must keep!)
+    'target_', 'label_',
+    # OHLCV (needed downstream)
+    'open', 'high', 'low', 'close',
+)
+
+
+def apply_lean_1w_filter(df, tf_name):
+    """For 1w in lean mode: keep only SAR/EMA/RSI TA + all esoteric + numerology-on-TA hybrids.
+    Drops redundant TA (Ichimoku, Bollinger, MACD, Stochastic, MFI, Williams, etc.)
+    Returns filtered DataFrame. No-op for non-1w timeframes or when LEAN_1W_MODE=False.
+    """
+    if not LEAN_1W_MODE or tf_name != '1w':
+        return df
+
+    keep_cols = []
+    drop_cols = []
+    for col in df.columns:
+        # Always keep if in explicit TA keeplist
+        if col in LEAN_1W_TA_KEEPLIST:
+            keep_cols.append(col)
+            continue
+        # Always keep if matches an esoteric/always-keep prefix
+        if any(col.startswith(p) for p in LEAN_1W_ALWAYS_KEEP_PREFIXES):
+            keep_cols.append(col)
+            continue
+        # Everything else is redundant TA — drop it
+        drop_cols.append(col)
+
+    if drop_cols:
+        print(f"    [LEAN 1W] Keeping {len(keep_cols)} features, dropping {len(drop_cols)} redundant TA features")
+        print(f"    [LEAN 1W] Sample drops: {drop_cols[:15]}")
+        df = df[keep_cols]
+
+    # Validate no protected features removed
+    validate_no_protected_removed(df.columns.tolist() + drop_cols, df.columns.tolist())
+
+    return df
+
+
 # ── LightGBM Training Parameters ──
 # V3.0: LightGBM replaces XGBoost. CPU-only (GPU doesn't support sparse).
 # Rare signal friendly: min_data_in_leaf=3 + min_gain_to_split=2.0
@@ -318,10 +478,10 @@ V3_LGBM_PARAMS = {
     "boosting_type": "gbdt",
     "device": "cpu",
     "force_col_wise": True,
-    "max_bin": 255,                    # max EFB bundle size (254/bundle → ~23K bundles for 6M features). Binary features still get 2 bins.
+    "max_bin": 7,                      # binary features need 2 bins, 4-tier binarization needs ~5. 7 = safe ceiling. 36x less memory than 255.
     "max_depth": -1,                  # -1 = no limit; Optuna searches [4, 12]
     "num_threads": 0,                 # 0 = auto-detect via OpenMP (not -1 which is undocumented)
-    "deterministic": True,            # Perplexity: required for reproducible sparse training
+    # deterministic: REMOVED — kills GPU + multi-thread perf. Reproducibility via CPCV seed instead.
     "feature_pre_filter": False,      # CRITICAL: True silently kills rare esoteric features at Dataset construction
     "is_enable_sparse": True,
     "min_data_in_bin": 1,              # allow bins with 1 sample (rare esoteric signals)
@@ -347,11 +507,17 @@ V3_LGBM_PARAMS = {
 # Compensating regularization: min_gain_to_split=2.0, lambda_l1/l2, path_smooth=0.5.
 # Perplexity-confirmed 2026-03-29: old values (30/50) were same bug class as feature_fraction=0.005.
 TF_MIN_DATA_IN_LEAF = {
-    '1w': 8,   # 1158 rows — rare signals fire 10-20x (was 30, killing them)
+    '1w': 2,   # 819 rows — must catch signals firing 5-10x. Floor=2 lets Optuna search [2,8].
     '1d': 8,   # 5.7K rows — lowered to 8: P(8-fire in bag@bf=0.95)>>P(10-fire) (was 10)
     '4h': 8,   # 23K rows — lowered to 8: more headroom for signals firing 8-10x (was 10)
     '1h': 8,   # 75K rows — lowered to 8: matches 1w (was 10)
     '15m': 8,  # 294K rows — lowered to 8: consistent floor across all TFs (was 10)
+}
+
+# Per-TF max for min_data_in_leaf Optuna range (default=10)
+# 1w: cap at 8 (not 10) — 819 rows means even 10 is aggressive for rare signals
+TF_MIN_DATA_IN_LEAF_MAX = {
+    '1w': 8,
 }
 
 # TFs that use force_row_wise instead of force_col_wise during training.
@@ -377,15 +543,15 @@ EFB_PREBUNDLE_ENABLED = {
 # 1w: explicit SHORT upweight (3x) because model never predicts SHORT without it
 TF_CLASS_WEIGHT = {
     '1d': {0: 3.0, 1: 1.0, 2: 1.0},  # SHORT=3x — force directional SHORT learning
-    '1w': {0: 3.0, 1: 1.0, 2: 1.0},  # SHORT=3x — worked great on 1w final run
+    '1w': {0: 2.0, 1: 1.0, 2: 1.0},  # SHORT=2x — reduced from 3x (model was ONLY predicting SHORT)
     '4h': {0: 2.0, 1: 1.0, 2: 1.0},  # SHORT=2x — insurance (v3.2 4h had SHORT accuracy issues)
 }
 
 # Per-TF CPCV group settings (n_groups, n_test_groups) — FINAL evaluation (K=2)
 # Splits = C(N,K), unique paths phi = (K/N)*C(N,K), train fraction = (N-K)/N
-# Expert ML: 3-5 groups optimal for 1w/1d (sparse signal fires), 10 for data-rich TFs
+# Expert ML: 8 groups for 1w (75% train, 28 paths — max data with K=2 PBO), 10 for data-rich TFs
 TF_CPCV_GROUPS = {
-    '1w': (5, 2),    # C(5,2)=10 paths, 60% train — optimal for 3-20 signal fires
+    '1w': (8, 2),    # C(8,2)=28 paths, 75% train — more data per fold for 819 rows + 50-bar purge
     '1d': (5, 2),    # C(5,2)=10 paths, 60% train — optimal for 3-20 signal fires
     '4h': (10, 2),   # C(10,2)=45 paths, 80% train — sample 30 paths
     '1h': (10, 2),   # C(10,2)=45 paths, 80% train — sample 30 paths
@@ -402,11 +568,34 @@ CPCV_SAMPLE_SEED = 42             # deterministic sampling for reproducibility
 
 # Per-TF num_leaves caps (scaled with data size — larger TFs support deeper trees)
 TF_NUM_LEAVES = {
-    '1w': 7,     # 1158 rows — v3.2 best was 7. Max 7 leaves for weekly.
+    '1w': 15,    # 819 rows — raised from 7. Perplexity: 15-31 optimal for tiny data. 15 = conservative start.
     '1d': 15,    # 5.7K rows — moderate (EFB ratio 0.28:1)
     '4h': 31,    # 23K rows — standard (EFB ratio 0.92:1)
     '1h': 63,    # 75K rows — can handle complexity (EFB ratio 3.8:1)
     '15m': 127,  # 294K rows — deep trees viable (EFB ratio 6.9:1)
+}
+
+# Per-TF learning_rate overrides (global default = 0.03 in V3_LGBM_PARAMS)
+# 1w: 0.03 → 0.1 — tiny data (819 rows) needs faster learning. Each tree must make a meaningful step.
+# Perplexity-confirmed: LR=0.03 on 819 rows → validation metric never improves → ES kills at tree 1.
+TF_LEARNING_RATE = {
+    '1w': 0.1,     # 819 rows — fast learning, compensated by fewer boost rounds
+    # Other TFs use global 0.03 (omitted = use default)
+}
+
+# Per-TF num_boost_round overrides (global default = 800 via --boost-rounds CLI)
+# 1w: 800 → 300 — tiny data doesn't need 800 rounds. With LR=0.1, model converges much faster.
+TF_NUM_BOOST_ROUND = {
+    '1w': 300,     # 819 rows — fewer rounds needed at higher LR
+    # Other TFs use global 800 (omitted = use CLI default)
+}
+
+# Per-TF early stopping patience overrides
+# Default formula: max(50, int(100 * (0.1 / lr))). At LR=0.03 → 333, at LR=0.1 → 100.
+# 1w: override to 50 — on 819 rows, genuine improvements happen early or not at all.
+TF_ES_PATIENCE = {
+    '1w': 50,      # 819 rows — don't waste 100 rounds when model stops improving
+    # Other TFs use dynamic formula (omitted = use formula)
 }
 
 # SHAP analysis config
@@ -446,14 +635,46 @@ OPTUNA_TF_ROW_SUBSAMPLE = {
     '15m': 0.25,  # 294K → ~74K rows (sparse OK, subsample for speed)
 }
 
-# Per-TF overrides
+# Per-TF trial count overrides
 OPTUNA_TF_PHASE1_TRIALS = {
-    '1w': 20, '1d': 25, '4h': 25, '1h': 25, '15m': 30,
+    '1w': 15,   # was 20 — smaller search space (fewer leaves/depth combos), 15 is sufficient
+    '1d': 25, '4h': 25, '1h': 25, '15m': 30,
 }
 
-# Keep final retrain unchanged
+# Per-TF Phase 1 LR overrides (default = OPTUNA_PHASE1_LR = 0.15)
+# 1w: higher LR for tiny data — needs stronger signal per round to converge in fewer rounds
+OPTUNA_TF_PHASE1_LR = {
+    '1w': 0.20,  # 819 rows — higher LR for faster convergence on tiny data
+}
+
+# Per-TF Phase 1 max rounds overrides (default = OPTUNA_PHASE1_ROUNDS = 60)
+OPTUNA_TF_PHASE1_ROUNDS = {
+    '1w': 40,    # 819 rows — fewer rounds needed at higher LR, prevents overfitting
+}
+
+# Per-TF max_depth Optuna search range (default = [2, 8])
+# 1w: floor at 3 to prevent trivially shallow trees on tiny data
+OPTUNA_TF_MAX_DEPTH_RANGE = {
+    '1w': (3, 8),    # tiny data — floor=3 prevents 2-deep stumps, cap=8 prevents memorization
+    '1d': (3, 8),    # moderate data — same logic
+}
+
+# Per-TF learning_rate Optuna search range (default = None, meaning fixed LR from phase config)
+# When set, learning_rate becomes a searchable hyperparameter instead of fixed
+OPTUNA_TF_LR_SEARCH_RANGE = {
+    '1w': (0.05, 0.3),  # tiny data — wider range, model needs to find optimal LR
+}
+
+# Keep final retrain unchanged (per-TF overrides below)
 OPTUNA_FINAL_LR = 0.03
 OPTUNA_FINAL_ROUNDS = 800
+
+# Per-TF final round caps (default = OPTUNA_FINAL_ROUNDS = 800)
+# 1w: 300 cap — 819 rows overfits well before 800 rounds at LR=0.03
+OPTUNA_TF_FINAL_ROUNDS = {
+    '1w': 300,   # 819 rows — overfits by round ~200 at LR=0.03. 300 with ES is safe cap.
+    '1d': 600,   # 5.7K rows — moderate cap
+}
 
 # n_jobs: env var override or auto
 OPTUNA_N_JOBS = int(os.environ.get('OPTUNA_N_JOBS', 0))  # 0 = auto (total_cores // 8). 13900K=3, 128c=16.

@@ -30,7 +30,7 @@ Usage:
   python v2_multi_asset_trainer.py --mode production --tf 1d 1h 4h
   python v2_multi_asset_trainer.py --mode all --tf 1d
   python v2_multi_asset_trainer.py --mode unified --tf 1d                    # auto-parallel if N_GPUS > 1
-  python v2_multi_asset_trainer.py --mode unified --tf 1d --no-parallel-splits  # force sequential
+  V3_FORCE_SEQUENTIAL=1 python v2_multi_asset_trainer.py --mode unified --tf 1d  # force sequential
 """
 
 import os, sys, time, json, argparse, warnings, pickle, gc, glob
@@ -458,7 +458,7 @@ def _lgbm_split_worker(args):
 
     params = params.copy()
 
-    _ds_params = {'feature_pre_filter': False, 'max_bin': 255, 'min_data_in_bin': 1}
+    _ds_params = {'feature_pre_filter': False, 'max_bin': 7, 'min_data_in_bin': 1}
     dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
                          feature_name=feature_names, free_raw_data=False, params=_ds_params)
     dval = lgb.Dataset(X_val_es, label=y_val_es,
@@ -625,7 +625,7 @@ def train_model(X_sparse, y, weights, feature_names, params=None,
             X_train_es = X_train[:-val_size]
             y_train_es = y_train[:-val_size]
 
-            _ds_params2 = {'feature_pre_filter': False, 'max_bin': 255, 'min_data_in_bin': 1}
+            _ds_params2 = {'feature_pre_filter': False, 'max_bin': 7, 'min_data_in_bin': 1}
             dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
                                  feature_name=feature_names, free_raw_data=False, params=_ds_params2)
             dval = lgb.Dataset(X_val_es, label=y_val_es,
@@ -801,8 +801,7 @@ def main():
                         help='Training engine (lightgbm only)')
     parser.add_argument('--parallel-splits', action='store_true', default=False,
                         help='(legacy, now auto-detected) Kept for backward compat with cloud runners')
-    parser.add_argument('--no-parallel-splits', action='store_true', default=False,
-                        help='Force sequential CPCV splits')
+    # --no-parallel-splits removed: use env V3_FORCE_SEQUENTIAL=1 instead
     parser.add_argument('--resume', action='store_true',
                         help='Skip models that already exist')
     args = parser.parse_args()
@@ -812,12 +811,13 @@ def main():
         n_cpu_workers = max(1, get_cpu_count() // 4)
     except ImportError:
         n_cpu_workers = max(1, os.cpu_count() // 4)
-    if args.no_parallel_splits:
+    _force_seq = os.environ.get('V3_FORCE_SEQUENTIAL', '0') == '1'
+    if _force_seq:
         args.parallel_splits = False
-        log("PARALLEL SPLITS: disabled (--no-parallel-splits)")
+        log("PARALLEL SPLITS: disabled (V3_FORCE_SEQUENTIAL=1)")
     elif n_cpu_workers > 1:
         args.parallel_splits = True
-        log(f"PARALLEL SPLITS: auto-enabled across {n_cpu_workers} CPU workers (use --no-parallel-splits to disable)")
+        log(f"PARALLEL SPLITS: auto-enabled across {n_cpu_workers} CPU workers (set V3_FORCE_SEQUENTIAL=1 to disable)")
     else:
         args.parallel_splits = False
         log("PARALLEL SPLITS: off (insufficient CPU cores)")
