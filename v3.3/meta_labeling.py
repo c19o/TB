@@ -151,7 +151,8 @@ def train_meta_model(oos_predictions, feature_data=None, feature_cols=None,
         meta_probs_test = model.predict_proba(X_meta_test)[:, 1]
     elif model_type == 'lgbm_shallow' and lgb is not None:
         dtrain = lgb.Dataset(X_meta_train, label=y_meta_train,
-                             feature_name=meta_feature_names, free_raw_data=False)
+                             feature_name=meta_feature_names, free_raw_data=False,
+                             params={'feature_pre_filter': False})  # CRITICAL: must be at Dataset construction
         dtest = lgb.Dataset(X_meta_test, label=y_meta_test,
                             feature_name=meta_feature_names, free_raw_data=False,
                             reference=dtrain)
@@ -166,6 +167,7 @@ def train_meta_model(oos_predictions, feature_data=None, feature_cols=None,
             'metric': 'auc',
             'verbosity': -1,
             'feature_pre_filter': False,  # CRITICAL: True silently kills rare esoteric features
+            'force_col_wise': True,
         }
         model = lgb.train(params, dtrain, num_boost_round=100,
                           valid_sets=[dtest], valid_names=['test'],

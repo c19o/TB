@@ -7,17 +7,21 @@ The barrier config determines label balance. HOLD-dominated labels = model learn
 **v3.2 1h proved this**: 2.0x ATR / 2.0x ATR / hold=24 → 44% LONG / 43% SHORT / 13% HOLD → **53.9% accuracy**
 **v3.3 1d failed this**: 3.5x ATR / 1.5x ATR / hold=8 → 34% LONG / 15% SHORT / 51% HOLD → **37% directional accuracy**
 
-### Per-TF Feature Strategy
+### Per-TF Feature Strategy (LOCKED 2026-03-29)
 
 The matrix thesis scales with DATA. More rows = more features add value. Fewer rows = features become noise.
 
-| TF | Rows | Feature Strategy | Target Features | Cross Features |
-|----|------|-----------------|----------------|---------------|
-| **1w** | 1,158 | **Macro + big picture ONLY** | ~200-500 | **NONE** (skip crosses) |
-| **1d** | 5,733 | Full base + crosses | ~2.6M | Full crosses |
-| **4h** | 23,237 | Full base + crosses | ~5.4M | Full crosses |
-| **1h** | 17,660 | Full base + crosses | ~4M | Full crosses |
-| **15m** | 200K+ | Full base + crosses | ~10M | Full crosses |
+| TF | Rows | Feature Strategy | Target Features | Cross Type |
+|----|------|-----------------|----------------|-----------|
+| **1w** | 1,158 | **Base features ONLY** | ~380 | **NONE** (skip crosses) |
+| **1d** | 5,733 | Base + **month** crosses | ~3.4M | Month bins (12 bins, not 365 DOY) |
+| **4h** | 23,237 | Base + **DOY** crosses | ~5.56M | Full DOY (64 samples/bin) |
+| **1h** | 75,406 | Base + DOY crosses | ~6M+ | Full DOY |
+| **15m** | 293,980 | Base + DOY crosses | ~10M+ | Full DOY |
+
+**Why month crosses for 1d**: DOY crossing gives 996K features per cross group but only 15-16 samples/DOY bin. Month gives 43K features with 478 samples/bin. mlogloss jumped from 0.998 (DOY) to 0.753 (month).
+
+**Why base-only for 1w**: 1158 rows / 380 features = 3:1 ratio. Any crosses would push ratio below 1:1 (noise dominates signal). Puell multiple was #1 feature — macro/cycle features carry 1w.
 
 **1w feature selection**: Only keep features relevant to weekly/monthly timeframe:
 - Macro correlations (DXY, SPY, GLD, TLT, rates, BTC dominance)
@@ -39,45 +43,59 @@ The matrix thesis scales with DATA. More rows = more features add value. Fewer r
 | 1h | 1 hour | 7 hrs to 4 days (most ~30 hrs) | **7-100 bars** |
 | 15m | 15 min | 1.75 hrs to 10 hrs | **7-40 bars** |
 
-### Current Config (BROKEN for 1d)
+### LOCKED Config (Tested on Real Data, 2026-03-29)
+
+All barrier configs tested on real BTC data and label distributions verified before training.
 
 ```python
 TRIPLE_BARRIER_CONFIG = {
-    '15m': {'tp_atr_mult': 2.0, 'sl_atr_mult': 1.8, 'max_hold_bars': 32},
-    '1h':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 1.5, 'max_hold_bars': 24},
-    '4h':  {'tp_atr_mult': 3.0, 'sl_atr_mult': 1.5, 'max_hold_bars': 12},  # 12 bars = 2 days, WAY too short
-    '1d':  {'tp_atr_mult': 3.5, 'sl_atr_mult': 1.5, 'max_hold_bars': 8},   # 8 bars = 8 days, WAY too short
-    '1w':  {'tp_atr_mult': 3.5, 'sl_atr_mult': 1.2, 'max_hold_bars': 4},   # 4 bars = 4 weeks, maybe OK
+    '15m': {'tp_atr_mult': 1.0, 'sl_atr_mult': 1.0, 'max_hold_bars': 24},   # Tight barriers, ~6 hrs hold
+    '1h':  {'tp_atr_mult': 1.2, 'sl_atr_mult': 1.2, 'max_hold_bars': 48},   # ~2 days hold
+    '4h':  {'tp_atr_mult': 1.5, 'sl_atr_mult': 1.5, 'max_hold_bars': 72},   # ~12 days hold, 51/49 LONG/SHORT balance
+    '1d':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 90},   # ~3 months hold
+    '1w':  {'tp_atr_mult': 2.5, 'sl_atr_mult': 2.5, 'max_hold_bars': 50},   # ~1 year hold
 }
 ```
 
-### Proposed Config (Balanced Labels)
-
-Target: <25% HOLD, ~38% LONG, ~37% SHORT (directional majority)
-
-```python
-TRIPLE_BARRIER_CONFIG = {
-    '15m': {'tp_atr_mult': 1.0, 'sl_atr_mult': 1.0, 'max_hold_bars': 24},   # Tight barriers, ~6 hrs hold (7-40 bar trades)
-    '1h':  {'tp_atr_mult': 1.2, 'sl_atr_mult': 1.2, 'max_hold_bars': 48},   # ~2 days hold (7-100 bar trades, most ~30)
-    '4h':  {'tp_atr_mult': 1.5, 'sl_atr_mult': 1.5, 'max_hold_bars': 72},   # ~12 days hold (10-140 bar trades)
-    '1d':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 90},   # ~3 months hold (42-144 bar trades)
-    '1w':  {'tp_atr_mult': 2.5, 'sl_atr_mult': 2.5, 'max_hold_bars': 50},   # ~1 year hold (11-94 bar trades)
-}
-```
-
-Key changes:
-- **1d hold: 8 → 90** (8 days → 3 months — matches 42-144 bar trade duration)
-- **1d tp: 3.5 → 2.0** (tighter — price CAN reach 2x ATR in 3 months)
-- **1d sl: 1.5 → 2.0** (symmetric — balanced LONG/SHORT)
-- **4h hold: 12 → 72** (2 days → 12 days — plenty of 10-40 bar trades, some to 140)
-- **4h tp: 3.0 → 2.0** (tighter)
-- **1w hold: 4 → 50** (4 weeks → ~1 year, midpoint of 11-94 bar trade duration)
+### Class Weights (LOCKED)
+- **1w**: SHORT = 3x weight
+- **1d**: SHORT = 3x weight
+- **4h**: SHORT = 2x weight (naturally balanced labels)
+- **1h/15m**: TBD (pending training)
 
 ---
 
 ## Optuna Hyperparameter Ranges
 
-### Current v3.3 (produced 51.2% accuracy, PBO 0.20)
+### Per-TF num_leaves Scaling (LOCKED 2026-03-29)
+
+| TF | num_leaves | min_data_in_leaf | Rationale |
+|----|-----------|-----------------|-----------|
+| 1w | **7** | 30 | v3.2 best was 7. Only 1158 rows. |
+| 1d | **15** | 50 | 5733 rows, 3.4M features. Heavy regularization needed. |
+| 4h | **31** | 20 | 23K rows, 5.56M features. Standard complexity. |
+| 1h | **63** | 15 | 75K rows. Moderate complexity. |
+| 15m | **127** | 15 | 294K rows. Full complexity. |
+
+### CRITICAL: feature_fraction Range (CORRECTED 2026-03-29)
+
+**feature_fraction was silently killing the matrix edge.**
+
+| Param | OLD (broken) | NEW (corrected) | Why |
+|-------|-------------|-----------------|-----|
+| feature_fraction | 0.005 – 0.05 | **0.7 – 1.0** | Low = only 150 EFB bundles/tree = rare signals excluded |
+| feature_fraction_bynode | 0.05 – 0.3 | **0.5 – 1.0** | Low = <10 bundles per node split = only TA survives |
+| V3_LGBM_PARAMS default | 0.1 | **0.9** | Seed trials must see nearly all features |
+
+**What happened**: Optuna optimized mlogloss by finding that IGNORING rare esoteric features gives better loss. With feature_fraction=0.01 and EFB bundling 3.4M→15K bundles, each tree only saw 150 bundles. The 1d "best" trial (mlogloss=0.753) and 4h warm-start (0.657) were achieved WITHOUT the matrix edge — just common TA. This is a **silent philosophy violation**.
+
+**After EFB**: feature_fraction operates on **bundles, not raw features**. 0.9 × 23K bundles = 20,700 bundles per tree. This preserves rare signals while still providing de-correlation.
+
+**Perplexity confirmed**: For millions of sparse binary features where rare signals ARE the edge, feature_fraction must be >= 0.7. With EFB bundling to 23K, feature_fraction=1.0 fits easily in 32GB GPU VRAM (~200-500MB per trial).
+
+**RULE**: NEVER allow feature_fraction below 0.7 in the Optuna search range. If Optuna wants regularization, use lambda_l1/l2 and min_gain_to_split instead — those don't systematically exclude features.
+
+### Previous v3.3 1d (produced 51.2% accuracy, PBO 0.20 — OBSOLETE, feature_fraction was broken)
 
 Winner params: num_leaves=36, min_data_in_leaf=3, feature_fraction=0.023, lambda_l2=13.5, max_depth=11
 
@@ -109,17 +127,17 @@ Winner params: num_leaves=36, min_data_in_leaf=3, feature_fraction=0.023, lambda
 
 ## Critical Code Fixes
 
-### 1. Remove Dense Conversion (Unblocks 4h/1h)
-- `run_optuna_local.py` ~line 330: delete `.toarray()`
-- `ml_multi_tf.py` ~lines 893, 1064: delete dense conversion
+### 1. Remove Dense Conversion (DONE — Unblocked 4h/1h)
+- `run_optuna_local.py`: removed `.toarray()` — trains on sparse CSR directly
+- `ml_multi_tf.py`: dense conversion removed
 - LightGBM accepts scipy sparse CSR natively
 
 ### 2. Add force_col_wise=True (Speed)
 - `config.py` V3_LGBM_PARAMS: add `'force_col_wise': True`
 - Bypasses PushDataToMultiValBin bug, linear thread scaling
 
-### 3. Replace run_tee (Reliability)
-- `cloud_run_tf.py` ~line 84: Python Popen drain loop replaces shell tee
+### 3. Replace run_tee (DONE)
+- `cloud_run_tf.py`: Python Popen drain loop replaces shell tee
 - Prevents false FAIL reports on long runs
 
 ### 4. Lower Confidence Thresholds (Trade Optimizer)
@@ -162,8 +180,9 @@ Built from EXISTING data — no new downloads needed:
 - Hold bars must match actual trade duration for the TF
 
 ### Step 2: Feature Appropriateness
-- 1w: Macro + big astro + long MAs + cycle detection (~2000 features, no crosses, no DOY)
-- 1d-15m: Full feature set + crosses (matrix thesis scales with data)
+- 1w: Base features only (~380, no crosses). Puell multiple = #1 feature.
+- 1d: Base + month crosses (~3.4M features). DOY too sparse (15 samples/bin).
+- 4h+: Base + DOY crosses (5.56M+ features). DOY meaningful at 64+ samples/bin.
 - Per-TF feature count should be < 3x row count for base features
 
 ### Step 3: Model Complexity (Scale with EFB-Adjusted Row:Feature Ratio)
@@ -190,14 +209,14 @@ Built from EXISTING data — no new downloads needed:
 - High-confidence HOLD ≠ good model (it means the model learned to dodge)
 - Target: directional accuracy > 50% at conf >= 0.45
 
-## Training Order
+## Training Order (Updated 2026-03-29)
 
-1. Fix barriers + sparse + force_col_wise + run_tee
-2. Retrain 1d locally or cloud (verify label balance < 25% HOLD)
-3. If 1d directional accuracy > 45%, proceed to 4h
-4. 4h: full pipeline with sparse Optuna (no dense OOM)
-5. 1h: after 4h verified
-6. 15m: after 1h verified
+1. ~~Fix barriers + sparse + force_col_wise + run_tee~~ **DONE**
+2. ~~1w: base features only, 380 features~~ **DONE** — 57.5% CPCV, 80.3% LONG@0.80
+3. **1d: Optuna Phase 1 running** (Norway m:29579, 17/25 trials, best mlogloss 0.753)
+4. **4h: Optuna Phase 1 running** (NJ m:32893, 15 warm-start trials, 5.56M features)
+5. 1h: after 4h verified (need 768GB+ machine)
+6. 15m: after 1h verified (need 1TB+ machine)
 
 ---
 

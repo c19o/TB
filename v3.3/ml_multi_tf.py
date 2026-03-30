@@ -207,7 +207,13 @@ def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
         end = (g + 1) * group_size if g < n_groups - 1 else n_samples
         groups.append(np.arange(start, end))
 
-    embargo_size = max_hold_bars if max_hold_bars else max(1, int(n_samples * embargo_pct))
+    if max_hold_bars is not None:
+        # Embargo must be >= max_hold_bars bars (prevents leakage from forward label horizon)
+        # Formula: max(embargo_pct * n, max_hold_bars) — López de Prado
+        effective_pct = max(embargo_pct, max_hold_bars / n_samples)
+    else:
+        effective_pct = embargo_pct
+    embargo_size = max(1, int(n_samples * effective_pct))
 
     # Generate all combinatorial test paths
     all_paths = list(combinations(range(n_groups), n_test_groups))
@@ -286,19 +292,21 @@ def _ensure_lgbm_sparse_dtypes(X, label="matrix"):
     return X
 
 
-def _predict_chunked(model, X, chunk_size=50000):
+def _predict_chunked(model, X, chunk_size=50000, num_iteration=None):
     """Predict in row chunks for large sparse matrices.
     Each chunk's CSR is small enough for LightGBM predict.
     Used for IS predictions where full train set NNZ may exceed int32.
+    num_iteration: passed through to model.predict() for best-iteration scoring.
     """
+    predict_kwargs = {} if num_iteration is None else {'num_iteration': num_iteration}
     if not hasattr(X, 'nnz') or X.nnz <= INT32_MAX:
-        return model.predict(X)
+        return model.predict(X, **predict_kwargs)
     n = X.shape[0]
     preds = []
     for start in range(0, n, chunk_size):
         end = min(start + chunk_size, n)
         chunk = X[start:end]
-        preds.append(model.predict(chunk))
+        preds.append(model.predict(chunk, **predict_kwargs))
     return np.vstack(preds)
 
 
@@ -340,6 +348,7 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
         Trained model. Has .best_iteration set.
     """
     params = dict(params)
+    params.pop('device', None)  # remove alias — 'device'='cpu' from V3_LGBM_PARAMS conflicts with device_type
     params['device_type'] = 'cuda_sparse'
     params['gpu_device_id'] = gpu_device_id
     # Remove force_col_wise — GPU path uses its own histogram builder
@@ -359,7 +368,6 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
 
     best_score = None
     best_iter = 0
-    best_model_str = None
     _higher_better = None  # auto-detected from first eval
     for i in range(num_boost_round):
         booster.update()
@@ -373,11 +381,9 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
                     _higher_better = val_result[0][3]  # auto-detect from LightGBM
                     best_score = score
                     best_iter = i + 1
-                    best_model_str = booster.model_to_string()
                 elif (_higher_better and score > best_score) or (not _higher_better and score < best_score):
                     best_score = score
                     best_iter = i + 1
-                    best_model_str = booster.model_to_string()
                 elif (i + 1) - best_iter >= early_stopping_rounds:
                     if log_period > 0:
                         log(f"    GPU early stopping at round {i+1} (best={best_iter})")
@@ -407,9 +413,10 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
             log(f"    [GPU] SIGTERM at round {i+1}")
             break
 
-    # Restore best model if early stopping was used
-    if best_model_str is not None and ds_val is not None:
-        booster = lgb.Booster(model_str=best_model_str)
+    # best_iter tracks the exact round with best val score.
+    # LightGBM trees are immutable once added — predict(num_iteration=best_iter)
+    # is mathematically identical to restoring from model_to_string() at that round
+    # and avoids 87MB × N serializations per training run.
     booster.best_iteration = best_iter if best_iter > 0 else (i + 1)
     return booster
 
@@ -423,7 +430,8 @@ def _cpcv_split_worker(args_tuple):
     """
     (wi, train_idx, test_idx, X_data, X_indices, X_indptr, X_shape,
      y_3class, sample_weights, feature_cols, lgb_params,
-     num_boost_round, tf_name, gpu_id) = args_tuple
+     num_boost_round, tf_name, gpu_id,
+     hmm_overlay, hmm_overlay_names) = args_tuple
 
     import os
     import numpy as np
@@ -444,6 +452,18 @@ def _cpcv_split_worker(args_tuple):
     y_train = y_train_raw[train_valid].astype(int)
     X_test = X_all[test_idx][test_valid]
     y_test = y_test_raw[test_valid].astype(int)
+
+    # T-2 FIX: Apply per-fold HMM overlay (fitted on train-end-date only, no lookahead)
+    # hmm_overlay is (N, n_hmm_cols) float32 pre-computed by the parent process per fold.
+    # hstack only on the subset rows — cheap since overlay is small (4 cols).
+    if hmm_overlay is not None and len(hmm_overlay_names) > 0:
+        _Xtr_hmm = sparse.csr_matrix(hmm_overlay[train_idx][train_valid])
+        X_train = sparse.hstack([X_train, _Xtr_hmm], format='csr')
+        del _Xtr_hmm
+        _Xte_hmm = sparse.csr_matrix(hmm_overlay[test_idx][test_valid])
+        X_test = sparse.hstack([X_test, _Xte_hmm], format='csr')
+        del _Xte_hmm
+        feature_cols = list(feature_cols) + list(hmm_overlay_names)
     test_idx_valid = test_idx[test_valid]
 
     min_train = 50 if tf_name in ('1w', '1d') else 300
@@ -468,9 +488,10 @@ def _cpcv_split_worker(args_tuple):
     y_train_es = y_train[:-val_size]
     w_train_es = w_train[:-val_size]
 
+    _w_ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
     dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
-                         feature_name=feature_cols, free_raw_data=False)
-    dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, feature_name=feature_cols, free_raw_data=False)
+                         feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
+    dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
     _es_rounds_w = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
 
     # GPU sparse path: detect in-worker (subprocess doesn't inherit parent globals)
@@ -489,7 +510,6 @@ def _cpcv_split_worker(args_tuple):
         booster.add_valid(dval, 'val')
         best_score_w = None
         best_iter_w = 0
-        best_model_str_w = None
         _hb_w = None  # higher_better flag
         for _ri in range(num_boost_round):
             booster.update()
@@ -500,17 +520,12 @@ def _cpcv_split_worker(args_tuple):
                     _hb_w = val_result[0][3]
                     best_score_w = _sc
                     best_iter_w = _ri + 1
-                    best_model_str_w = booster.model_to_string()
                 elif (_hb_w and _sc > best_score_w) or (not _hb_w and _sc < best_score_w):
                     best_score_w = _sc
                     best_iter_w = _ri + 1
-                    best_model_str_w = booster.model_to_string()
                 elif (_ri + 1) - best_iter_w >= _es_rounds_w:
                     break
-        if best_model_str_w is not None:
-            model = lgb.Booster(model_str=best_model_str_w)
-        else:
-            model = booster
+        model = booster
         model.best_iteration = best_iter_w if best_iter_w > 0 else (_ri + 1)
         del _X_csr_w
     else:
@@ -522,8 +537,10 @@ def _cpcv_split_worker(args_tuple):
             callbacks=[lgb.early_stopping(_es_rounds_w), lgb.log_evaluation(0)],
         )
 
-    # OOS predictions (LightGBM predicts directly on arrays)
-    preds_3c = model.predict(X_test)
+    # OOS predictions — use best_iteration so GPU path (which no longer truncates via
+    # model_to_string) evaluates only the first best_iter trees, identical to the
+    # old model_to_string() restore but without 87MB × N serializations.
+    preds_3c = model.predict(X_test, num_iteration=model.best_iteration)
     pred_labels = np.argmax(preds_3c, axis=1)
     acc = float(accuracy_score(y_test, pred_labels))
     prec_long = float(precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0))
@@ -531,7 +548,7 @@ def _cpcv_split_worker(args_tuple):
     mlogloss = float(log_loss(y_test, preds_3c, labels=[0, 1, 2]))
 
     # IS metrics for PBO
-    is_preds_3c = model.predict(X_train)
+    is_preds_3c = model.predict(X_train, num_iteration=model.best_iteration)
     is_pred_labels = np.argmax(is_preds_3c, axis=1)
     is_acc = float(accuracy_score(y_train, is_pred_labels))
     is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
@@ -1001,9 +1018,10 @@ if __name__ == '__main__':
               from config import TF_CPCV_GROUPS
               n_groups, n_test_groups = TF_CPCV_GROUPS.get(tf_name, (4, 1))
 
+          _embargo_pct = max(0.01, max_hold / n)  # embargo >= max_hold_bars bars (López de Prado)
           cpcv_splits = _generate_cpcv_splits(
               n, n_groups=n_groups, n_test_groups=n_test_groups,
-              max_hold_bars=max_hold, embargo_pct=0.01,
+              max_hold_bars=max_hold, embargo_pct=_embargo_pct,
           )
 
           # Convert CPCV splits to (train_start, train_end, test_start, test_end) format
@@ -1012,7 +1030,7 @@ if __name__ == '__main__':
           for train_idx, test_idx in cpcv_splits:
               splits.append((train_idx, test_idx))
 
-          log(f"  {elapsed()} CPCV: {len(splits)} paths (N={n_groups} groups, K={n_test_groups} test, purge={max_hold} bars, embargo=1%)")
+          log(f"  {elapsed()} CPCV: {len(splits)} paths (N={n_groups} groups, K={n_test_groups} test, purge={max_hold} bars, embargo={max(1, int(n * _embargo_pct))} bars)")
           for i, (tr_idx, te_idx) in enumerate(splits[:5]):  # log first 5
               log(f"    Path {i+1}: train={len(tr_idx)} samples, test={len(te_idx)} samples")
           if len(splits) > 5:
@@ -1053,8 +1071,14 @@ if __name__ == '__main__':
           if isinstance(_cw, dict):
               # Explicit per-class weights — apply as sample_weight multiplier
               _class_weight_map = _cw
-              _cw_arr = np.array([_class_weight_map.get(int(y), 1.0) for y in y_3class[~np.isnan(y_3class)]])
-              sample_weights = sample_weights * np.pad(_cw_arr, (0, len(sample_weights) - len(_cw_arr)), constant_values=1.0)[:len(sample_weights)]
+              # Build full-length class weight array (one entry per row, NaN rows get 1.0).
+              # MUST be position-aligned with sample_weights — np.pad was WRONG because non-NaN
+              # rows are scattered, not contiguous at the start. Per-fold slicing
+              # sample_weights[train_idx][train_valid] then picks the correct weights.
+              _cw_arr = np.ones(len(y_3class), dtype=np.float32)
+              _cw_mask = ~np.isnan(y_3class)
+              _cw_arr[_cw_mask] = np.array([_class_weight_map.get(int(k), 1.0) for k in y_3class[_cw_mask]], dtype=np.float32)
+              sample_weights = sample_weights * _cw_arr
               log(f"  Class weights: {_class_weight_map} (SHORT={_class_weight_map.get(0, 1.0)}x)")
           elif _cw == 'balanced':
               _base_lgb_params['is_unbalance'] = True
@@ -1165,8 +1189,54 @@ if __name__ == '__main__':
 
           if _use_parallel_splits:
               # ── Parallel CPCV path (CPU workers) ──
-              # NOTE: per-fold HMM re-fitting is skipped in parallel mode (HMM fitted once before loop).
-              # This is the same tradeoff v2_multi_asset_trainer.py makes.
+
+              # T-2 FIX: Pre-compute per-fold HMM overlays BEFORE the parallel loop.
+              # Old code baked the full-history HMM into X_all (lookahead bias).
+              # Now: strip HMM cols from X_all, compute fold-specific HMM overlay per fold,
+              # pass each worker its own (N, 4) overlay fitted only on train-end-date data.
+              _HMM_COL_NAMES_PAR = ['hmm_bull_prob', 'hmm_bear_prob', 'hmm_neutral_prob', 'hmm_state']
+              _hmm_overlay_names_par = []
+              _fold_hmm_overlays = {}
+
+              if _X_all_is_sparse and 'timestamp' in df.columns:
+                  # Strip existing HMM cols from sparse X_all (they were fitted on full history)
+                  _fc_idx_par = {f: i for i, f in enumerate(feature_cols)}
+                  _hmm_existing_par = [_fc_idx_par[hc] for hc in _HMM_COL_NAMES_PAR if hc in _fc_idx_par]
+                  if _hmm_existing_par:
+                      _hmm_overlay_names_par = [feature_cols[i] for i in _hmm_existing_par]
+                      _keep_mask_par = np.ones(X_all.shape[1], dtype=bool)
+                      for _ci in _hmm_existing_par:
+                          _keep_mask_par[_ci] = False
+                      _keep_idx_par = np.where(_keep_mask_par)[0]
+                      X_all = X_all[:, _keep_idx_par].tocsr()
+                      feature_cols = [feature_cols[i] for i in _keep_idx_par]
+                      log(f"  PARALLEL HMM: stripped {len(_hmm_existing_par)} full-history HMM cols from X_all")
+                  else:
+                      _hmm_overlay_names_par = list(_HMM_COL_NAMES_PAR)
+
+                  # Pre-compute per-fold HMM overlays (fit on train-end-date only)
+                  _date_norm_par = pd.to_datetime(timestamps).normalize()
+                  if hasattr(_date_norm_par, 'tz') and _date_norm_par.tz is not None:
+                      _date_norm_par = _date_norm_par.tz_localize(None)
+                  _n_rows_par = X_all.shape[0]
+                  for _wj, (train_idx_j, _) in enumerate(splits):
+                      if _wj in _completed_folds:
+                          _fold_hmm_overlays[_wj] = None
+                          continue
+                      _train_end_par = pd.Timestamp(timestamps[train_idx_j[-1]])
+                      _hmm_df_par = fit_hmm_on_window(_train_end_par)
+                      _fold_ov = np.full((_n_rows_par, len(_hmm_overlay_names_par)), np.nan, dtype=np.float32)
+                      if _hmm_df_par is not None:
+                          _hmm_notz = _hmm_df_par.copy()
+                          if _hmm_notz.index.tz is not None:
+                              _hmm_notz.index = _hmm_notz.index.tz_localize(None)
+                          for _hi, _hcol in enumerate(_hmm_overlay_names_par):
+                              if _hcol in _hmm_notz.columns:
+                                  _fold_ov[:, _hi] = pd.Series(_date_norm_par).map(
+                                      _hmm_notz[_hcol].to_dict()
+                                  ).ffill().values.astype(np.float32)
+                      _fold_hmm_overlays[_wj] = _fold_ov
+                  log(f"  PARALLEL HMM: pre-computed {sum(v is not None for v in _fold_hmm_overlays.values())} per-fold overlays (no lookahead)")
 
               # Dynamic worker/thread allocation: adapt to actual split count
               # On 13900K (24 cores): 4 splits -> 4 workers x 6 threads
@@ -1199,7 +1269,9 @@ if __name__ == '__main__':
                       wi, train_idx, test_idx,
                       X_csr.data, X_csr.indices, X_csr.indptr, X_csr.shape,
                       y_3class, sample_weights, feature_cols, _base_lgb_params,
-                      _args.boost_rounds, tf_name, gpu_id
+                      _args.boost_rounds, tf_name, gpu_id,
+                      _fold_hmm_overlays.get(wi),   # per-fold HMM overlay (N, n_hmm) or None
+                      _hmm_overlay_names_par,        # HMM column names
                   ))
 
               with ProcessPoolExecutor(max_workers=_n_workers) as executor:
@@ -1336,7 +1408,7 @@ if __name__ == '__main__':
                   bin_path = os.path.join(DB_DIR, f'lgbm_dataset_{tf_name}.bin')
                   if os.path.exists(bin_path):
                       log(f"  Loading parent Dataset from binary: {bin_path}")
-                      _parent_ds = lgb.Dataset(bin_path)
+                      _parent_ds = lgb.Dataset(bin_path, params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255), 'min_data_in_bin': 1})
                       _parent_ds.construct()
                       log(f"  Parent Dataset loaded from binary in {time.time() - _parent_t0:.1f}s "
                           f"(EFB reconstruction skipped). Folds reuse via reference=.")
@@ -1351,15 +1423,31 @@ if __name__ == '__main__':
                           del _Xp_base, _Xp_hmm
                       else:
                           _Xp = X_all[_parent_valid]
-                      _parent_ds = lgb.Dataset(
-                          _Xp, label=y_3class[_parent_valid].astype(int),
-                          weight=sample_weights[_parent_valid],
-                          feature_name=_parent_feature_cols,
-                          free_raw_data=True,
-                          params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255)},
-                      )
-                      _parent_ds.construct()
-                      log(f"  Parent Dataset built: {_Xp.shape[1]:,} features, EFB bins computed ONCE "
+
+                      # Parallel construction for large feature sets (10x+ faster)
+                      if hasattr(_Xp, 'shape') and _Xp.shape[1] > 100_000:
+                          try:
+                              from run_optuna_local import _parallel_dataset_construct
+                              log(f"  Parallel Dataset construction: {_Xp.shape[1]:,} features...")
+                              _parent_ds = _parallel_dataset_construct(
+                                  _Xp, y_3class[_parent_valid].astype(int),
+                                  sample_weights[_parent_valid],
+                              )
+                              log(f"  Parallel build done in {time.time() - _parent_t0:.1f}s. "
+                                  f"Folds reuse via reference=.")
+                          except Exception as _pe:
+                              log(f"  Parallel build failed ({_pe}), falling back to single-threaded")
+                              _parent_ds = None
+                      if _parent_ds is None:
+                          _parent_ds = lgb.Dataset(
+                              _Xp, label=y_3class[_parent_valid].astype(int),
+                              weight=sample_weights[_parent_valid],
+                              feature_name=_parent_feature_cols,
+                              free_raw_data=True,
+                              params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 255)},
+                          )
+                          _parent_ds.construct()
+                      log(f"  Parent Dataset: {_Xp.shape[1]:,} features, EFB bins computed "
                           f"({time.time() - _parent_t0:.1f}s). Folds reuse via reference=.")
                       del _Xp
                   gc.collect()
@@ -1471,7 +1559,8 @@ if __name__ == '__main__':
                   y_train_es = y_train[:-val_size]
                   w_train_es = w_train[:-val_size]
 
-                  _ds_kwargs = dict(feature_name=_fold_feature_cols, free_raw_data=False)
+                  _ds_kwargs = dict(feature_name=_fold_feature_cols, free_raw_data=False,
+                                    params={'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1})
                   if _parent_ds is not None:
                       _ds_kwargs['reference'] = _parent_ds  # reuse EFB bundles + bin thresholds
                   dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es, **_ds_kwargs)
@@ -1506,8 +1595,8 @@ if __name__ == '__main__':
                           ],
                       )
 
-                  # Predict OOS (LightGBM predicts directly on arrays)
-                  preds_3c = model.predict(X_test)  # shape (N, 3)
+                  # Predict OOS — pass best_iteration so GPU path uses only the best trees
+                  preds_3c = model.predict(X_test, num_iteration=model.best_iteration)  # shape (N, 3)
                   pred_labels = np.argmax(preds_3c, axis=1)
                   acc = accuracy_score(y_test, pred_labels)
                   prec_long = precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0)
@@ -1515,7 +1604,7 @@ if __name__ == '__main__':
                   mlogloss = log_loss(y_test, preds_3c, labels=[0, 1, 2])
 
                   # Evaluate IS (full training data) for proper PBO
-                  is_preds_3c = _predict_chunked(model, X_train)
+                  is_preds_3c = _predict_chunked(model, X_train, num_iteration=model.best_iteration)
                   is_pred_labels = np.argmax(is_preds_3c, axis=1)
                   is_acc = float(accuracy_score(y_train, is_pred_labels))
                   is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
@@ -1761,7 +1850,8 @@ if __name__ == '__main__':
           X_tr_f = X_final_all[:-val_sz]
           y_tr_f = y_final_all[:-val_sz]
           w_tr_f = w_final_all[:-val_sz]
-          _final_ds_kwargs = dict(feature_name=_final_feature_cols, free_raw_data=False)
+          _final_ds_kwargs = dict(feature_name=_final_feature_cols, free_raw_data=False,
+                                  params={'feature_pre_filter': False, 'max_bin': final_params.get('max_bin', 255), 'min_data_in_bin': 1})
           if _parent_ds is not None:
               _final_ds_kwargs['reference'] = _parent_ds  # reuse EFB from parent
           dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f, **_final_ds_kwargs)
@@ -1793,7 +1883,7 @@ if __name__ == '__main__':
               )
 
           # Evaluate on val set (held-out 15% from end, used for early stopping)
-          final_preds_3c = final_model.predict(X_val_f)  # shape (N, 3)
+          final_preds_3c = final_model.predict(X_val_f, num_iteration=final_model.best_iteration)  # shape (N, 3)
           final_labels = np.argmax(final_preds_3c, axis=1)
           final_acc = accuracy_score(y_val_f, final_labels)
           final_prec_l = precision_score(y_val_f, final_labels, labels=[2], average='macro', zero_division=0)

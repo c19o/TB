@@ -379,8 +379,8 @@ V3_LGBM_PARAMS = {
     "min_gain_to_split": 2.0,
     "lambda_l1": 0.5,
     "lambda_l2": 3.0,
-    "feature_fraction": 0.1,
-    "feature_fraction_bynode": 0.5,
+    "feature_fraction": 0.9,
+    "feature_fraction_bynode": 0.8,
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
     "num_leaves": 63,
@@ -388,13 +388,17 @@ V3_LGBM_PARAMS = {
     "verbosity": -1,
 }
 
-# Per-TF min_data_in_leaf overrides (rare astro conjunctions fire 10-20x on daily)
+# Per-TF min_data_in_leaf overrides
+# CRITICAL: must be <= rare signal frequency (10-20 firings). Higher values make rare
+# esoteric signals INVISIBLE to LightGBM (can't create leaf with fewer samples than this).
+# Compensating regularization: min_gain_to_split=2.0, lambda_l1/l2, path_smooth=2.0.
+# Perplexity-confirmed 2026-03-29: old values (30/50) were same bug class as feature_fraction=0.005.
 TF_MIN_DATA_IN_LEAF = {
-    '1w': 30,   # 1158 rows — high for stability
-    '1d': 50,   # 5.7K rows — research says n/100 to n/20 = 57-285. Prevents noise memorization.
-    '4h': 20,   # 23K rows — moderate
-    '1h': 15,   # 75K rows — can be lower (more data per leaf)
-    '15m': 15,  # 294K rows — standard
+    '1w': 8,    # 1158 rows — rare signals fire 10-20x (was 30, killing them)
+    '1d': 10,   # 5.7K rows — was 50, worst offender (50 >> max signal freq)
+    '4h': 10,   # 23K rows — was 20, borderline for sub-20 signals
+    '1h': 10,   # 75K rows — was 15, slight adjustment
+    '15m': 10,  # 294K rows — was 15, slight adjustment
 }
 
 # Per-TF class_weight — reweights by inverse class frequency

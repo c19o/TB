@@ -38,13 +38,15 @@ import re
 # ---------------------------------------------------------------------------
 BASE_IMAGE = 'pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime'
 
-# Per-TF resource requirements (from CLOUD_TRAINING_PROTOCOL.md)
+# Per-TF resource requirements
+# GPU: multi-GPU Optuna for 4h+ (8 parallel trials, 1 GPU each)
+# RAM: cross gen + training peaks (from CLOUD_TRAINING_PROTOCOL.md)
 TF_REQUIREMENTS = {
-    '1w':  {'ram': 64,   'cores': 64,  'disk': 30},
-    '1d':  {'ram': 192,  'cores': 128, 'disk': 50},
-    '4h':  {'ram': 768,  'cores': 128, 'disk': 50},
-    '1h':  {'ram': 1024, 'cores': 256, 'disk': 80},
-    '15m': {'ram': 2048, 'cores': 256, 'disk': 150},
+    '1w':  {'ram': 64,   'cores': 64,  'disk': 30,  'min_gpus': 1, 'min_vram': 8,  'note': 'Base features only, fast'},
+    '1d':  {'ram': 192,  'cores': 128, 'disk': 50,  'min_gpus': 1, 'min_vram': 24, 'note': '3.4M month crosses'},
+    '4h':  {'ram': 768,  'cores': 128, 'disk': 50,  'min_gpus': 4, 'min_vram': 24, 'note': '5.56M DOY crosses, multi-GPU Optuna'},
+    '1h':  {'ram': 1024, 'cores': 256, 'disk': 80,  'min_gpus': 4, 'min_vram': 48, 'note': '10M+ features, GPU histogram fork'},
+    '15m': {'ram': 2048, 'cores': 256, 'disk': 150, 'min_gpus': 4, 'min_vram': 80, 'note': 'Largest TF, user picks machine'},
 }
 
 
@@ -68,8 +70,11 @@ def run_vastai(args_list, raw=False):
     return result.stdout.strip()
 
 
-def search_offers(min_ram, min_cores, max_price=None, limit=20):
+def search_offers(min_ram, min_cores, max_price=None, limit=20, sort='fastest',
+                  min_gpus=1, min_vram=8):
     """Search vast.ai for matching offers, return list of offer dicts.
+
+    sort: 'fastest' (CPU score descending) or 'cheapest' ($/hr ascending)
 
     Note: vast.ai search filter accepts cpu_ram in GB (e.g., cpu_ram>=128),
     but the response value is in MB (e.g., 131072). Filter in GB, display in MB/1024.
@@ -77,30 +82,54 @@ def search_offers(min_ram, min_cores, max_price=None, limit=20):
     query = (
         f'cpu_ram>={min_ram} cpu_cores>={min_cores} '
         f'cuda_vers>=12.0 '
+        f'driver_version>=535.00.00 '
         f'rentable=true '
-        f'num_gpus>=1'
+        f'num_gpus>={min_gpus} '
+        f'gpu_ram>={min_vram}'
     )
     if max_price:
         query += f' dph_total<={max_price}'
 
+    # Sort: fastest = most cores * highest GHz, cheapest = lowest $/hr
+    if sort == 'fastest':
+        order = 'cpu_cores_effective-,cpu_ghz-'
+    else:
+        order = 'dph_total'
+
     offers = run_vastai(
-        ['search', 'offers', query, '-o', 'dph_total', '--limit', str(limit)],
+        ['search', 'offers', query, '-o', order, '--limit', str(limit)],
         raw=True
     )
-    return offers if isinstance(offers, list) else []
+    if not isinstance(offers, list):
+        return []
+
+    # Post-filter: compute CPU score, sort by it for 'fastest' mode
+    for o in offers:
+        cores = o.get('cpu_cores_effective', o.get('cpu_cores', 0))
+        ghz = o.get('cpu_ghz', 0) or 0
+        o['_cpu_score'] = cores * ghz
+        o['_ram_gb'] = round((o.get('cpu_ram', 0) or 0) / 1024, 0)
+
+    if sort == 'fastest':
+        offers.sort(key=lambda o: o['_cpu_score'], reverse=True)
+
+    return offers
 
 
-def display_offers(offers):
-    """Print a formatted table of offers with auto-selected images."""
+def display_offers(offers, tf=None):
+    """Print a formatted table of offers, sorted by CPU score. #1 = fastest."""
     if not offers:
         print("No matching offers found.")
         return
 
     # Header
     print()
+    tf_label = f" for {tf}" if tf else ""
+    print(f"  TOP {len(offers)} MACHINES{tf_label} (sorted by CPU Score = cores x GHz)")
+    print()
     print(f"{'#':>3}  {'ID':>10}  {'GPU':20s}  {'vCPUs':>5}  {'GHz':>5}  {'CPU Score':>9}  "
-          f"{'RAM GB':>6}  {'Driver':>10}  {'CUDA':>5}  {'$/hr':>6}")
-    print("-" * 110)
+          f"{'RAM GB':>6}  {'VRAM':>5}  {'Driver':>10}  {'CUDA':>5}  {'$/hr':>6}  {'$/day':>7}")
+    print("-" * 130)
 
     for i, o in enumerate(offers):
         gpu_name = o.get('gpu_name', '?')
@@ -109,20 +138,30 @@ def display_offers(offers):
         if len(gpu_label) > 20:
             gpu_label = gpu_label[:19] + '.'
 
-        cores = o.get('cpu_cores', 0)  # Total vCPUs (vast.ai vCPU = thread, not core)
-        # vast.ai reports cpu_ghz as the clock speed
+        cores = o.get('cpu_cores_effective', o.get('cpu_cores', 0))
         ghz = o.get('cpu_ghz', 0) or 0
-        cpu_score = cores * ghz
-        ram_gb = round((o.get('cpu_ram', 0) or 0) / 1024, 0)  # vast.ai reports RAM in MB
+        cpu_score = o.get('_cpu_score', cores * ghz)
+        ram_gb = o.get('_ram_gb', round((o.get('cpu_ram', 0) or 0) / 1024, 0))
+        vram_gb = round(o.get('gpu_ram', 0) / 1024, 0) if o.get('gpu_ram', 0) > 100 else o.get('gpu_ram', 0)
         driver = o.get('driver_version', '?')
         cuda = o.get('cuda_max_good', o.get('cuda_vers', '?'))
         dph = o.get('dph_total', 0)
+        dpd = dph * 24
         offer_id = o.get('id', '?')
+        location = o.get('geolocation', '?')
+        if isinstance(location, str) and len(location) > 2:
+            location = location[:2].upper()
 
+        marker = " << FASTEST" if i == 0 else ""
         print(f"{i+1:>3}  {offer_id:>10}  {gpu_label:20s}  {cores:>5}  {ghz:>5.2f}  "
-              f"{cpu_score:>9.1f}  {ram_gb:>6.0f}  {driver:>10}  {cuda!s:>5}  "
-              f"${dph:>5.2f}")
+              f"{cpu_score:>9.1f}  {ram_gb:>6.0f}  {vram_gb:>5.0f}  {driver:>10}  {cuda!s:>5}  "
+              f"${dph:>5.2f}  ${dpd:>6.1f}{marker}")
 
+    print()
+    if offers:
+        best = offers[0]
+        print(f"  RECOMMENDATION: #{best.get('id')} — CPU Score {best.get('_cpu_score', 0):.0f}, "
+              f"{best.get('_ram_gb', 0):.0f}GB RAM, ${best.get('dph_total', 0):.2f}/hr")
     print()
 
 
@@ -169,11 +208,17 @@ def main():
         min_ram = args.ram or reqs['ram']
         min_cores = args.cores or reqs['cores']
         disk = args.disk or reqs['disk']
+        min_gpus = reqs.get('min_gpus', 1)
+        min_vram = reqs.get('min_vram', 8)
+        print(f"  TF={args.tf}: {reqs.get('note', '')}")
     else:
         min_ram = args.ram or 128
         min_cores = args.cores or 64
         disk = args.disk or 50
+        min_gpus = 1
+        min_vram = 8
 
+    sort_mode = 'cheapest' if args.max_price else 'fastest'
     ssh_key = os.path.expanduser(args.ssh_key)
 
     if args.offer_id:
@@ -182,15 +227,18 @@ def main():
 
     else:
         # Search for offers
-        print(f"Searching vast.ai: RAM >= {min_ram} GB, Cores >= {min_cores}"
-              + (f", Max ${args.max_price:.2f}/hr" if args.max_price else ""))
-        offers = search_offers(min_ram, min_cores, args.max_price, args.limit)
+        print(f"Searching vast.ai: RAM >= {min_ram}GB, Cores >= {min_cores}, "
+              f"GPUs >= {min_gpus}, VRAM >= {min_vram}GB, CUDA >= 12.0, Driver >= 535"
+              + (f", Max ${args.max_price:.2f}/hr" if args.max_price else "")
+              + f" [sort: {sort_mode}]")
+        offers = search_offers(min_ram, min_cores, args.max_price, args.limit,
+                               sort=sort_mode, min_gpus=min_gpus, min_vram=min_vram)
 
         if not offers:
-            print("No matching offers found. Try relaxing constraints.")
+            print("No matching offers found. Try relaxing constraints (--ram, --cores, --max-price).")
             sys.exit(1)
 
-        display_offers(offers)
+        display_offers(offers, tf=args.tf)
 
         if args.search_only:
             print("(--search-only mode, not renting)")

@@ -410,6 +410,7 @@ class FeatureImportancePipeline:
         model_sub = lgb.LGBMClassifier(
             n_estimators=300, num_leaves=31, n_jobs=-1,
             verbose=-1, force_col_wise=True, max_bin=255,
+            feature_pre_filter=False,
         )
         model_sub.fit(X_sub, y_sub)
 
@@ -544,7 +545,7 @@ class FeatureImportancePipeline:
         model_aug = lgb.LGBMClassifier(
             n_estimators=300, num_leaves=31, n_jobs=-1,
             verbose=-1, force_col_wise=True, max_bin=255,
-            colsample_bytree=0.01,
+            colsample_bytree=0.9,
         )
         model_aug.fit(X_augmented, self.y_val)
 

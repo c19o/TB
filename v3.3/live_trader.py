@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import sqlite3
 import lightgbm as lgb
+from scipy.sparse import csr_matrix as _csr_matrix
 from datetime import datetime, timedelta, timezone
 import urllib.request
 from feature_library import build_all_features
@@ -767,6 +768,24 @@ def run_trading_loop(mode='paper'):
         except Exception as e:
             print(f"  WARNING: InferenceCrossComputer for {tf} failed: {e}")
 
+    # S-3: Build O(1) lookup structures for sparse inference — built once at startup.
+    # Eliminates 2.9M dict iterations per bar (line 979 for-loop + line 1013 list comp).
+    # feat_name_to_idx[tf]: {feature_name: col_index} for O(1) positional lookup.
+    # cross_feat_positions[tf]: int32 array mapping cross_values[i] → col_index in feat_names.
+    feat_name_to_idx = {}
+    cross_feat_positions = {}
+    for tf in models:
+        idx_map = {name: i for i, name in enumerate(features_list[tf])}
+        feat_name_to_idx[tf] = idx_map
+        if tf in cross_computers:
+            try:
+                cnames = cross_computers[tf].get_cross_feature_names()
+                cross_feat_positions[tf] = np.array(
+                    [idx_map.get(cn, -1) for cn in cnames], dtype=np.int32)
+            except Exception as e:
+                print(f"  WARNING: Could not build cross positions for {tf}: {e}")
+                cross_feat_positions[tf] = np.array([], dtype=np.int32)
+
     # Load meta-labeling models (institutional upgrade)
     meta_models = {}
     if _HAS_META:
@@ -969,16 +988,14 @@ def run_trading_loop(mode='paper'):
                 feat_dict.update(hmm_feats)
 
                 # 8B.1: Compute cross features via InferenceCrossComputer
+                cross_values = None  # initialize — remains None if computation fails or TF has no computer
                 if tf in cross_computers:
                     try:
                         # Extract day_of_year and regime for DOY crosses
                         _doy = now.timetuple().tm_yday
                         _regime_for_cross = None  # will be set after regime detection; first pass uses None
                         cross_values, cross_ms = cross_computers[tf].compute(feat_dict, day_of_year=_doy, regime=_regime_for_cross)
-                        cross_names = cross_computers[tf].get_cross_feature_names()
-                        for ci, cname in enumerate(cross_names):
-                            feat_dict[cname] = float(cross_values[ci])
-                        print(f"  Cross features: {len(cross_names)} computed in {cross_ms:.1f}ms")
+                        print(f"  Cross features: {len(cross_values)} computed in {cross_ms:.1f}ms")
                     except Exception as e:
                         print(f"  WARNING: Cross feature computation failed for {tf}: {e}")
 
@@ -1009,15 +1026,62 @@ def run_trading_loop(mode='paper'):
                         pass
                     continue
 
-                # Build feature vector
-                X = np.array([[feat_dict.get(fn, np.nan) for fn in feat_names]], dtype=np.float32)
-                X = np.where(np.isinf(X), np.nan, X)
+                # Build sparse CSR feature vector — skips 2.9M dict iterations.
+                # Base features from feat_dict (~300 entries): stored as explicit values.
+                #   NaN stored explicitly → LightGBM treats as missing (correct).
+                #   0.0 NOT stored → structural zero = 0.0 (correct: value IS zero).
+                # Cross features from cross_values (numpy array): only non-zeros stored.
+                #   Structural zero in CSR = 0.0 (correct: cross didn't fire).
+                # LightGBM Booster.predict() accepts scipy.sparse.csr_matrix directly.
+                _idx_map = feat_name_to_idx.get(tf, {})
+                _n_total_feats = len(feat_names)
+                _sp_data = []
+                _sp_cols = []
+                _n_base_feats = 0
+                _n_base_nan = 0
+
+                # 1. Base features: iterate feat_dict (~300 items, fast)
+                _cross_prefixes = ('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'cross_')
+                for fn, val in feat_dict.items():
+                    cidx = _idx_map.get(fn)
+                    if cidx is None:
+                        continue
+                    fval = float(val) if val is not None else np.nan
+                    if np.isinf(fval):
+                        fval = np.nan
+                    if not fn.startswith(_cross_prefixes):
+                        _n_base_feats += 1
+                        if np.isnan(fval):
+                            _n_base_nan += 1
+                    # Store explicit only for non-zero or NaN (NaN = missing signal, must be explicit)
+                    if fval != 0.0 or np.isnan(fval):
+                        _sp_data.append(fval)
+                        _sp_cols.append(cidx)
+
+                # 2. Cross features: vectorized non-zero extraction from numpy array
+                _n_cross_fired = 0
+                _cv = cross_values if (cross_values is not None
+                                       and tf in cross_feat_positions
+                                       and len(cross_feat_positions[tf]) > 0) else None
+                if _cv is not None:
+                    _cpos = cross_feat_positions[tf]
+                    _nz_mask = (_cv != 0) & (_cpos >= 0)
+                    _nz_idx = np.nonzero(_nz_mask)[0]
+                    if len(_nz_idx) > 0:
+                        _n_cross_fired = len(_nz_idx)
+                        _sp_data.extend(_cv[_nz_idx].astype(np.float32).tolist())
+                        _sp_cols.extend(_cpos[_nz_idx].tolist())
+
+                _sp_data_arr = np.array(_sp_data, dtype=np.float32)
+                _sp_cols_arr = np.array(_sp_cols, dtype=np.int32)
+                X = _csr_matrix(
+                    (_sp_data_arr, _sp_cols_arr, np.array([0, len(_sp_data_arr)], dtype=np.int32)),
+                    shape=(1, _n_total_feats)
+                )
 
                 # ── Data Quality Check: all-NaN feature vector ──
-                # If ALL features are NaN, model prediction is meaningless — skip
-                _n_total_feats = len(feat_names)
-                _n_nan_feats = int(np.isnan(X[0]).sum())
-                if _n_nan_feats == _n_total_feats:
+                # No explicit values at all = feat_dict empty and no cross features fired.
+                if len(_sp_data_arr) == 0 or int(np.isnan(_sp_data_arr).sum()) == len(_sp_data_arr):
                     print(f"  SKIP {tf} — ALL {_n_total_feats} features are NaN (data quality failure)")
                     try:
                         log_rejected_trade(tf=tf, direction='UNKNOWN', timestamp=now.isoformat(),
@@ -1026,19 +1090,15 @@ def run_trading_loop(mode='paper'):
                     except Exception:
                         pass
                     continue
-                # Warn if >80% of base features are NaN (cross features expected to be NaN pre-implementation)
-                _n_base_feats = sum(1 for fn in feat_names if not fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'cross_')))
-                _n_base_nan = sum(1 for i, fn in enumerate(feat_names) if not fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_', 'cross_')) and np.isnan(X[0, i]))
                 if _n_base_feats > 0 and _n_base_nan / _n_base_feats > 0.80:
                     print(f"  WARNING: {_n_base_nan}/{_n_base_feats} base features are NaN ({_n_base_nan/_n_base_feats*100:.0f}%)")
 
-                # PHILOSOPHY GATE: Detect if cross features are missing at inference.
-                # Model was trained with sparse cross features (dx_*, ax_*, etc.).
-                # Running inference without them = degraded predictions.
-                _n_cross_missing = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')) and np.isnan(X[0, feat_names.index(fn)]))
-                _n_cross_total = sum(1 for fn in feat_names if fn.startswith(('dx_', 'ax_', 'ex2_', 'ax2_', 'ta2_', 'hod_', 'mx_', 'vx_')))
-                if _n_cross_total > 0 and _n_cross_missing == _n_cross_total:
-                    print(f"  HALTED: ALL {_n_cross_total} cross features are NaN — cannot predict without the matrix")
+                # PHILOSOPHY GATE: Detect if cross feature computation failed at inference.
+                # cross_values is None only when InferenceCrossComputer raised an exception.
+                # All-zero cross_values is valid (no esoteric signal active this bar — not a failure).
+                _n_cross_total = len(cross_feat_positions.get(tf, []))
+                if _n_cross_total > 0 and cross_values is None:
+                    print(f"  HALTED: Cross feature computation failed — cannot predict without the matrix")
                     print(f"  Cross features are MANDATORY. Skipping {tf} prediction this bar.")
                     continue  # Skip this TF — do NOT predict on base-only features
 

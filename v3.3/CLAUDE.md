@@ -1,622 +1,129 @@
-# V3.3 Project Rules & Lessons Learned
+# V3.3 Project Rules
 
-## Codebase Intelligence (Socraticode)
+## 1. VALIDATION SYSTEM (TOP RULE — NON-NEGOTIABLE)
 
-Socraticode MCP server provides semantic search over the indexed codebase:
-- `codebase_search` — Hybrid semantic + keyword search across all source files
-- `codebase_graph_query` — Import/dependency analysis (circular deps, import chains)
-- `codebase_graph_visualize` — Mermaid diagrams of dependency relationships
-- `codebase_context_search` — Search indexed artifacts (config, feature library, cross generator)
-- `codebase_update` — Trigger incremental re-index after major changes
-- `codebase_watch` — File watcher keeps index current automatically
+- `validate.py` MUST pass before ANY training run (local or cloud)
+- NEVER skip validation, even for "quick tests"
+- After ANY config change: run `python validate.py` before committing
+- After ANY new training failure: add a `check()` to validate.py BEFORE fixing the bug (ensures it never recurs)
+- `validate.py` is the SINGLE SOURCE OF TRUTH for all parameter constraints
+- If validate.py and this file disagree, **validate.py wins** (it's deterministic)
+- All numerical parameter rules live in validate.py, NOT in this file
 
-First session after setup: run `codebase_index` to build the initial index.
+## 2. PHILOSOPHY (NON-NEGOTIABLE)
 
-## STRUCTURED AUDIT PIPELINE — AGENT-BASED
-
-When the user says "audit", "audit the system", or "full audit", execute the following multi-pass pipeline. Each pass is a SCOPED agent task. Do NOT combine passes. Do NOT fix things outside the current pass scope. Launch passes in parallel where marked.
-
-### CASCADE DETECTION RULE (applies to EVERY pass that makes changes)
-After ANY fix in ANY pass, BEFORE moving to the next checklist item, run a cascade check:
-1. **Signature changes** (added/removed args, changed return tuple length):
-   - Grep ALL callers of the modified function across v3.3/*.py
-   - Verify every call site matches the new signature
-   - Verify every unpacking site matches the new return shape
-2. **Filename/path changes** (renamed files, moved artifacts, changed extensions):
-   - Grep ALL consumers: import statements, open(), os.path.join(), config references
-   - Verify every consumer uses the new name/path
-3. **Config value changes** (moved to config.py, changed default, renamed key):
-   - Grep ALL readers of the old name/value across v3.3/*.py
-   - Verify every reader uses the new config.KEY, not a stale local default
-4. **Interface contract changes** (column names, dict keys, class attributes):
-   - Trace the data flow: producer -> intermediate -> consumer
-   - Verify the contract holds at every stage
-
-**If a cascade fix itself triggers another cascade, follow the chain until stable.**
-Log every cascade chain in the pass output:
-```
-FIX: renamed foo() return from 3->5 values
-  CASCADE: bar.py:42 unpacks foo() — updated
-  CASCADE: baz.py:88 unpacks foo() — updated
-    CASCADE-2: baz.py:90 passes result to qux() — verified compatible
-```
-
-### MATRIX PHILOSOPHY GATE (PASS 0 — always first, blocks everything)
-Verify every file in v3.3/ against these non-negotiable rules. ANY violation = immediate fix.
-Apply CASCADE DETECTION RULE after each fix.
-- [ ] No feature filtering/pre-screening before LightGBM (no MI, no variance filter, no support thresholds)
-- [ ] No fallback modes (no TA-only, no base-only, no graceful degradation)
-- [ ] No fillna(0) on feature data (NaN = missing signal, 0 = "value is zero")
-- [ ] No blanket try/except that masks failures (crash > silent degradation)
-- [ ] Esoteric features protected from regularization/pruning (SHAP, Optuna, CPCV)
-- [ ] Every asset gets full pipeline (esoteric + astro + gematria + numerology + space weather)
-- [ ] Sparse CSR: structural zero = 0.0 (feature OFF, correct for binary crosses). Explicit NaN in base features = missing (LightGBM learns split direction). Explicit 0.0 in base features = value is zero. Cross features have no NaN after binarization — bit=0 means 'conditions not simultaneously met'.
-- [ ] V2 cross + V2 layers mandatory in live_trader (no silent fallback to base-only)
-- [ ] min_data_in_leaf respects sparse signal frequency (1d/1w=3, 4h=5, 1h=8, 15m=15)
-- [x] max_bin=255 in V3_LGBM_PARAMS (DONE — binary features always get 2 bins regardless, change is harmless)
-- [ ] feature_pre_filter=False in all lgb.Dataset() calls (True silently kills rare esoteric features)
-
-### PASS 1 — Dead Code & Abandoned Experiments (agent 1, parallel with pass 2)
-Use `codebase_search` + `codebase_graph_query` to find:
-Apply CASCADE DETECTION RULE after each fix (deleting a function may break an import elsewhere).
-- [ ] Unused imports across all v3.3/*.py
-- [ ] Functions/classes defined but never called (grep for def, check callers via graph)
-- [ ] Commented-out code blocks (>3 lines)
-- [ ] Variables assigned but never read
-- [ ] Files in v3.3/ that nothing imports
-- [ ] Old v1 references in v3.3 code
-- DELETE dead code. Don't comment it out. Git has history.
-
-### PASS 2 — Config & Hardcoded Values (agent 2, parallel with pass 1)
-Use `codebase_search("hardcoded", "magic number", "threshold")` to find:
-Apply CASCADE DETECTION RULE after each fix (moving a value to config.py means every reader must update).
-- [ ] Magic numbers not in config.py (thresholds, window sizes, fees, retry counts)
-- [ ] Paper/live mode divergence (different code paths, different defaults)
-- [ ] Environment-specific paths hardcoded (C:\Users\..., /root/..., etc.)
-- [ ] API keys/secrets in source code (should be in .env)
-- [ ] Inconsistent defaults between files (e.g., confidence threshold 0.6 in one file, 0.65 in another)
-- All tunable values -> config.py. All secrets -> .env. All paths -> config.py with env override.
-
-### PASS 3 — Cross-File Consistency (agent 3, after pass 0)
-Use `codebase_graph_query` for import chains + `codebase_search` for interface contracts:
-Apply CASCADE DETECTION RULE after each fix.
-- [ ] Feature column names match between builder -> trainer -> live_trader
-- [ ] Sparse matrix shapes align (base features + cross features + layers)
-- [ ] Config values used consistently (same asset list, same TF list, same paths)
-- [ ] Error handling consistent (all crash-on-failure, no mixed strategies)
-- [ ] Data types consistent across pipeline stages (cuDF vs pandas, float32 vs float64)
-- [ ] NaN handling consistent (never converted to 0, always preserved for LightGBM)
-- [ ] Function signatures match between definition and ALL call sites
-- [ ] Return value tuple lengths match between producer and ALL unpacking sites
-- [ ] Artifact filenames match between writer (training) and reader (inference/audit)
-
-### PASS 4 — GPU & Performance (agent 4, after pass 1+2)
-Apply CASCADE DETECTION RULE after each fix.
-- [ ] No CPU fallbacks where GPU path exists (no silent sklearn instead of cuML)
-- [ ] No .apply() or Python for-loops on arrays (Numba @njit or vectorized)
-- [ ] No one-at-a-time df[col]=val (batch with dict + pd.concat)
-- [ ] Batch sizes respect VRAM (auto-adapt, not hardcoded)
-- [ ] Memory cleanup between builds (del + gc.collect)
-- [ ] CUDA_VISIBLE_DEVICES not pinned per-process (let all GPUs be visible)
-
-### PASS 5 — Live Trading Safety (agent 5, after pass 3)
-Apply CASCADE DETECTION RULE after each fix.
-- [ ] Kill switch exists and works
-- [ ] Max position size enforced
-- [ ] Stale data detection (if features older than X bars, halt)
-- [ ] Order rejection handling (retry logic, not silent fail)
-- [ ] Paper/live use identical inference path (only broker adapter differs)
-- [ ] Logging captures EVERYTHING (entry reason, feature snapshot, model confidence, exit reason)
-- [ ] No lookahead bias in live feature computation
-
-### PASS 6 — Cascade Regression + Integration Smoke Test (sequential, last)
-This pass exists specifically to catch cascades that slipped through per-fix checks.
-- [ ] Import every v3.3 module — no ImportError
-- [ ] Config loads without error
-- [ ] Feature builder can initialize (not full build — just import + config parse)
-- [ ] Live trader can initialize in paper mode (not trade — just startup)
-- [ ] All file paths in config.py actually exist or have creation logic
-- [ ] **Signature audit**: For every function modified in passes 0-5, grep all callers and verify args + return unpacking
-- [ ] **Filename audit**: For every file renamed/moved in passes 0-5, grep all references and verify paths
-- [ ] **Config audit**: For every config value added/moved in passes 0-5, grep all readers and verify they use config.KEY
-- [ ] If ANY cascade found here -> fix it, then re-run Pass 6 until clean (max 3 iterations)
-
-### AUDIT OUTPUT
-After all passes, produce a single summary:
-```
-AUDIT RESULTS — [date]
-Pass 0 (Philosophy): X violations found, X fixed, X cascades traced
-Pass 1 (Dead Code): X items removed, X cascades traced
-Pass 2 (Config): X hardcoded values moved, X cascades traced
-Pass 3 (Consistency): X mismatches fixed, X cascades traced
-Pass 4 (GPU/Perf): X CPU fallbacks eliminated, X cascades traced
-Pass 5 (Live Safety): X gaps closed, X cascades traced
-Pass 6 (Regression): PASS/FAIL (iteration count), X late cascades caught
-
-CASCADE CHAINS (if any):
-- [original fix] -> [cascade 1] -> [cascade 2] -> stable
-
-REMAINING ISSUES (if any):
-- [issue]: [why it can't be auto-fixed, needs user decision]
-```
-
-## RULES (NON-NEGOTIABLE)
-
-### Philosophy
 - The matrix is UNIVERSAL — same sky, same calendar, same energy for ALL assets
 - Every asset gets the FULL pipeline (esoteric, astro, gematria, numerology, space weather)
-- NO FILTERING of features. The model decides via tree splits, not us
-- NO FALLBACKS. One pipeline for all. If it breaks, fix it
+- NO FILTERING of features — the model decides via tree splits, not us
+- NO FALLBACKS — one pipeline for all. If it breaks, fix it
 - Esoteric signals ARE the edge. Never regularize them away
 - More diverse signals = stronger predictions. The edge is the matrix
+- NO NaN->0 conversion — NaN = "missing" (model learns split direction), 0 = "value is zero" (different signal)
+- Structural zeros in CSR = 0.0 (feature OFF, correct for binary crosses)
 
-### Process
+## 3. PROCESS RULES
+
 - NEVER deviate from the plan. Follow it exactly as written
 - Always make a checklist and verify each step before moving to the next
-- Always keep this file updated with lessons learned
 - Always run scripts with progress logs (tee/unbuffered). Never run blind
 - NEVER kill processes without explicit user permission
 - Don't search user's PC for files. Use the sources they provide
-- Use Perplexity MCP for technical/parameter queries. For esoteric content, use the local Socraticode index or vector DB instead.
-- Stagger feature builds: small TFs parallel, then 15m separately (high RAM requirement)
-- Build features on GPU (cuDF rolling/ewm) + cloud for parallelism. Train on cloud GPU
-- Always maximize parallelism. Launch multiple agents simultaneously
-- NEVER rent a slower machine than what we had. Fix issues in-place.
-- Fix ALL issues before deploying. No mid-run patches. Test locally first.
-- Unified template must work on ANY NVIDIA driver (535+). No driver-specific fixes.
-- CUDA 13.0+ (driver 580+): cuDF auto-disabled, feature build uses pandas CPU. CuPy still works.
+- Use Perplexity MCP for technical queries — ALWAYS include matrix thesis context
+- Stagger feature builds: small TFs parallel, then 15m separately
+- Build features locally (13900K), train on cloud GPU
+- Always maximize parallelism. Launch up to 20 agents simultaneously
+- NEVER rent a slower machine than what we had. Fix issues in-place
+- Fix ALL issues before deploying. No mid-run patches. Test locally first
+- Download artifacts at EVERY checkpoint. Cloud machines die without warning
+- Evaluate results (accuracy, SHAP, confidence) BEFORE destroying cloud machines
+- One TF at a time, smallest first. Verify full pipeline before scaling
+- Keep session resume file updated after every significant step
+- After fixing a bug, grep ALL files for same pattern before deploying
 
-### Data & Deployment Integrity (NON-NEGOTIABLE)
-- **NEVER deploy with missing data, missing code, or untested changes.** Every shortcut weakens the model. If ANYTHING is incomplete, STOP and fix it first.
-- **NEVER deploy with missing databases.** ALL .db files must be in the upload tar. Missing DB = missing features = weaker model = INVALID RUN. Kill it immediately.
-- **NEVER treat "WARNING" log messages as acceptable.** Every warning is a lost signal or a silent failure. Investigate and fix before proceeding.
-- **NEVER say "it's fine" about missing data.** The matrix requires ALL data sources. Missing ANY source violates the core philosophy.
-- **NEVER skip the smoke test.** If smoke test fails, the machine is incompatible. Do NOT try workarounds — find a compatible machine.
-- **NEVER deploy code that hasn't been audited.** 3 clean audit passes before any cloud deploy.
-- **NEVER assume a fix works without verifying.** Test the actual pipeline path, not just individual components.
-- **Upload tar must include EVERY .db file:** btc_prices.db, tweets.db, news_articles.db, sports_results.db, space_weather.db, onchain_data.db, macro_data.db, astrology_full.db, ephemeris_cache.db, fear_greed.db, funding_rates.db, google_trends.db, open_interest.db, multi_asset_prices.db, llm_cache.db, v2_signals.db, kp_history_gfz.txt
-- **Verify DB count after extract:** `ls /workspace/*.db | wc -l` must be >= 16. If not, STOP.
-- **Verify zero "WARNING: DB missing" in first 30s of pipeline log.** If any appear, STOP.
-- **NEVER compromise training speed.** Pick machines with the highest CPU Score (cores x base GHz). Match CUDA image to driver version. Use GPU (cuDF/CuPy) for feature building. Never fall back to CPU-only when GPU is available.
-- **ALWAYS size batches to saturate available threads.** If a machine has 512 cores and 131K pairs to process, BATCH must be small enough to create 64+ batches (not 3). Formula: `BATCH = min(MAX_BATCH, max(500, n_pairs // n_threads))`. Sequential batch sizing wastes 99% of a multi-core machine.
-- **NEVER rent a slower machine than what we already had.** If a machine has compatibility issues, fix it in-place — don't swap for a weaker one. Speed always wins.
-- **NEVER use bandaids that hurt performance.** If a fix slows training (e.g., disabling GPU, reducing batch size, limiting cores), it's a bandaid. Find the real fix.
-- **ACTIVE monitoring is MANDATORY.** When machines are training, check monitor output every cycle. If ANY log shows FAIL/CRITICAL/Error, FIX IT IMMEDIATELY — don't wait for the user to ask. A monitor that runs but isn't acted on is useless.
-- **Monitor must detect failures, not just liveness.** Check for "FAIL", "CRITICAL", "Error", "Traceback" in logs — not just whether the process is alive. A dead process with errors needs immediate action.
-- **Monitor must verify MULTI-THREADED execution.** After launch, check load average > cores x 0.3. If load ~ 1.0 on a 128+ core machine, training is single-threaded — this is a critical bug. Check RSS matches expected dense matrix size.
-- **After fixing a bug, grep ALL files for the SAME pattern.** The .nnz bug was fixed in one place but existed in another. The parquet symlink bug hit 1w, then 1h, then 1d, then 4h — same bug, never properly fixed at the root.
-- **Pre-flight code audit before EVERY deploy.** Run the pre-flight checklist in CLOUD_TRAINING_PROTOCOL.md. Never deploy code that hasn't been verified against the checklist. The single-threaded bug (v3.3) could have been caught by checking load average within 60 seconds of launch.
-- **STALE PARQUET CHECK is MANDATORY.** If feature_library.py changed since parquets were built, DELETE old parquets AND NPZs. The pipeline skips rebuild when parquet exists with >2000 cols — it does NOT detect new features. cloud_run_tf.py now has a v3.3 fingerprint check, but ALWAYS verify parquet col count matches expected after any feature_library.py change.
-- **VERIFY DATA DIRECTORY BEFORE EVERY RUN.** config.py's V30_DATA_DIR defaults to `v3.0 (LGBM)/` which has OLD data. Cloud sets V30_DATA_DIR=/workspace. Locally, MUST set `export V30_DATA_DIR=/path/to/v3.3` or training silently uses v3.0 features. ALWAYS check the "Loaded from parquet:" log line — if it shows v3.0 path, STOP.
-- **max_bin=255 for maximum EFB compression.** max_bin controls EFB bundle size (max features per bundle = max_bin - 1). max_bin=255 → 254 per bundle → ~23K bundles for 6M features. Binary cross features always get num_bin=2 regardless of max_bin. Lower max_bin (e.g., 15) forces ~428K bundles = 18x more histograms for zero accuracy benefit. Keep max_bin=255.
-- **15m uses int64 indptr** as the PRIMARY fix for NNZ > 2^31. Row-partitioned boosting was REJECTED (Perplexity-confirmed: kills rare signals by splitting them below min_data_in_leaf per chunk). All 217K rows x 10M+ features preserved in a single training pass.
-- **CHECK ALL CONFIG PATHS IN FIRST 10 LOG LINES.** DB_DIR, V30_DATA_DIR, SAVAGE22_DB_DIR, PROJECT_DIR — verify all point to correct directories. Wrong paths = training on wrong/stale data = wasted time and money.
-- **Use --no-deps for CUDA-sensitive packages.** When pip-installing on GPU machines, use `--no-deps` for packages that might pull in CUDA dependency upgrades that break the environment.
+## 4. CODE RULES
 
-### Code
-- No fallback modes. No TA-only mode. Full pipeline or fix it
+- LightGBM is the ONLY training backend (EFB, sparse CSR). NO XGBoost
+- Sparse CSR preserved through training — no dense conversion
+- EFB (enable_bundle) ALWAYS True for ALL timeframes
 - Batch column assignment (pd.concat / dict accumulation), NEVER one-at-a-time df[col]=val
 - Always use GPU (RTX 3090) for processing, never default to CPU
-- 4-tier binarization on ALL numeric columns (gematria, sentiment, astro, TA, everything)
-- Sparse CSR for cross features — never create dense DataFrames for 100K+ columns
-- NEVER convert NaN to 0 in sparse matrices — NaN is "missing" (the model learns split direction), 0 is "the value is zero" (different signal). Structural zeros in CSR = 0.0 (feature OFF, correct for binary crosses). Explicit NaN in base features = missing. Explicit 0.0 in base features = value is zero. Cross features are pure 0/1 after binarization — no NaN
-- Use native cuDF (not cudf.pandas) for compute_ta_features — keeps rolling ops on GPU
+- 4-tier binarization on ALL numeric columns
 - Stateful loops must use Numba @njit — never raw Python for-loops on price arrays
-- LightGBM is the universal training backend (EFB, sparse CSR). tree_method not applicable — LightGBM uses histogram-based splits natively.
-- min_data_in_leaf=3 (1d/1w) with min_gain_to_split=2.0 as compensating guard for rare signals
-- Co-occurrence filter of 3 on cross features (min_nonzero=3, matches min_data_in_leaf=3 for 1d/1w)
-- Optuna replaces exhaustive 30M grid (200 TPE trials for LightGBM params via V3_LGBM_PARAMS, 500 for trade optimizer (13D search space), Sortino objective)
-- `feature_pre_filter=False` is CRITICAL — True silently kills rare esoteric features at LightGBM Dataset construction
-- `num_threads=0` for lgb.train() (0 = auto-detect via OpenMP). NEVER use -1 (undocumented behavior)
-- `OMP_NUM_THREADS` / `NUMBA_NUM_THREADS` set dynamically per phase by cloud_run_tf.py — do NOT hardcode in launch scripts
-- RAM validation per TF at startup (1w: 64GB, 1d: 256GB, 4h: 512GB, 1h: 2048GB, 15m: 2048GB)
-- `is_enable_sparse=True` auto-detects dense input — NOT single-threaded. Sparse CSR trains multi-core with EFB
+- No fallback modes. Full pipeline or fix it
+- `feature_pre_filter=False` always — True silently kills rare features
+- `num_threads=0` for lgb.train() (0 = auto-detect). NEVER use -1
+- Sparse CSR: indptr=int64 (NNZ > 2^31 fix), indices=int32
+- NO 5m timeframe (only 1w, 1d, 4h, 1h, 15m)
 
-## LESSONS LEARNED
+## 5. AUDIT PIPELINE
 
-### Parallel HMM Tradeoff (2026-03-26)
-- Per-fold HMM re-fitting is skipped in parallel CPCV mode (HMM fitted once before the loop).
-- This means all parallel folds share the same HMM state mapping, which may differ slightly from per-fold fits.
-- Accepted tradeoff: the speed gain from parallel CPCV outweighs the marginal HMM accuracy loss.
-- Same approach used in v2_multi_asset_trainer.py.
+When the user says "audit", execute this multi-pass pipeline:
 
-### v3.3 FAILED with XGBoost — NEVER Use XGBoost (2026-03-26)
-- v3.3 FAILED because XGBoost was silently swapped for LightGBM — accuracy dropped 12%. NEVER use XGBoost. LightGBM's EFB (Exclusive Feature Bundling) is architecturally critical for sparse binary cross features.
-- EFB bundles mutually exclusive binary features into single bins — this is EXACTLY what cross features are (sparse binary 0/1). XGBoost has no equivalent optimization.
-- LightGBM handles NaN natively in sparse CSR. XGBoost rebuilds DMatrix histograms per fold — catastrophically slow with 1M+ features.
-- max_bin=255 allows maximum EFB compression while binary features still get 2 bins. Lower max_bin forces more bundles = more histograms = slower training.
-- Rule: ALL timeframes use LightGBM. No exceptions. No "XGBoost for 15m" workarounds.
+### CASCADE DETECTION RULE (applies to EVERY pass)
+After ANY fix, BEFORE moving to next item:
+1. Signature changes -> grep ALL callers, verify match
+2. Filename/path changes -> grep ALL consumers, verify paths
+3. Config value changes -> grep ALL readers, verify they use config.KEY
+4. Interface contract changes -> trace data flow end-to-end
 
-### 15m int64 indptr Fix (2026-03-26, CORRECTED 2026-03-27)
-- 15m exceeds LightGBM's default int32 NNZ limit (2^31 ~2.1B). 227K rows x 10M+ features = NNZ overflow.
-- PRIMARY fix: int64 indptr in sparse CSR matrices. This allows NNZ > 2^31 without partitioning.
-- Row-partitioned incremental boosting was REJECTED — Perplexity-confirmed: splitting rows below min_data_in_leaf per chunk kills rare signals. NEVER use row-partitioned init_model boosting.
-- Do NOT split features (columns) — that loses cross-feature interactions which are the entire point.
-- Do NOT subsample features — the matrix requires ALL signals.
+### PASS 0: Matrix Philosophy Gate (first, blocks everything)
+- No feature filtering/pre-screening before LightGBM
+- No fallback modes
+- No fillna(0) on feature data
+- No blanket try/except that masks failures
+- Esoteric features protected from pruning
+- V2 cross + V2 layers mandatory in live_trader
 
-### GPU Acceleration of Feature Pipeline (2026-03-21)
-- ALL 16 compute functions GPU-native — zero _to_cpu() conversions remain
-- All rolling/ewm/shift ops on cuDF GPU across entire pipeline
-- External DataFrames (astro, tweets, news, space weather) converted to cuDF before merge
-- `.map(dict)` replaced with cuDF merge pattern (cuDF doesn't support .map with dicts)
-- `.reindex()` + `.ffill()` used separately (cuDF doesn't support `reindex(method='ffill')`)
-- cuML KNeighborsClassifier replaces sklearn KNN (50x faster on GPU)
-- CuPy convolve replaces np.convolve for fractional differentiation
-- _bars_since_event compiled with Numba @njit (forward scan pattern)
-- _rolling_percentile_vec compiled with Numba @njit (91.6M loop iterations eliminated)
-- Cross generator batch size auto-adapts to GPU VRAM (A100: BATCH=200, 3090: BATCH~20)
-- Stateful loops (SAR, Supertrend, Wyckoff, Volume Profile, Elliott, Gann) compiled with Numba @njit
-- Shannon entropy and Hurst vectorized with numpy sliding_window_view (no per-bar loops)
-- Intraday builds parallelized with ProcessPoolExecutor + CUDA_VISIBLE_DEVICES per worker
-- CPCV: sequential for >1M features (parallel abandoned — pickle bottleneck). Parallel only for <1M features (1w).
-- On cloud, use `--parallel 0` flag to auto-detect GPU count for worker routing
+### PASS 1: Dead Code (parallel with pass 2)
+- Unused imports, functions, files. DELETE dead code.
 
-### Pandas Column Assignment Bottleneck (2026-03-21)
-- `df[col] = val` called 135K+ times is the #1 build bottleneck
-- Each assignment triggers DataFrame internal reindex/copy overhead
-- On a 2.2GHz cloud CPU, this dominated build time (GPU sat idle)
-- FIX: Accumulate in dict, then `pd.DataFrame(dict, index=df.index)` + `df[new.columns] = new`
-- This alone cuts build time by ~60%
-- Applied to: ALL trend cross sections (tx_, ex_, px_, vwap, range, DOY x ALL)
-- Context matrix chunked into groups of 200 to avoid 8.7GB column_stack OOM
+### PASS 2: Config & Hardcoded Values (parallel with pass 1)
+- Magic numbers -> config.py. Secrets -> .env. Paths -> config.py with env override.
 
-### Feature Builds ARE GPU-Compatible (CORRECTED 2026-03-21)
-- V1 institutional upgrades ALREADY converted ALL .apply() calls to GPU batch ops
-- Zero .apply() calls remain in feature_library.py — confirmed by grep audit
-- The _safe_gem_* and _safe_sent_* functions are dead code (defined but never called)
-- cuDF.pandas mode accelerates all rolling TA, CuPy handles gematria/crosses
-- Previous lesson "CPU-bound" was from BEFORE the GPU conversion
-- On a cloud machine with cuDF + CuPy, the ENTIRE build runs on GPU
-- Batch sizes auto-adapt to RAM: 200 (64GB), 500 (128GB), 1000 (256GB), 2000 (512GB+)
-- Cloud with 512GB RAM + 8x GPU = fastest possible build
+### PASS 3: Cross-File Consistency (after pass 0)
+- Feature column names match across pipeline stages
+- Sparse matrix shapes align
+- Function signatures match ALL call sites
 
-### H200 Has Weak CPU (2026-03-20)
-- RunPod H200 pod bottlenecks LSTM training (heavy DataLoader CPU work)
-- Use local 13900K + RTX 3090 for LSTM
-- Use cloud GPU for LightGBM training and optimizer only
+### PASS 4: GPU & Performance (after pass 1+2)
+- No CPU fallbacks where GPU path exists
+- No .apply() or Python for-loops on arrays
 
-### vast.ai Lessons (2026-03-20)
-- Do NOT pin CUDA_VISIBLE_DEVICES per process -> causes OOM on single GPU
-- Let ALL processes see ALL GPUs -> CuPy distributes across all
-- cuDF doesn't support timezone-aware datetimes -> strip TZ at pipeline start
-- CuPy requires contiguous arrays -> np.ascontiguousarray() fix
-- SQLite has 2000 column limit -> save parquet FIRST
-- PYTHONUNBUFFERED=1 essential for output capture
-- __name__ guard required on ml_multi_tf.py
+### PASS 5: Live Trading Safety (after pass 3)
+- Kill switch, max position size, stale data detection, identical paper/live inference
 
-### Sparse Matrices Must Preserve NaN — Never nan_to_num (2026-03-21)
-- Converting NaN -> 0 before sparse storage is WRONG for two reasons:
-  1. **Semantics**: LightGBM treats NaN as "missing" and learns optimal split directions for absent data. Converting to 0 tells the model "the value is zero" — completely different signal. Missing RSI (first 14 bars) is NOT the same as RSI=0
-  2. **Storage bloat**: Sparse CSR only saves space by NOT storing zeros. If you convert NaN to explicit 0.0, those zeros get stored as entries in the data array. Base features (~3000 cols x 200K rows) are mostly non-zero values — adding millions of explicit zeros turns a 50MB sparse matrix into gigabytes
-- FIX: `sp_sparse.csr_matrix(X_base)` directly (NaN stored as explicit entries, true zeros are structural)
-- Then `X_all.eliminate_zeros()` removes only true zeros, NaN stays
-- LightGBM Dataset handles NaN in sparse matrices natively — treats them as missing
-- For variance screening on sparse with NaN: temporarily replace NaN with 0 in a COPY for computation, then discard. Never mutate the actual training matrix
-- Cross features (.npz) are correct — binary 0/1 with structural zeros = 0.0 (feature OFF, conditions not met). NOT missing. (Corrected 2026-03-27)
+### PASS 6: Cascade Regression (last, sequential)
+- Import every module, config loads, feature builder initializes
+- Re-audit ALL signatures/filenames/config changes from passes 0-5
 
-### System RAM OOM After Many Sequential Builds (2026-03-21)
-- After building 31 daily assets sequentially, system RAM filled up (~128GB)
-- Cross generator holds dict with millions of arrays — GC doesn't free fast enough
-- 4H and 1H builds ALL failed with tiny allocation errors (68 KiB = system fully exhausted)
-- FIX: Force `del df; gc.collect()` at end of each asset build
-- FIX: Run 4H/1H as separate invocations, not in same process as daily
-- Daily builds all completed successfully (checkpointed) — only intraday needs restart
+## 6. CLOUD DEPLOYMENT PROTOCOL
 
-### GPU OOM on Large Cross Batches (2026-03-21)
-- v2_cross_generator.py GPU batch cross with BATCH=50 OOMs on 3090 when right-side has 2,601+ contexts
-- Shape (5727, 50, 2601) = 2.77 GB — exceeds available VRAM after other allocations
-- CPU fallback works fine, just slower (~30s vs ~5s for the batch)
-- FIX for next run: reduce BATCH to 20 or 10 when n_right > 1000
-- Not critical — CPU fallback handles it, but GPU would be faster
-
-### FRED API Blocked (2026-03-21)
-- FRED CSV download times out from user's network (even with proxy)
-- Not a problem — we have actual ETF price data (SPY, GLD, USO) + V1 macro_data.db
-- FRED macro is redundant, skip it
-
-### 4-Tier Binarization Scope (2026-03-21)
-- Originally only 22 TA indicators had 4-tier
-- User corrected: EVERYTHING numeric gets 4-tier (gematria, sentiment, astro positions, etc.)
-- This massively increases binarized contexts: ~400 -> ~8,000-10,000
-- Which massively increases crosses: ~300K -> ~15-20M per asset
-
-### Every Asset Gets Full Esoteric (2026-03-21)
-- Initially had TA-only fallback for non-BTC assets — WRONG
-- The matrix is universal: same dates, same moon, same tweets, same energy
-- SPY under the same full moon with the same caution tweet = same signal
-- SPY has LESS noise than BTC -> cleaner signal validates the pattern is real
-- Stocks are the textbook, crypto is the exam
-
-### Optuna Must Protect Esoteric Signals (2026-03-21)
-- Tuning must NOT regularize esoteric features away
-- If a param combo uses 0 esoteric features in top 100 splits -> penalize it
-- The model SHOULD use gematria, astro, numerology if they have signal
-- Secondary objective in Optuna: esoteric feature usage count
-
-### Philosophy Audit Fixes (2026-03-21)
-- **Removed MI pre-screening** from CPCV training folds — was dropping esoteric features before LightGBM saw them
-- **Removed zero-variance filter** from CPCV folds — LightGBM ignores constant features via 0-gain splits naturally
-- **Removed dx_ support=50 filter** from feature_library.py — esoteric calendar signals are SPARSE by nature, that's the edge
-- **Per-TF min_data_in_leaf**: 1d/1w=3, 4h=5, 1h=8, 15m=15. Rare astro conjunctions fire 10-20x on daily — old value of 50 killed them all
-- **Removed fillna(0)** from build_1h GCP cross contexts — NaN means "unknown interaction" (LightGBM learns optimal split), 0 means "no interaction" (wrong signal)
-- **Made V2_CROSS + V2_LAYERS mandatory** in live_trader.py — no silent degradation to base-only features
-- **Removed blanket try/except** around V2 layer computation — if V2 layers fail, CRASH and fix, don't mask with degraded features
-- **Empty binarized contexts = ValueError** — force investigation, not empty sparse fallback
-- **IS metrics per CPCV fold** — LightGBM training now saves is_accuracy + is_sharpe for proper PBO
-- **LSTM alpha search alignment** — uses test_indices from CPCV folds to match LightGBM OOS with LSTM val set on exact same samples
-- **Meta-labeling filename** — cloud runner now looks for meta_model_{tf}.pkl (matches what meta_labeling.py saves)
-- Lesson: any pre-filtering violates "NO FILTERING" even if it seems like it removes "noise." Sparse = the edge, not noise.
-
-### CUDA 13.0 / Driver 580+ Incompatibility (2026-03-25)
-- Driver 580+ = CUDA 13.0 — cuDF/CuPy compiled for CUDA 12.x SEGFAULT. Auto-detect via cp.cuda.runtime.driverGetVersion(). Fallback to pandas CPU.
-- Cross gen bottleneck: 92% of pair multiplications were wasted (failed co-occurrence filter). Sparse matmul pre-filter computes ALL co-occurrence counts in one operation, then only computes valid crosses.
-- Root btc_prices.db was missing 2010-2019 BTC history. All TFs trained on less data than v3.2. Fixed: merged v3.2 DB's daily/weekly into root DB.
-
-### Single-Core Bottlenecks in Cross Generation (2026-03-25)
-Three single-threaded bottlenecks discovered on 512-core machine (only 1 core used, 104% CPU):
-
-1. **v2_cross_generator.py line 534**: `left_cols * right_cols` is numpy element-wise `*` — SINGLE-THREADED. Comment says "multi-core via numpy BLAS" but element-wise multiply does NOT use BLAS. Only matmul (`@`) uses BLAS threading. This is the main bottleneck — processes millions of feature pairs on 1 core.
-
-2. **scipy sparse matmul** (v2_cross_generator.py line 511): `left_sp.T @ right_sp` — scipy sparse matrix multiply is single-threaded. Pre-filter step works but can't use multiple cores.
-
-3. **gpu_cross_builder.py CPU fallback** (lines 181-193): Nested Python for-loops over 365 DOY x N contexts. Completely sequential.
-
-**FIX (TODO — apply after 1w validation run):**
-- Replace element-wise `*` loop with Numba `@njit(parallel=True)` + `prange` over the feature-pair axis
-- Pre-gather left/right columns into contiguous (N, n_pairs) arrays, then parallelize with `prange`
-- Set `NUMBA_NUM_THREADS` to ~64-96 initially (memory bandwidth saturates before 512 cores)
-- Alternative: `ThreadPoolExecutor` with NumPy column-block slicing (ufuncs release GIL)
-- Perplexity confirmed: Numba prange is best for independent column-wise operations
-- Do NOT use multiprocessing (process overhead + memory copy kills performance for this pattern)
-- Expected speedup: 3-8x for cross gen (OPTIMIZATION_PLAN.md REVIEW CORRECTION: 50-100x was exaggerated — ignored format conversion cost)
-- Cascade check: only touches `_cpu_cross_chunk()` internals — no signature changes, no return format changes
-
-### Memory Allocator + NUMA + THP Optimizations (2026-03-27)
-- **tcmalloc (google-perftools)**: LD_PRELOAD intercepts numpy PyDataMem_NEW, LightGBM C++ malloc, Numba NRT malloc. Does NOT intercept pymalloc (<512B objects — mmap-based). Use `libtcmalloc_minimal.so` (no profiler overhead).
-- **THP mode**: Use `enabled=always` + `defrag=defer+madvise`. NOT `defrag=always` — causes multi-second stalls during LightGBM's small-alloc histogram phase. `defer+madvise` = kcompactd background for most pages, synchronous only for tcmalloc's madvise-annotated arenas.
-- **gperftools tcmalloc vs google/tcmalloc**: gperftools does NOT call madvise(MADV_HUGEPAGE) — gets ZERO benefit from THP "madvise" mode. New google/tcmalloc (Temeraire) has HugeRegion for 2MB-1GB allocs but requires THP "always". Since we use gperftools (apt package), we set THP to "always" globally.
-- **jemalloc alternative**: If THP "always" causes issues, switch to jemalloc with `MALLOC_CONF="thp:always,metadata_thp:auto"` — jemalloc calls madvise(MADV_HUGEPAGE) itself, works with THP "madvise" mode. Better THP integration than gperftools tcmalloc.
-- **NUMA binding**: Multi-socket machines (2-4 nodes) need numactl. Single-process training: `numactl --interleave=all`. Parallel Optuna: one worker per NUMA node with `--cpunodebind=X --membind=X`. Remote DRAM is 1.7-2.5x slower.
-- **LightGBM does NOT call madvise(MADV_HUGEPAGE)** — relies entirely on system THP setting + allocator. No internal NUMA awareness either.
-- **PYTHONMALLOC=malloc**: Routes all Python allocations through tcmalloc (bypasses pymalloc). Not strictly needed (our hot path is numpy/LightGBM which already goes through malloc), but cleaner for profiling.
-- **scipy sparse CSR + tcmalloc**: No known incompatibilities. CSR data/indices/indptr are numpy arrays -> PyDataMem_NEW -> malloc -> tcmalloc. CSR slicing creates new arrays, no in-place realloc issues.
-- **Numba + tcmalloc**: NRT (data allocations) -> malloc -> intercepted. LLVM JIT code memory -> mmap -> NOT intercepted (irrelevant, only ~15MB).
-- **CRITICAL: tcmalloc + fork()**: Deadlock risk if forking after LightGBM initializes (per-thread caches not fork-safe). Don't use multiprocessing.fork() after LightGBM imports — use spawn.
-- **Combined speedup**: 20-40% wall-time on multi-socket. Breakdown: tcmalloc 5-15%, THP 5-20%, NUMA binding 10-30%, vm.swappiness=1 prevents 1-5% regression.
-- **Perf measurement**: `perf stat -e dTLB-load-misses,node-load-misses,context-switches,page-faults`. Target dTLB misses < 2% (baseline 5-15%). NUMA miss ratio < 5%.
-- All applied via setup.sh + lgbm-run wrapper. cloud_run_tf.py does NOT need changes.
-
-### Pip + SCP Cloud Deployment (2026-03-25)
-- Lightweight base image (pytorch/pytorch, usually cached) + pip install + SCP code/DBs
-- Setup: `pip install lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy` (~30s)
-- SCP code tar (~11MB) + DB tar separately
-- Total setup: ~2-3 min
-- Works on ANY provider (vast.ai, RunPod, Lambda, GCP, Azure)
-- Pipeline command identical: `python -u cloud_run_tf.py --symbol BTC --tf 1w`
-
-### Missing Module: astrology_engine.py (2026-03-25)
-- `feature_library.py` imports `from astrology_engine import ...` but `astrology_engine.py` lives in project root, NOT in v3.3/
-- Must be included in code upload or copied into v3.3 directory permanently
-- Also imported by `universal_astro.py`
-- FIX: Copy `astrology_engine.py` into v3.3/ so all code is self-contained
-
-### LightGBM Sparse CSR Architecture (2026-03-25, CORRECTED 2026-03-27)
-- LightGBM's EFB (Exclusive Feature Bundling) is architecturally optimal for sparse binary cross features
-- Binary 0/1 features are mutually exclusive — EFB bundles them into single histogram bins
-- max_bin=255 allows maximum EFB compression (254 features per bundle → ~23K bundles for 6M features). Binary cross features always get num_bin=2 regardless of max_bin
-- Sparse CSR fed directly to LightGBM Dataset — no dense conversion needed
-- Structural zeros in CSR = 0.0 (feature OFF, correct for binary crosses). Base features may have NaN = missing (LightGBM learns split direction). Cross features are pure 0/1 after binarization — no NaN
-- For 1.1M+ features: LightGBM trains directly on sparse CSR with EFB bundling
-- Perplexity confirmed: LightGBM EFB + sparse CSR is the optimal architecture for this feature type
-
-### RAM Usage During Cross Generation (2026-03-25)
-- 1w (818 rows, 3331 base cols): peaks at ~370GB RAM during Astro x TA cross gen
-- The cross matrix materializes dense (N, chunk_size) arrays for each batch
-- 15m (227K rows) will need 1TB+ RAM for cross gen — 503GB machine is NOT enough
-- Machine selection MUST account for RAM, not just CPU cores
-- Rule: 1w/1d/4h -> 512GB OK. 1h -> 768GB+. 15m -> 1TB+.
-
-### max_bin Controls EFB Bundle Size (2026-03-27)
-- max_bin controls how many features EFB can bundle together (max features per bundle = max_bin - 1)
-- max_bin=15 → only 14 features per EFB bundle → ~428K bundles for 6M features
-- max_bin=255 → 254 per bundle → ~23K bundles for 6M features = 18x fewer histograms to build
-- Binary features always get num_bin=2 regardless of max_bin — the setting does NOT affect their bin count
-- Previous understanding ("max_bin=15 optimal for binary sparse") was WRONG — it forced excessive bundle fragmentation
-- Corrected to max_bin=255: allows maximum EFB compression while binary features still get 2 bins
-- Lower max_bin only helps if you have continuous features with fine granularity — our crosses are binary, so it only hurts
-
-### Asymmetric Barriers Fix SHORT Precision (2026-03-28)
-- Symmetric 3x ATR on upward-biased BTC gives only 7% SHORT labels — model learns to never predict SHORT
-- Asymmetric barriers (1.5x ATR profit / 3x ATR stop for SHORT) rebalance label distribution
-- Without this, SHORT precision is 0% regardless of model quality
-
-### CPCV K=2 is Minimum for Real PBO (2026-03-28)
-- CPCV K=1 gives only 1 PBO path (useless — no combinatorial diversity)
-- K=2 is the minimum for real PBO with 4-9 paths depending on N folds
-- Previous runs with K=1 had no meaningful PBO validation
-
-### Targeted Crossing Eliminates 80% Noise (2026-03-28)
-- ALL x ALL crossing creates 80% noise features (e.g., RSI_high x RSI_low — meaningless)
-- Targeted crossing preserves matrix thesis while cutting feature count 50%
-- 4-tier binarization kept — only the crossing pairs are curated
-
-### Dataset.subset() is 1000x Faster Than reference= (2026-03-28)
-- Optuna trials using `reference=` re-parse the entire dataset each trial
-- `Dataset.subset()` reuses the parsed dataset with row indices — 1000x faster
-- Combined with PatientPruner and warm-start boosting, gives 10-20x total Optuna speedup
-
-### num_leaves=7 Was v3.2 Best (2026-03-28)
-- v3.2's best model used num_leaves=7
-- Our Optuna search floor of 15 excluded this value entirely
-- Lowered floor to 4 to capture shallow-tree optima
-
-### NaN Semantics in Cross Features (2026-03-27)
-- Cross features are pure 0/1 after binarization — they contain NO NaN values
-- Structural zeros in sparse CSR = 0.0 = "feature OFF" = "conditions not simultaneously met" — this is CORRECT, not missing
-- Previous understanding ("structural zero = missing") was WRONG for cross features
-- Base features CAN have NaN = missing (e.g., first 14 bars of RSI). LightGBM learns optimal split direction for missing values
-- Explicit 0.0 in base features = "the value is zero" (different from missing)
-- After binarization, bit=0 means the conditions were not met. bit=1 means they were. No ambiguity, no NaN
-- This is why sparse CSR is architecturally correct for crosses: unstored entries ARE zeros, and zeros ARE the correct "off" signal
-
-### Cross Gen OOM: Triple Disk Flush Architecture (2026-03-29)
-Cross gen OOM'd **6 times** on a 755GB machine before being solved. Three levels of memory accumulation:
-1. **COO lists inside `_gpu_cross_chunk`** — per-feature row/col/data arrays grew unbounded. Fix: `_flush_coo_to_csr()` every `FLUSH_FEATS` features converts COO→CSR and frees arrays.
-2. **CSR list inside `_gpu_cross_chunk`** — accumulated CSR chunks after COO flush. Fix: `_flush_csr_to_disk()` every `MAX_CSR_IN_RAM` chunks dumps to NPZ files.
-3. **CSR list inside `gpu_batch_cross`** — accumulated chunks across RIGHT_CHUNK iterations. Fix: `_flush_chunks_to_disk()` with `MAX_CHUNKS_IN_RAM` threshold.
-- **Thresholds**: `FLUSH_FEATS = ram_gb * 50`, `MAX_CSR_IN_RAM = max(2, min(5, ram_gb / 300))`, `MAX_CHUNKS_IN_RAM = max(100, ...)`
-- **Final assembly**: `_streaming_csc_splice()` loads one checkpoint at a time from disk — never loads all into RAM.
-- **CPU path streaming merge**: `_cpu_cross_chunk` merges results per-window (not all-at-once). Each window's results freed before next window starts.
-- All return types (COO, CSR, disk-backed) handled via `cols_list == 'disk'` or `hasattr(rows_list[0], 'indptr')` detection.
-
-### CuPy Blackwell sm_120 Compatibility (2026-03-29)
-- `CUPY_COMPILE_WITH_PTX=1` env var makes CuPy JIT-compile for Blackwell (sm_120) via PTX.
-- CuPy 14.0.1 + CUDA 12.9 runtime works on RTX 5090 with this env var. Verified.
-- cuDF and cuML do NOT work on CUDA 13+ — only CuPy.
-- Set `CUPY_COMPILE_WITH_PTX=1` early in cloud_run_tf.py and all GPU-using modules.
-- **Exception**: cuSPARSE SpGEMM on small GPUs (RTX 3060 Ti, 8GB) still crashes on CUDA 13 even with PTX. Use CPU path for those.
-
-### GPU VRAM Minimum for Cross Gen (2026-03-29)
-- GPUs with < 20GB VRAM are SLOWER than multi-core CPU for cross gen (tiny VRAM = tiny batches).
-- Auto-detect: `cp.cuda.runtime.memGetInfo()[1] / 1024**3 < 20` → force CPU path.
-- RTX 3060 Ti (8GB) on CUDA 13/driver 580 crashed cuSPARSE even with PTX mode.
-- RTX 3090 (24GB), RTX 4090 (24GB), A40 (48GB), A100/H100 (80GB) → GPU path.
-
-### scipy 2.x `len(sparse_matrix)` Breaking Change (2026-03-29)
-- `len(csr_matrix)` raises `TypeError: sparse array length is ambiguous` in scipy 2.x.
-- Our code had `sum(len(r) for r in c_rows)` where `c_rows` could be CSR matrices (from GPU flush path).
-- Fix: detect CSR returns via `hasattr(rows_list[0], 'indptr')` before the COO processing code.
-
-### CPU Thread Count Must Reserve RAM for COO/CSR Accumulation (2026-03-29)
-- Thread intermediates (`left_cols`, `right_cols`, `crosses` arrays) compete with COO/CSR accumulation for RAM.
-- Old formula: `ram_gb * 0.4 / per_worker_gb` → too many threads, OOM'd on cgroup-limited machines.
-- New formula: `ram_gb * 0.10 / per_worker_gb` → reserves 90% for data accumulation + OS.
-- cgroup memory limits can be lower than physical RAM — always use `_get_available_ram_gb()` (cgroup-aware).
-
-### Cross Gen Breakthrough: 128 Threads + Small Batches (2026-03-29)
-- Previous: 14 threads × 50K BATCH = 96GB thread spike + slow single-threaded merge = 99.8% CPU idle during merge
-- **Fix**: Cap BATCH to `target_ram / (n_threads * N * 8 * 6)` = ~5.5K on 967GB cgroup
-- Result: **128 threads × 252 batches** — 1.38M features in ~5 min (was 20+ min with 14 threads)
-- Merge flush fires every ~5 seconds (was ~80 seconds) — RAM bounded at ~140GB
-- **Key insight**: Smaller batches = more threads = faster windows + faster merge = lower peak RAM
-- **7th attempt on Cross 5** — 6 prior failures (4 OOM, 1 cuSPARSE crash, 1 UnboundLocalError)
-
-### Cross Gen CPU Utilization Must Be 100% (2026-03-29)
-- The CPU merge phase in `_cpu_cross_chunk` is single-threaded Python (iterating per-column arrays).
-- On a 512-core machine, this means 99.8% idle during merge — unacceptable.
-- Thread computation phase (Numba prange) uses all cores, but merge kills utilization.
-- **TODO**: Parallelize the merge phase or eliminate per-column array iteration entirely.
-- **RULE**: Always target 100% CPU utilization. If a pipeline stage drops below 50%, investigate and fix. No matrix signal is worth losing to idle cores.
-- `OMP_NUM_THREADS=4` during cross gen limits Numba internal parallelism — should be tuned to `cores / n_threads` for full saturation.
-
-### 4h Optuna OOM: 5.3M Dense Features × 23K Rows = 498GB (2026-03-29)
-- `run_optuna_local.py` converts sparse→dense BEFORE building LightGBM Dataset
-- For 4h: 5,360,147 features × 23,237 rows × 4 bytes = **498GB** dense matrix
-- Plus LightGBM EFB internal structures → total exceeds 2TB cgroup
-- The Dataset build took 2.5+ hours then silently died (OOM killed)
-- **Fix needed**: Either (a) keep sparse CSR input for LightGBM (it supports sparse), or (b) apply 35% row subsample BEFORE dense conversion (reduces to 174GB), or (c) use bigger machine
-- Config already has `'4h': 0.35` row subsample but it's applied per-trial, not during Dataset construction
-- **TODO**: Fix run_optuna_local.py to apply row subsample before dense conversion for TFs with >2M features
-
-### BTC Data Source Priority: btc_prices.db Before multi_asset_prices.db (2026-03-29)
-- `data_access_v2.py` loaded BTC from `multi_asset_prices.db` first (4,380 4h rows from 2024)
-- `btc_prices.db` had full merged history (23,237 4h rows from 2017) but was only used as fallback when multi_asset empty
-- **Result**: 4h trained on 62% LESS data (8,794 rows vs 23,237). Missing 2017-2024 history.
-- **Fix**: For BTC/BTC-USDT, always check `btc_prices.db` FIRST. Fall back to `multi_asset_prices.db` only if empty.
-- **Rule**: ALWAYS verify parquet row count matches DB row count after rebuild. Missing rows = missing features = weaker model.
-
-### Cgroup Memory Limits on vast.ai (2026-03-29)
-- Physical RAM ≠ available RAM. vast.ai sets cgroup limits ~5-10% below physical.
-- 1032GB physical = 967GB cgroup. Processes killed at cgroup limit, NOT physical limit.
-- `cat /sys/fs/cgroup/memory.max` shows the real limit. `_get_available_ram_gb()` reads this.
-- OOM killer sends SIGKILL — no traceback, just "Killed" in the pipeline log.
-
-## CLOUD DEPLOYMENT PROTOCOL — MANDATORY
-
-### Pip + SCP Deployment (ONLY METHOD)
-1. Rent machine with lightweight cached image (e.g., `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`)
-2. SSH in, install deps: `pip install lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml`
-   - **MANDATORY**: Test ALL imports before running: `python -c "import pandas, numpy, scipy, sklearn, lightgbm, ephem, astropy, pyarrow, optuna, numba, hmmlearn, yaml, tqdm; print('ALL OK')"`
-   - Missing ANY import = pipeline crashes mid-run = wasted time
-3. SCP code: `scp -P PORT code.tar.gz root@HOST:/workspace/` then `tar xzf`
-4. SCP DBs: `scp -P PORT btc_prices.db root@HOST:/workspace/v3.3/`
+### Pip + SCP (ONLY METHOD)
+1. Rent machine (pytorch base image, pip cached)
+2. `pip install lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml sparse-dot-mkl`
+3. Test ALL imports: `python -c "import pandas, numpy, scipy, sklearn, lightgbm, ephem, astropy, pyarrow, optuna, numba, hmmlearn, yaml, tqdm; print('ALL OK')"`
+4. SCP code tar + ALL .db files
 5. Symlink DBs: `ln -sf /workspace/*.db /workspace/v3.3/`
-6. Also symlink btc_prices.db to workspace root: `ln -sf /workspace/v3.3/btc_prices.db /workspace/`
-7. Run: `cd /workspace/v3.3 && python -u cloud_run_tf.py --symbol BTC --tf 1w`
+6. Run: `cd /workspace/v3.3 && python -u cloud_run_tf.py --symbol BTC --tf 1w`
+7. validate.py runs automatically as first step
 
-### Required files for upload:
-- All `v3.3/*.py` and `*.json` files (code tar)
-- `astrology_engine.py` (from project root — MUST be in v3.3 dir)
-- `btc_prices.db` (1.3GB — main price database)
-- All other .db files: tweets, news_articles, sports_results, space_weather, onchain_data, macro_data, astrology_full, ephemeris_cache, fear_greed, funding_rates, google_trends, open_interest, multi_asset_prices
+### Required uploads:
+- All `v3.3/*.py` and `*.json` files
+- `astrology_engine.py` (from project root)
+- ALL .db files (16+ databases). Missing DB = weaker model = INVALID RUN
 
-### Machine filter: ANY provider, Python 3.10+, 64+ cores, RAM per TF above
+### Non-negotiable deployment rules:
+- NEVER deploy with missing databases
+- NEVER say "it's fine" about missing data
+- NEVER skip the smoke test
+- NEVER deploy code that hasn't been audited (3 clean passes)
+- Verify DB count after extract: `ls /workspace/*.db | wc -l` >= 16
+- Check first 30s of log for "WARNING: DB missing" -> STOP if any
+- CHECK ALL CONFIG PATHS IN FIRST 10 LOG LINES (DB_DIR, V30_DATA_DIR, etc.)
 
-**If deployment fails:**
-1. Consult Perplexity MCP for the fix — keep in mind training efficiency and the matrix thesis
-2. Fix the root cause (not a bandaid)
-3. Deploy successfully
-4. Update `v3.3/CLOUD_TRAINING_PROTOCOL.md` with the lesson learned
-5. Add the fix to the `--onstart-cmd` or smoke test so it NEVER happens again
+## Codebase Intelligence (Socraticode)
 
-**Key rules from protocol:**
-- Install `cuda_init_fix.py` as sitecustomize on EVERY machine (NEVER use NUMBA_DISABLE_CUDA=1 — it breaks numba_cuda)
-- Mandatory smoke test (Step 5) before training — NEVER skip
-- `driver_version >= 535` filter on vast.ai search
-- Download ALL artifacts before killing machine
-- Always respond to user before running long tools
-
-## V3.3 BUILD STATUS
-
-### Code Changes (COMPLETE)
-- [x] 173 new esoteric features (vortex math, sacred geometry, planetary expansion, numerology, lunar/EM)
-- [x] 2 new gematria ciphers (Chaldean, AlBam) on all 10 text sources
-- [x] 6 new holiday windows extended to 2035
-- [x] 15 market signal features (DeFi TVL, BTC.D, mining stats)
-- [x] 12 bug fixes (eclipse formula, BaZi branch, Tzolkin tone/kin, VOC moon, etc.)
-- [x] is_unbalance -> class_weight='balanced' (multiclass fix)
-- [x] max_bin: 255 — DONE in config.py (binary features get 2 bins regardless of max_bin)
-- [x] max_conflict_rate — DONE: removed from config.py, replaced with min_data_in_bin=1
-- [x] path_smooth: 0.1 — added to config.py V3_LGBM_PARAMS
-- [ ] extra_trees: False — TODO: add to config.py V3_LGBM_PARAMS if desired (not yet present)
-- [x] SHAP cross validation as pipeline Step 11
-- [x] Inference crosses wired into live_trader.py
-- [x] Sports lookahead removal (intraday uses game_timestamp)
-- [x] Tweet color detection + gematria in all scrapers
-- [x] Space weather: sunspot + solar flux endpoints added
-- [x] DB path standardization (config.DB_DIR)
-- [x] LightGBM universal backend (EFB, sparse CSR) — for ALL timeframes
-- [x] Sparse matmul pre-filter for cross gen (10-50x speedup)
-- [x] Universal driver compat (_np() fix + CUDA 13 auto-detect)
-- [x] BTC DB merged: 2010-2026 full history (was 2019 only)
-- [x] Pip + SCP deployment (lightweight base image + pip install + SCP)
-
-### Architectural Upgrades (SESSION 2026-03-28)
-- [x] Asymmetric triple-barrier labels (fix 0% SHORT precision)
-- [x] CPCV K=2 for final evaluation (real PBO with 4-9 paths)
-- [x] Targeted crossing (50% fewer features, 4-tier kept)
-- [x] GPU histogram fork complete (78x SpMV, EFB compatible)
-- [x] Optuna 10-20x speedup (Dataset.subset, PatientPruner, warm-start)
-- [x] GPU-or-nothing (ALLOW_CPU=1 escape only)
-- [x] Per-TF training docs updated
-
-### Training (1W DONE, OPTIMIZATIONS PENDING)
-- [x] 1w — DONE. 77.64% accuracy (GPU=CPU verified), 2.2M features, 109MB model
-- [x] 1d cross gen — DONE. 6M features, artifacts downloaded
-- [ ] Implement OPTIMIZATION_PLAN.md before remaining training
-- [ ] Train 1d, 4h, 1h, 15m
-- [ ] Download + verify all artifacts
-- [ ] SHAP analysis on cross features
-
-### Post-Training
-- [ ] Scale-in/Kelly/dynamic exits in exhaustive_optimizer
-- [ ] LSTM projection + attention upgrade
-- [ ] Temporal cascade ensemble (4h->1h->15m)
-- [ ] Paper trading validation
-
-### Phase 7 Extensions (from 12-agent audit)
-- Hyperparameter range audit (config defaults within Optuna search ranges)
-- Sparse/dense consistency (is_enable_sparse identical in ml_multi_tf.py and run_optuna_local.py)
-- Return-tuple audit
-- EFB validation: max_bin=255, force_col_wise=True for 1w/1d/4h. enable_bundle=False for 1h/15m (EFB intractable at 10M features)
-- CPCV groups audit (TF_CPCV_GROUPS matches everywhere)
+- `codebase_search` — Semantic search across source files
+- `codebase_graph_query` — Import/dependency analysis
+- `codebase_context_search` — Search indexed artifacts
+- `codebase_watch` — File watcher keeps index current

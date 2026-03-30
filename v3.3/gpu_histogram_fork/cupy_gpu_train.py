@@ -225,7 +225,7 @@ def compute_labels(df):
 # CPCV SPLIT GENERATION
 # ============================================================
 def generate_cpcv_splits(n_samples, n_groups=4, n_test_groups=1,
-                         max_hold_bars=6, embargo_pct=0.01):
+                         max_hold_bars=None, embargo_pct=0.01):
     """Generate Combinatorial Purged Cross-Validation splits (4,1)=4 folds."""
     from itertools import combinations
 
@@ -236,7 +236,12 @@ def generate_cpcv_splits(n_samples, n_groups=4, n_test_groups=1,
         end = (g + 1) * group_size if g < n_groups - 1 else n_samples
         groups.append(np.arange(start, end))
 
-    embargo_size = max(1, int(n_samples * embargo_pct))
+    if max_hold_bars is not None:
+        # Embargo must be >= max_hold_bars bars (prevents leakage from forward label horizon)
+        effective_pct = max(embargo_pct, max_hold_bars / n_samples)
+    else:
+        effective_pct = embargo_pct
+    embargo_size = max(1, int(n_samples * effective_pct))
     all_paths = list(combinations(range(n_groups), n_test_groups))
 
     splits = []
@@ -553,25 +558,8 @@ def main():
     n_features = len(feature_cols)
     log(f"  Total features: {n_features:,} ({'SPARSE' if is_sparse else 'DENSE'})")
 
-    # Check if dense conversion fits in RAM (1w is small enough)
-    import psutil
-    converted_to_dense = False
-    if is_sparse:
-        dense_bytes = X_all.shape[0] * X_all.shape[1] * 4
-        avail_ram = psutil.virtual_memory().available
-        if dense_bytes < avail_ram * 0.5:
-            log(f"  Converting sparse -> dense ({dense_bytes / 1e9:.1f} GB, "
-                f"RAM avail: {avail_ram / 1e9:.0f} GB)...")
-            X_all_sparse_backup = X_all.copy()  # keep sparse for GPU benchmark
-            X_all = X_all.toarray()
-            converted_to_dense = True
-            is_sparse = False
-            log(f"  Converted. Dense shape: {X_all.shape}")
-        else:
-            X_all_sparse_backup = X_all
-            log(f"  Staying sparse (dense would need {dense_bytes / 1e9:.1f} GB)")
-    else:
-        X_all_sparse_backup = sp_sparse.csr_matrix(X_all) if X_all.shape[1] < 100000 else None
+    # SPARSE throughout — CLAUDE.md §4: no dense conversion (LightGBM CSR native + EFB)
+    X_all_sparse_backup = X_all if is_sparse else sp_sparse.csr_matrix(X_all)
 
     # ── Sample weights (uniform) ──
     sample_weights = np.ones(len(y_3class), dtype=np.float32)
@@ -602,17 +590,14 @@ def main():
             "min_gain_to_split": 2.0,
             "lambda_l1": 0.5,
             "lambda_l2": 3.0,
-            "feature_fraction": 0.05,
-            "feature_fraction_bynode": 0.5,
+            "feature_fraction": 0.9,      # NEVER < 0.7 — kills rare esoteric EFB bundles
+            "feature_fraction_bynode": 0.8,  # effective = ff * ff_bynode; keep both high
             "bagging_fraction": 0.8,
             "bagging_freq": 1,
             "num_leaves": 31,
             "learning_rate": 0.03,
             "verbosity": -1,
         }
-
-    if converted_to_dense:
-        lgb_params['is_enable_sparse'] = False
 
     log(f"\n{elapsed()} LightGBM params:")
     for k, v in sorted(lgb_params.items()):
@@ -649,7 +634,9 @@ def main():
     log(f"{'=' * 70}")
 
     n = X_all.shape[0]
-    splits = generate_cpcv_splits(n, n_groups=4, n_test_groups=1, max_hold_bars=6)
+    from feature_library import TRIPLE_BARRIER_CONFIG as _TBC
+    _max_hold = _TBC.get('1w', _TBC['1h'])['max_hold_bars']
+    splits = generate_cpcv_splits(n, n_groups=4, n_test_groups=1, max_hold_bars=_max_hold)
     log(f"  Generated {len(splits)} CPCV paths")
     for i, (tr, te) in enumerate(splits):
         log(f"    Path {i + 1}: train={len(tr)}, test={len(te)}")

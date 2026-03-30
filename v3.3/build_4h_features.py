@@ -528,7 +528,7 @@ for wname, tr_start, tr_end, te_start, te_end in windows:
     t0 = time.time()
     lgb_model = lgb.LGBMClassifier(
         max_depth=6, learning_rate=0.05, n_estimators=500,
-        subsample=0.8, colsample_bytree=0.8, min_data_in_leaf=5,  # 4H per config: rare astro signals
+        colsample_bytree=0.8, min_data_in_leaf=5,  # 4H per config: rare astro signals
         objective='binary', random_state=42, verbose=-1,
         device='cpu', force_col_wise=True,
     )

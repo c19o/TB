@@ -58,6 +58,22 @@ def log(msg):
     print(msg, flush=True)
 
 
+# ── Config lookup for feature_fraction (NEVER hardcode < 0.7 — kills rare esoteric crosses) ──
+# Perplexity-validated 2026-03-29: EFB operates on ~23K bundles; 0.05 = 1,150 bundles/tree.
+# Rare signals in 1-2 bundles have ~5% hit rate. Must be >= 0.7, target 0.9.
+try:
+    from config import V3_LGBM_PARAMS, TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES
+    _FF = V3_LGBM_PARAMS.get('feature_fraction', 0.9)
+    _FF_BYNODE = V3_LGBM_PARAMS.get('feature_fraction_bynode', 0.8)
+    _MDIL_1W = TF_MIN_DATA_IN_LEAF.get('1w', 3)
+    _NUM_LEAVES_1W = TF_NUM_LEAVES.get('1w', 31)
+except ImportError:
+    _FF = 0.9        # NEVER below 0.7 — kills rare esoteric crosses (EFB-bundled signals)
+    _FF_BYNODE = 0.8  # effective rate = _FF * _FF_BYNODE; keep both high
+    _MDIL_1W = 3
+    _NUM_LEAVES_1W = 31
+
+
 # ============================================================================
 # GPU detection
 # ============================================================================
@@ -143,7 +159,7 @@ def _ensure_lgbm_sparse_dtypes(X, label="matrix"):
 # ============================================================================
 
 def _generate_cpcv_splits(n_samples, n_groups=4, n_test_groups=1,
-                          max_hold_bars=6, embargo_pct=0.01):
+                          max_hold_bars=None, embargo_pct=0.01):
     """Generate Combinatorial Purged Cross-Validation splits."""
     group_size = n_samples // n_groups
     groups = []
@@ -152,7 +168,12 @@ def _generate_cpcv_splits(n_samples, n_groups=4, n_test_groups=1,
         end = (g + 1) * group_size if g < n_groups - 1 else n_samples
         groups.append(np.arange(start, end))
 
-    embargo_size = max(1, int(n_samples * embargo_pct))
+    if max_hold_bars is not None:
+        # Embargo must be >= max_hold_bars bars (prevents leakage from forward label horizon)
+        effective_pct = max(embargo_pct, max_hold_bars / n_samples)
+    else:
+        effective_pct = embargo_pct
+    embargo_size = max(1, int(n_samples * effective_pct))
     all_paths = list(combinations(range(n_groups), n_test_groups))
 
     splits = []
@@ -219,11 +240,11 @@ def run_approach_a(X_all, y_3class, sample_weights, feature_cols, splits):
         'min_gain_to_split': 2.0,
         'lambda_l1': 0.5,
         'lambda_l2': 3.0,
-        'feature_fraction': 0.05,
-        'feature_fraction_bynode': 0.5,
+        'feature_fraction': _FF,           # from config — NEVER < 0.7 (EFB bundle killer)
+        'feature_fraction_bynode': _FF_BYNODE,
         'bagging_fraction': 0.8,
         'bagging_freq': 1,
-        'num_leaves': 31,            # TF_NUM_LEAVES['1w']
+        'num_leaves': _NUM_LEAVES_1W,
         'learning_rate': 0.03,
         'verbosity': -1,
     }
@@ -231,23 +252,10 @@ def run_approach_a(X_all, y_3class, sample_weights, feature_cols, splits):
     num_boost_round = 800
     n_folds = len(splits)
 
-    # Check if we can convert to dense for multi-core training
-    # 1w is small enough to fit dense in RAM
-    import psutil
-    dense_bytes = X_all.shape[0] * X_all.shape[1] * 4  # float32
-    avail_ram = psutil.virtual_memory().available
+    # SPARSE throughout — CLAUDE.md §4: no dense conversion (LightGBM CSR native + EFB)
     is_sparse = hasattr(X_all, 'nnz')
-
-    if is_sparse and dense_bytes < avail_ram * 0.5:
-        log(f"  Converting sparse to dense ({dense_bytes / 1e9:.1f} GB, "
-            f"RAM avail: {avail_ram / 1e9:.0f} GB) for multi-core histogram...")
-        t0 = time.perf_counter()
-        X_train_data = X_all.toarray()
-        params['is_enable_sparse'] = False
-        log(f"  Dense conversion: {time.perf_counter() - t0:.1f}s")
-    else:
-        X_train_data = X_all
-        log(f"  Keeping SPARSE ({X_all.shape[1]:,} features)")
+    X_train_data = X_all
+    log(f"  Keeping SPARSE ({X_all.shape[1]:,} features) — sparse-throughout rule")
 
     # ── GPU histogram benchmark (separate from training) ──
     gpu_hist_ms = None
@@ -527,8 +535,8 @@ def run_approach_b(X_all, y_3class, sample_weights, feature_cols, splits):
         'min_gain_to_split': 2.0,
         'lambda_l1': 0.5,
         'lambda_l2': 3.0,
-        'feature_fraction': 0.05,
-        'feature_fraction_bynode': 0.5,
+        'feature_fraction': 0.9,           # NEVER < 0.7 — EFB bundle killer
+        'feature_fraction_bynode': 0.8,
         'bagging_fraction': 0.8,
         'bagging_freq': 1,
         'num_threads': 0,
@@ -597,11 +605,11 @@ def _run_fork_training(X_all, y_3class, sample_weights, feature_cols, splits):
         'min_gain_to_split': 2.0,
         'lambda_l1': 0.5,
         'lambda_l2': 3.0,
-        'feature_fraction': 0.05,
-        'feature_fraction_bynode': 0.5,
+        'feature_fraction': _FF,           # from config — NEVER < 0.7 (EFB bundle killer)
+        'feature_fraction_bynode': _FF_BYNODE,
         'bagging_fraction': 0.8,
         'bagging_freq': 1,
-        'num_leaves': 31,
+        'num_leaves': _NUM_LEAVES_1W,
         'learning_rate': 0.03,
         'verbosity': 1,
     }
@@ -818,7 +826,7 @@ def main():
     # Simplified uniqueness -- 1w has ~800 rows, max_hold=6
     from feature_library import TRIPLE_BARRIER_CONFIG
     tb_cfg = TRIPLE_BARRIER_CONFIG.get('1w', TRIPLE_BARRIER_CONFIG['1h'])
-    max_hold = tb_cfg.get('max_hold_bars', 6)
+    max_hold = tb_cfg['max_hold_bars']  # no fallback — must be in TRIPLE_BARRIER_CONFIG
 
     # Normalize weights
     sw_sum = sample_weights[valid_mask].sum()
@@ -833,7 +841,7 @@ def main():
         n, n_groups=4, n_test_groups=1,
         max_hold_bars=max_hold, embargo_pct=0.01,
     )
-    log(f"  CPCV: {len(splits)} paths (4 groups, 1 test, purge={max_hold}, embargo=1%)")
+    log(f"  CPCV: {len(splits)} paths (4 groups, 1 test, purge={max_hold} bars, embargo={max(1, int(n * max(0.01, max_hold / n)))} bars)")
     for i, (tr, te) in enumerate(splits):
         log(f"    Path {i + 1}: train={len(tr)}, test={len(te)}")
 

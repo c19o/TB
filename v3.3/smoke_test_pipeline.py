@@ -318,7 +318,8 @@ def run_smoke_test(tf_name='1h', max_rows=None):
         def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2, max_hold_bars=None, embargo_pct=0.01):
             group_size = n_samples // n_groups
             groups = [np.arange(g * group_size, (g+1) * group_size if g < n_groups-1 else n_samples) for g in range(n_groups)]
-            embargo_size = max(1, int(n_samples * embargo_pct))
+            _eff_pct = max(embargo_pct, max_hold_bars / n_samples) if max_hold_bars else embargo_pct
+            embargo_size = max(1, int(n_samples * _eff_pct))
             splits = []
             for test_ids in combinations(range(n_groups), n_test_groups):
                 test_idx = np.concatenate([groups[g] for g in test_ids])

@@ -130,7 +130,7 @@ def _compute_uniqueness_inner(starts, ends, n_bars):
 
 def _compute_sample_uniqueness(t0_arr, t1_arr, n_bars):
     starts = np.asarray(t0_arr, dtype=np.int64)
-    ends = np.asarray(t1_arr, dtype=np.int64)
+    ends = np.asarray(t1_arr, dtype=np.int64) + 1  # +1: t1 is inclusive end bar, range(s,e) is exclusive
     return _compute_uniqueness_inner(starts, ends, n_bars)
 
 
@@ -159,7 +159,13 @@ def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
         end = (g + 1) * group_size if g < n_groups - 1 else n_samples
         groups.append(np.arange(start, end))
 
-    embargo_size = max_hold_bars if max_hold_bars else max(1, int(n_samples * embargo_pct))
+    if max_hold_bars is not None:
+        # Embargo must be >= max_hold_bars bars (prevents leakage from forward label horizon)
+        # Formula: max(embargo_pct * n, max_hold_bars) — López de Prado
+        effective_pct = max(embargo_pct, max_hold_bars / n_samples)
+    else:
+        effective_pct = embargo_pct
+    embargo_size = max(1, int(n_samples * effective_pct))
 
     # Generate all combinatorial test paths
     all_paths = list(combinations(range(n_groups), n_test_groups))
@@ -357,6 +363,18 @@ def load_tf_data(tf_name):
     if sw_sum > 0:
         sample_weights *= valid_mask.sum() / sw_sum
 
+    # T-3 FIX: Apply dict class weights here so Optuna and final training use the same
+    # loss landscape. ml_multi_tf.py folds TF_CLASS_WEIGHT into sample_weights;
+    # Optuna must match or it optimizes in a different objective than final training.
+    # Note: 'balanced' TFs keep is_unbalance=True in params (handled at call sites).
+    _cw = TF_CLASS_WEIGHT.get(tf_name)
+    if isinstance(_cw, dict):
+        _cw_arr = np.ones(len(y), dtype=np.float32)
+        _cw_mask = ~np.isnan(y)
+        _cw_arr[_cw_mask] = np.array([_cw.get(int(k), 1.0) for k in y[_cw_mask]], dtype=np.float32)
+        sample_weights = sample_weights * _cw_arr
+        log.info(f"  Class weights: {_cw} (SHORT={_cw.get(0, 1.0)}x) — folded into sample_weights")
+
     return X_all, y, sample_weights, feature_cols, is_sparse, max_hold
 
 
@@ -414,9 +432,10 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         subsample_idx = np.sort(np.random.choice(subsample_idx, size=n_sample, replace=False))
 
     n_sub = len(subsample_idx)
+    _embargo_pct = max(0.01, max_hold / n_sub)  # embargo >= max_hold_bars bars (López de Prado)
     splits = _generate_cpcv_splits(
         n_sub, n_groups=n_groups, n_test_groups=1,
-        max_hold_bars=max_hold, embargo_pct=0.01,
+        max_hold_bars=max_hold, embargo_pct=_embargo_pct,
     )
 
     # Map absolute indices to parent Dataset row positions
@@ -453,23 +472,24 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
     log.info(f"  Phase 1: pre-computed {len(fold_data)} CPCV folds (from {len(splits)} splits) [subset() pattern]")
 
     def objective(trial):
+        trial_start = time.time()
         _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
         _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
 
         # Per-TF aware ranges — aggressive regularization for low-row TFs
         num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
-        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(3, _tf_mdil), _tf_mdil + 150)
-        feature_fraction = trial.suggest_float('feature_fraction', 0.005, 0.05, log=True)
-        feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.05, 0.3)
+        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(3, _tf_mdil), 15)
+        feature_fraction = trial.suggest_float('feature_fraction', 0.7, 1.0)
+        feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.5, 1.0)
         bagging_fraction = trial.suggest_float('bagging_fraction', 0.5, 1.0)
-        lambda_l1 = trial.suggest_float('lambda_l1', 1.0, 100.0, log=True)
-        lambda_l2 = trial.suggest_float('lambda_l2', 1.0, 100.0, log=True)
+        lambda_l1 = trial.suggest_float('lambda_l1', 1e-4, 4.0, log=True)   # T-1: capped at 4.0 — [1,100] zeroed rare signals firing ≤15 times
+        lambda_l2 = trial.suggest_float('lambda_l2', 1e-4, 10.0, log=True)  # T-1: capped at 10.0 — log-scale, mass near zero
         min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.5, 10.0)
         max_depth = trial.suggest_int('max_depth', 2, 8)
 
         params = V3_LGBM_PARAMS.copy()
         params.update({
-            'is_enable_sparse': is_sparse,
+            'is_enable_sparse': True,  # always True — permission gate for sparse CSR, not data coercion
             'num_threads': max(1, (os.cpu_count() or 4) // max(1, int(os.environ.get('OPTUNA_N_JOBS', '1')))),
             'num_leaves': num_leaves,
             'min_data_in_leaf': min_data_in_leaf,
@@ -485,7 +505,19 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
             'learning_rate': lr,
             'seed': OPTUNA_SEED,
         })
-        if tf_name in TF_CLASS_WEIGHT:
+        # Multi-GPU support: assign each trial to a different GPU
+        # Uses cuda_sparse fork for sparse CSR (standard CUDA silently falls back to CPU on sparse)
+        n_gpus = int(os.environ.get('LGBM_NUM_GPUS', '0'))
+        if n_gpus > 0:
+            params['device_type'] = 'cuda_sparse'
+            params['gpu_device_id'] = trial.number % n_gpus
+            params['histogram_pool_size'] = 512
+            params.pop('force_col_wise', None)
+            params.pop('force_row_wise', None)
+            params.pop('device', None)
+        # T-3 FIX: Dict class weights are folded into sample_weights in load_tf_data().
+        # Only set is_unbalance for 'balanced' TFs (no current TF uses this).
+        if TF_CLASS_WEIGHT.get(tf_name) == 'balanced':
             params['is_unbalance'] = True
 
         fold_scores = []
@@ -498,8 +530,8 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
             dtrain = parent_ds.subset(fold['train_indices'])
             dval = parent_ds.subset(fold['val_indices'])
 
-            if use_gpu and is_sparse:
-                # GPU fork path
+            if (use_gpu or n_gpus > 0) and is_sparse:
+                # GPU cuda_sparse fork path — requires explicit CSR upload
                 _gpu_train_data = X_all[np.where(valid_mask)[0][fold['train_indices']]]
                 gpu_params = params.copy()
                 gpu_params['device_type'] = 'cuda_sparse'
@@ -507,6 +539,8 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                 gpu_params.pop('force_row_wise', None)
                 gpu_params.pop('device', None)
                 gpu_params['histogram_pool_size'] = 512
+                if n_gpus > 0:
+                    gpu_params['gpu_device_id'] = trial.number % n_gpus
 
                 dtrain.construct()
                 dval.construct()
@@ -582,6 +616,14 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         trial.set_user_attr('n_folds', len(fold_scores))
         trial.set_user_attr('mean_mlogloss', float(mean_mlogloss))
 
+        # Runtime post-trial check
+        try:
+            from runtime_checks import post_trial_check
+            post_trial_check(trial.number, mean_mlogloss, trial.params,
+                             time.time() - trial_start)
+        except Exception:
+            pass
+
         return mean_mlogloss
 
     return objective
@@ -605,20 +647,23 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
     valid_indices = np.where(valid_mask)[0]
     n_valid = len(valid_indices)
 
+    _embargo_pct = max(0.01, max_hold / n_valid)  # embargo >= max_hold_bars bars
     splits = _generate_cpcv_splits(
         n_valid, n_groups=n_groups, n_test_groups=1,
-        max_hold_bars=max_hold, embargo_pct=0.01,
+        max_hold_bars=max_hold, embargo_pct=_embargo_pct,
     )
 
     params = V3_LGBM_PARAMS.copy()
     params.update({
-        'is_enable_sparse': is_sparse,
+        'is_enable_sparse': True,  # always True — sparse CSR is always the data format
         'num_threads': 0,  # auto-detect via OpenMP (full cores for validation)
         'learning_rate': lr,
         'seed': OPTUNA_SEED,
         'bagging_freq': 1,
     })
-    if tf_name in TF_CLASS_WEIGHT:
+    # T-3 FIX: Dict class weights are folded into sample_weights in load_tf_data().
+    # Only set is_unbalance for 'balanced' TFs (no current TF uses this).
+    if TF_CLASS_WEIGHT.get(tf_name) == 'balanced':
         params['is_unbalance'] = True
     # Apply the trial's tuned params
     for k in ['num_leaves', 'min_data_in_leaf', 'feature_fraction',
@@ -781,8 +826,8 @@ def build_default_enqueue_params(tf_name):
     return {
         'num_leaves': V3_LGBM_PARAMS.get('num_leaves', 63),
         'min_data_in_leaf': _tf_mdil,
-        'feature_fraction': V3_LGBM_PARAMS.get('feature_fraction', 0.1),
-        'feature_fraction_bynode': V3_LGBM_PARAMS.get('feature_fraction_bynode', 0.5),
+        'feature_fraction': V3_LGBM_PARAMS.get('feature_fraction', 0.9),
+        'feature_fraction_bynode': V3_LGBM_PARAMS.get('feature_fraction_bynode', 0.8),
         'bagging_fraction': V3_LGBM_PARAMS.get('bagging_fraction', 0.8),
         'lambda_l1': V3_LGBM_PARAMS.get('lambda_l1', 0.5),
         'lambda_l2': V3_LGBM_PARAMS.get('lambda_l2', 3.0),
@@ -804,21 +849,24 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
     valid_indices = np.where(valid_mask)[0]
     n_valid = len(valid_indices)
 
+    _embargo_pct = max(0.01, max_hold / n_valid)  # embargo >= max_hold_bars bars
     splits = _generate_cpcv_splits(
         n_valid, n_groups=n_groups, n_test_groups=n_test_groups,
-        max_hold_bars=max_hold, embargo_pct=0.01,
+        max_hold_bars=max_hold, embargo_pct=_embargo_pct,
     )
 
     params = V3_LGBM_PARAMS.copy()
     params.update({
-        'is_enable_sparse': is_sparse,  # match actual data format
+        'is_enable_sparse': True,  # always True — sparse CSR input regardless of cross load status
         'verbosity': -1,
         'num_threads': 0,  # auto-detect via OpenMP
         'learning_rate': OPTUNA_FINAL_LR,
         'seed': OPTUNA_SEED,
         'bagging_freq': 1,
     })
-    if tf_name in TF_CLASS_WEIGHT:
+    # T-3 FIX: Dict class weights are folded into sample_weights in load_tf_data().
+    # Only set is_unbalance for 'balanced' TFs (no current TF uses this).
+    if TF_CLASS_WEIGHT.get(tf_name) == 'balanced':
         params['is_unbalance'] = True
     # Apply best Optuna params
     for k in ['num_leaves', 'min_data_in_leaf', 'feature_fraction',
@@ -948,6 +996,101 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
 
 
 # ============================================================
+# PARALLEL DATASET CONSTRUCTION
+# ============================================================
+def _build_chunk(chunk_csr, y, weights, params, bin_path):
+    """Worker: build one column-chunk Dataset and save binary."""
+    ds = lgb.Dataset(chunk_csr, label=y, weight=weights,
+                     params=params, free_raw_data=True)
+    ds.construct()
+    ds.save_binary(bin_path)
+    return bin_path
+
+
+def _parallel_dataset_construct(X_csr, y, sample_weights=None, n_workers=None):
+    """Build LightGBM Dataset using parallel column-chunk construction.
+
+    Splits CSR column-wise, builds each chunk's Dataset in parallel via
+    ProcessPoolExecutor, merges via add_features_from. 10-50x faster than
+    single-threaded PushDataToMultiValBin for millions of sparse features.
+
+    LightGBM maintainer-endorsed approach (GitHub #5205).
+    """
+    import tempfile
+    import shutil
+
+    n_cols = X_csr.shape[1]
+
+    # Skip parallel for small feature counts (overhead not worth it)
+    if n_cols < 100_000:
+        log.info(f"  Dataset has {n_cols:,} cols -- using single-threaded construction")
+        ds = lgb.Dataset(X_csr, label=y, weight=sample_weights,
+                         params={'feature_pre_filter': False, 'max_bin': 255,
+                                 'min_data_in_bin': 1, 'is_enable_sparse': True,
+                                 'force_col_wise': True},
+                         free_raw_data=False)
+        ds.construct()
+        return ds
+
+    if n_workers is None:
+        n_workers = min(64, max(4, (os.cpu_count() or 8) // 4))
+
+    chunk_cols = np.array_split(np.arange(n_cols), n_workers)
+    tmp_dir = tempfile.mkdtemp(prefix='lgbm_parallel_')
+
+    params = {
+        'max_bin': 255,
+        'feature_pre_filter': False,
+        'is_enable_sparse': True,
+        'force_col_wise': True,
+        'min_data_in_bin': 1,
+        'num_threads': max(1, (os.cpu_count() or 8) // n_workers),
+    }
+
+    log.info(f"  Parallel Dataset construction: {n_workers} workers, "
+             f"{n_cols:,} cols, ~{n_cols // n_workers:,} cols/worker")
+
+    t0 = time.time()
+
+    # Build chunks in parallel -- MUST use 'spawn' (fork deadlocks with tcmalloc/OpenMP)
+    from concurrent.futures import ProcessPoolExecutor
+    mp_ctx = multiprocessing.get_context('spawn')
+
+    futures = []
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx) as pool:
+        for i, cols in enumerate(chunk_cols):
+            chunk_csr = X_csr[:, cols]
+            bin_path = os.path.join(tmp_dir, f'chunk_{i}.bin')
+            futures.append(pool.submit(_build_chunk, chunk_csr, y,
+                                       sample_weights, params, bin_path))
+
+    paths = [f.result() for f in futures]
+    build_time = time.time() - t0
+    log.info(f"  Parallel chunk build: {build_time:.1f}s ({n_workers} workers)")
+
+    # Sequential merge (fast -- metadata only, no re-binning)
+    t1 = time.time()
+    _ds_params = {'min_data_in_bin': 1, 'max_bin': 255, 'feature_pre_filter': False, 'is_enable_sparse': True}
+    base_ds = lgb.Dataset(paths[0], params=_ds_params).construct()
+    for p in paths[1:]:
+        chunk_ds = lgb.Dataset(p, params=_ds_params).construct()
+        base_ds.add_features_from(chunk_ds)
+
+    merge_time = time.time() - t1
+    total_time = time.time() - t0
+    log.info(f"  Merge: {merge_time:.1f}s | Total: {total_time:.1f}s "
+             f"({base_ds.num_data()} rows, {base_ds.num_feature()} features)")
+
+    # Cleanup temp files
+    try:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    return base_ds
+
+
+# ============================================================
 # MAIN SEARCH FOR ONE TF
 # ============================================================
 def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
@@ -978,12 +1121,19 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         except Exception as e:
             log.warning(f"  GPU fork detection failed: {e}")
 
-    search_use_gpu = False  # Always CPU for search = enables n_jobs parallelism
-    final_use_gpu = gpu_available  # GPU for the single final retrain
-
-    if gpu_available:
-        log.info(f"  GPU available — Phase 1+Validation: CPU parallel (n_jobs={n_jobs}), Final: GPU")
+    # Multi-GPU via LGBM_NUM_GPUS env var (standard CUDA, not fork)
+    _n_gpus = int(os.environ.get('LGBM_NUM_GPUS', '0'))
+    if _n_gpus > 0:
+        search_use_gpu = False  # GPU handled via params['device']='cuda' in objective
+        final_use_gpu = False   # Same — handled via env var
+        log.info(f"  MULTI-GPU MODE: {_n_gpus} GPUs, device=cuda, gpu_device_id per trial")
+    elif gpu_available:
+        search_use_gpu = False  # GPU fork for final only
+        final_use_gpu = True
+        log.info(f"  GPU fork available — Phase 1+Validation: CPU parallel (n_jobs={n_jobs}), Final: GPU")
     else:
+        search_use_gpu = False
+        final_use_gpu = False
         if _HAS_GPU_FORK and is_sparse:
             log.warning(f"  GPU fork available but not viable for {tf_name} — using CPU")
         elif _HAS_GPU_FORK and not is_sparse:
@@ -1005,24 +1155,59 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
             log.info(f"  No warm-start available for {tf_name} (no parent TF config found)")
 
     # ── Build parent Dataset ONCE for EFB reuse across all trials ──
-    valid_mask = ~np.isnan(y)
-    log.info("  Building parent Dataset for EFB reuse...")
-    t0_ds = time.time()
-    _parent_ds = lgb.Dataset(
-        X_all[valid_mask], label=y[valid_mask].astype(int),
-        weight=sample_weights[valid_mask] if sample_weights is not None else None,
-        params={'feature_pre_filter': False, 'max_bin': 255, 'min_data_in_bin': 1},
-        free_raw_data=False,  # keep raw data — validation gate needs it for full-data re-eval
-    )
-    _parent_ds.construct()
-    log.info(f"  Parent Dataset built in {time.time()-t0_ds:.1f}s: "
-             f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features "
-             f"(EFB cached — folds use subset())")
+    # ── Runtime pre-flight checks (after data load, before training) ──
+    try:
+        from runtime_checks import preflight_training, TrainingMonitor, post_trial_check
+        _base_params = dict(V3_LGBM_PARAMS)
+        _base_params['num_leaves'] = TF_NUM_LEAVES.get(tf_name, 63)
+        preflight_training(X_all, y, tf_name, _base_params, n_jobs)
+        _rt_monitor = TrainingMonitor(interval=30)
+        _rt_monitor.start()
+    except ImportError:
+        log.warning("  runtime_checks.py not found — skipping runtime validation")
+        _rt_monitor = None
+    except RuntimeError as e:
+        log.error(f"  Runtime pre-flight FAILED: {e}")
+        sys.exit(1)
 
-    # Save binary so ml_multi_tf.py can skip EFB reconstruction
+    valid_mask = ~np.isnan(y)
     bin_path = os.path.join(PROJECT_DIR, f'lgbm_dataset_{tf_name}.bin')
-    _parent_ds.save_binary(bin_path)
-    log.info(f"  Parent Dataset saved to binary: {bin_path}")
+
+    # T-3 FIX: If this TF has explicit dict class weights (folded into sample_weights
+    # by load_tf_data), any existing binary Dataset was built WITHOUT those weights.
+    # Invalidate the cache so it is rebuilt with the correct per-sample weights.
+    _has_dict_cw = isinstance(TF_CLASS_WEIGHT.get(tf_name), dict)
+    if _has_dict_cw and os.path.exists(bin_path):
+        log.info(f"  Invalidating cached Dataset binary (class weights changed): {bin_path}")
+        try:
+            os.remove(bin_path)
+        except OSError as _e:
+            log.warning(f"  Could not remove {bin_path}: {_e}")
+
+    # Try loading pre-built binary first (instant — skips EFB reconstruction)
+    if os.path.exists(bin_path):
+        log.info(f"  Loading parent Dataset from binary: {bin_path}")
+        t0_ds = time.time()
+        _parent_ds = lgb.Dataset(bin_path, params={
+            'min_data_in_bin': 1, 'max_bin': 255,
+            'feature_pre_filter': False, 'is_enable_sparse': True,
+        })
+        _parent_ds.construct()
+        log.info(f"  Loaded in {time.time()-t0_ds:.1f}s: "
+                 f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features")
+    else:
+        # First build — use parallel column-chunk construction for large feature sets
+        log.info("  Building parent Dataset (parallel column-chunk for >100K features)...")
+        t0_ds = time.time()
+        X_valid = X_all[valid_mask]
+        y_valid = y[valid_mask].astype(int)
+        w_valid = sample_weights[valid_mask] if sample_weights is not None else None
+        _parent_ds = _parallel_dataset_construct(X_valid, y_valid, w_valid)
+        log.info(f"  Parent Dataset built in {time.time()-t0_ds:.1f}s: "
+                 f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features "
+                 f"(EFB cached — folds use subset())")
+        _parent_ds.save_binary(bin_path)
+        log.info(f"  Saved binary: {bin_path}")
 
     # Determine trial counts
     if is_warmstarted:
@@ -1239,6 +1424,14 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         json.dump(config_out, f, indent=2)
     log.info(f"  Config saved: {config_path}")
 
+    # Stop runtime monitor
+    if _rt_monitor is not None:
+        try:
+            _rt_monitor.stop()
+            _rt_monitor.report()
+        except Exception:
+            pass
+
     total_elapsed = time.time() - total_start
     return {
         'tf': tf_name,
@@ -1267,12 +1460,21 @@ def main():
     timeframes = args.tf if args.tf else TF_ORDER
     use_warmstart = not args.no_warmstart
 
+    # Pre-flight validation — deterministic checks before spending compute
+    for _tf in timeframes:
+        try:
+            import subprocess as _sp
+            _sp.check_call([sys.executable, os.path.join(PROJECT_DIR, 'validate.py'), '--tf', _tf, '--local'])
+        except _sp.CalledProcessError:
+            log.error(f"Pre-flight validation FAILED for {_tf}. Fix issues above before training.")
+            sys.exit(1)
+
     # Auto-detect parallel trials
     total_cores = get_cpu_count() or 24
     if args.n_jobs is not None:
         n_jobs = args.n_jobs
     else:
-        n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, min(4, total_cores // 96))
+        n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, total_cores // 16)
 
     log.info(f"Optuna LightGBM Search v3.3 (Phase 1 + Validation Gate)")
     log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}")

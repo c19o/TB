@@ -10,14 +10,14 @@ Pipeline:
   2. Stack all assets into unified sparse training matrix
   3. Triple-barrier labels per asset
   4. CPCV walk-forward (purging + embargo)
-  5. LightGBM EFB on sparse CSR — force_col_wise, max_bin=255 (EFB optimized), feature_fraction=0.10
+  5. LightGBM EFB on sparse CSR — force_col_wise, max_bin=255 (EFB optimized), feature_fraction=0.9
   6. Per-asset models + unified model + per-crypto production models
   7. Meta-labeling + PBO validation
 
 Speed optimizations (4-6M features):
   - max_bin=255 (max EFB bundle size 254/bundle, binary features still get 2 bins)
-  - feature_fraction=0.10 (10% features per tree) = ~10x speedup
-  - feature_fraction_bynode=0.5 = ~2x on top
+  - feature_fraction=0.9 (90% EFB bundles per tree — preserves rare esoteric signals)
+  - feature_fraction_bynode=0.8
   - early_stopping_rounds=50
   - num_leaves=63 (leaf-wise growth)
   - force_col_wise=True (critical for 100K+ columns)
@@ -365,7 +365,7 @@ def compute_sample_uniqueness(n_samples, max_hold_bars):
 # ============================================================
 
 def generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
-                         max_hold_bars=24, embargo_pct=0.01):
+                         max_hold_bars=None, embargo_pct=0.01):
     """Generate Combinatorial Purged Cross-Validation splits.
 
     Per-boundary purging: for EACH test group independently, purge training
@@ -376,7 +376,12 @@ def generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
     from itertools import combinations
 
     group_size = n_samples // n_groups
-    embargo_size = max(1, int(n_samples * embargo_pct))
+    if max_hold_bars is not None:
+        # Embargo must be >= max_hold_bars bars (prevents leakage from forward label horizon)
+        effective_pct = max(embargo_pct, max_hold_bars / n_samples)
+    else:
+        effective_pct = embargo_pct
+    embargo_size = max(1, int(n_samples * effective_pct))
 
     groups = []
     for g in range(n_groups):
@@ -401,7 +406,8 @@ def generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
             g_end = groups[g][-1]
             # Purge before this group: training samples whose label window
             # [i, i+max_hold_bars] could extend into this test group
-            purge_mask[max(0, g_start - max_hold_bars):g_start] = True
+            if max_hold_bars is not None:
+                purge_mask[max(0, g_start - max_hold_bars):g_start] = True
             # Embargo after this group: prevent information leakage from
             # serial correlation immediately after test boundary
             purge_mask[g_end + 1:min(n_samples, g_end + 1 + embargo_size)] = True
@@ -492,7 +498,7 @@ def _lgbm_split_worker(args):
 # ============================================================
 
 def train_model(X_sparse, y, weights, feature_names, params=None,
-                n_groups=6, n_test_groups=2, max_hold_bars=24,
+                n_groups=6, n_test_groups=2, max_hold_bars=None,
                 num_boost_round=800, early_stopping_rounds=50,
                 parallel_splits=False, tf_name=None, mode=None):
     """
@@ -505,6 +511,12 @@ def train_model(X_sparse, y, weights, feature_names, params=None,
     if tf_name:
         params = _apply_tf_params(params, tf_name)
         log(f"  Per-TF params: min_data_in_leaf={params['min_data_in_leaf']} (tf={tf_name})")
+
+    if max_hold_bars is None:
+        from feature_library import TRIPLE_BARRIER_CONFIG
+        _tb = TRIPLE_BARRIER_CONFIG.get(tf_name or '1h', TRIPLE_BARRIER_CONFIG['1h'])
+        max_hold_bars = _tb['max_hold_bars']
+        log(f"  CPCV purge: max_hold_bars={max_hold_bars} (from TRIPLE_BARRIER_CONFIG[{tf_name or '1h'}])")
 
     batch_size = int(os.environ.get('V2_BATCH_SIZE', 0))
     if batch_size > 0:

@@ -160,7 +160,8 @@ def train_dual_models(features, forward_return, direction, use_gpu, tf_name='1d'
     # --- Model A: Direction classifier ---
     print(f"  {elapsed_str(start)} Training Model A (direction classifier)...")
     params_a = {**base_params, "objective": "binary", "metric": "auc"}
-    dtrain_a = lgb.Dataset(X_train, label=y_dir_train)
+    _ds_params = {'feature_pre_filter': False, 'max_bin': 255}  # CRITICAL: must be in Dataset(), not just train()
+    dtrain_a = lgb.Dataset(X_train, label=y_dir_train, params=_ds_params)
     dtest_a = lgb.Dataset(X_test, label=y_dir_test, reference=dtrain_a)
     model_a = lgb.train(params_a, dtrain_a, num_boost_round=500,
                          valid_sets=[dtest_a], valid_names=["test"],
@@ -172,7 +173,7 @@ def train_dual_models(features, forward_return, direction, use_gpu, tf_name='1d'
     # --- Model B: Volatility regressor ---
     print(f"  {elapsed_str(start)} Training Model B (volatility regressor)...")
     params_b = {**base_params, "objective": "regression", "metric": "rmse"}
-    dtrain_b = lgb.Dataset(X_train, label=y_vol_train)
+    dtrain_b = lgb.Dataset(X_train, label=y_vol_train, params=_ds_params)
     dtest_b = lgb.Dataset(X_test, label=y_vol_test, reference=dtrain_b)
     model_b = lgb.train(params_b, dtrain_b, num_boost_round=500,
                          valid_sets=[dtest_b], valid_names=["test"],

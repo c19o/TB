@@ -39,6 +39,11 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+try:
+    from sparse_dot_mkl import dot_product_mkl as _dot_product_mkl
+    _USE_MKL = True
+except ImportError:
+    _USE_MKL = False
 # Set Numba/OMP thread count BEFORE import — can't change after first use.
 # With many Python threads (128+), each Numba prange must use few sub-threads
 # to avoid thread exhaustion (128 × 512 = crash).
@@ -784,26 +789,21 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             del left_gpu_sp, right_gpu_sp
             cp.get_default_memory_pool().free_all_blocks()
         except Exception as e:
-            log(f"  cuSPARSE SpGEMM failed ({e}), falling back to scipy")
-            left_sp = sparse.csc_matrix(left_mat)
-            if left_sp.indices.dtype != np.int64:
-                left_sp.indices = left_sp.indices.astype(np.int64)
-                left_sp.indptr = left_sp.indptr.astype(np.int64)
-            right_sp = sparse.csc_matrix(right_mat)
-            if right_sp.indices.dtype != np.int64:
-                right_sp.indices = right_sp.indices.astype(np.int64)
-                right_sp.indptr = right_sp.indptr.astype(np.int64)
-            co_occur = (left_sp.T @ right_sp).toarray()
+            log(f"  cuSPARSE SpGEMM failed ({e}), falling back to MKL/scipy")
+            left_sp = sparse.csr_matrix(left_mat.astype(np.float32))
+            right_sp = sparse.csr_matrix(right_mat.astype(np.float32))
+            if _USE_MKL:
+                co_occur = _dot_product_mkl(left_sp.T, right_sp, cast=True).toarray()
+            else:
+                co_occur = (left_sp.T @ right_sp).toarray()
     else:
-        left_sp = sparse.csc_matrix(left_mat)
-        if left_sp.indices.dtype != np.int64:
-            left_sp.indices = left_sp.indices.astype(np.int64)
-            left_sp.indptr = left_sp.indptr.astype(np.int64)
-        right_sp = sparse.csc_matrix(right_mat)
-        if right_sp.indices.dtype != np.int64:
-            right_sp.indices = right_sp.indices.astype(np.int64)
-            right_sp.indptr = right_sp.indptr.astype(np.int64)
-        co_occur = (left_sp.T @ right_sp).toarray()  # (n_left, n_right) — small
+        # CPU path: MKL multi-threaded SpGEMM (20-50x faster than scipy on 128+ cores)
+        left_sp = sparse.csr_matrix(left_mat.astype(np.float32))
+        right_sp = sparse.csr_matrix(right_mat.astype(np.float32))
+        if _USE_MKL:
+            co_occur = _dot_product_mkl(left_sp.T, right_sp, cast=True).toarray()
+        else:
+            co_occur = (left_sp.T @ right_sp).toarray()  # (n_left, n_right) — small
     valid_pairs = np.argwhere(co_occur >= min_nonzero)
     n_valid = len(valid_pairs)
 
@@ -1015,25 +1015,20 @@ def _cpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             del left_gpu_sp, right_gpu_sp
             cp.get_default_memory_pool().free_all_blocks()
         except Exception as e:
-            left_sp = sparse.csc_matrix(left_mat)
-            if left_sp.indices.dtype != np.int64:
-                left_sp.indices = left_sp.indices.astype(np.int64)
-                left_sp.indptr = left_sp.indptr.astype(np.int64)
-            right_sp = sparse.csc_matrix(right_mat)
-            if right_sp.indices.dtype != np.int64:
-                right_sp.indices = right_sp.indices.astype(np.int64)
-                right_sp.indptr = right_sp.indptr.astype(np.int64)
-            co_occur = (left_sp.T @ right_sp).toarray()
+            left_sp = sparse.csr_matrix(left_mat.astype(np.float32))
+            right_sp = sparse.csr_matrix(right_mat.astype(np.float32))
+            if _USE_MKL:
+                co_occur = _dot_product_mkl(left_sp.T, right_sp, cast=True).toarray()
+            else:
+                co_occur = (left_sp.T @ right_sp).toarray()
     else:
-        left_sp = sparse.csc_matrix(left_mat)
-        if left_sp.indices.dtype != np.int64:
-            left_sp.indices = left_sp.indices.astype(np.int64)
-            left_sp.indptr = left_sp.indptr.astype(np.int64)
-        right_sp = sparse.csc_matrix(right_mat)
-        if right_sp.indices.dtype != np.int64:
-            right_sp.indices = right_sp.indices.astype(np.int64)
-            right_sp.indptr = right_sp.indptr.astype(np.int64)
-        co_occur = (left_sp.T @ right_sp).toarray()  # small: (n_left, n_right)
+        # CPU path: MKL multi-threaded SpGEMM (20-50x faster than scipy on 128+ cores)
+        left_sp = sparse.csr_matrix(left_mat.astype(np.float32))
+        right_sp = sparse.csr_matrix(right_mat.astype(np.float32))
+        if _USE_MKL:
+            co_occur = _dot_product_mkl(left_sp.T, right_sp, cast=True).toarray()
+        else:
+            co_occur = (left_sp.T @ right_sp).toarray()  # small: (n_left, n_right)
 
     valid_pairs = np.argwhere(co_occur >= min_nonzero)
 
@@ -1628,6 +1623,17 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     def _at_limit():
         """True if we've hit the max_crosses cap."""
         return max_crosses is not None and _total_collected >= max_crosses
+
+    # ── Thread reset: binarization done, switch to matmul thread count ──
+    # Binarization used full cpu_count (set by cloud_run_tf.py for speed).
+    # Sparse matmul loops use 4 threads to prevent thread exhaustion on 256-core machines.
+    try:
+        from numba import set_num_threads as _numba_set_threads
+        _numba_set_threads(4)
+        os.environ['NUMBA_NUM_THREADS'] = '4'
+        log("  NUMBA threads reset to 4 for matmul phase (was full cpu_count for binarization)")
+    except Exception:
+        pass  # safe — matmul will use whatever threads were set at import
 
     # ── Cross 1: DOY × ALL contexts ──
     if 'dx' in _completed_prefixes:

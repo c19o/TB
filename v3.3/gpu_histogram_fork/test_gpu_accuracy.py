@@ -292,7 +292,7 @@ def train_cpu(X_train, y_train, X_test, y_test, num_rounds=200):
         'is_enable_sparse': True,
         'min_data_in_leaf': 3,
         'min_gain_to_split': 2.0,
-        'feature_fraction': 0.05,
+        'feature_fraction': 0.9,  # NEVER < 0.7 — kills rare esoteric EFB bundles
         'bagging_fraction': 0.8,
         'bagging_freq': 1,
         'deterministic': True,
@@ -365,7 +365,7 @@ def train_gpu(X_train, y_train, X_test, y_test, num_rounds=200):
         'is_enable_sparse': True,
         'min_data_in_leaf': 3,
         'min_gain_to_split': 2.0,
-        'feature_fraction': 0.05,
+        'feature_fraction': 0.9,  # NEVER < 0.7 — kills rare esoteric EFB bundles
         'bagging_fraction': 0.8,
         'bagging_freq': 1,
         'deterministic': True,
