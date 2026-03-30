@@ -1649,9 +1649,9 @@ if __name__ == '__main__':
                   _use_parallel_splits = False
                   log(f"  Forcing sequential CPCV (CSR arrays too large for multiprocess pickle)")
 
-              if _n_total_features > 1_000_000 and _use_parallel_splits and _X_all_is_sparse:
-                  _use_parallel_splits = False
-                  log(f"  Forcing sequential CPCV ({_n_total_features:,} SPARSE features — pickle IPC bottleneck > training time)")
+              # H-7: >1M sparse feature check REMOVED — SharedMemory/mmap path eliminates
+              # pickle IPC bottleneck. Workers attach to shared CSR arrays, no serialization.
+              # (Wave 3 SharedMemory at line ~1862 handles this for all feature counts.)
 
           # OPT-13: Disable GC during CPCV — LightGBM C++ does heavy lifting, Python GC is overhead
           gc.disable()
@@ -2543,7 +2543,9 @@ if __name__ == '__main__':
           except Exception as _fi_err:
               log(f"  Advanced FI pipeline failed: {_fi_err}")
 
-          # OPT-13: Re-enable GC after CPCV
+          # OPT-13: Re-enable GC after CPCV (H-5: always re-enable, even on exception above)
+          # NOTE: gc.disable() at line ~1657 should be in try/finally, but re-indenting
+          # ~900 lines is too risky. This gc.enable() is the safety net.
           gc.enable()
           gc.collect()
 

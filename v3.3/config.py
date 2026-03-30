@@ -456,7 +456,7 @@ OPTUNA_FINAL_LR = 0.03
 OPTUNA_FINAL_ROUNDS = 800
 
 # n_jobs: env var override or auto
-OPTUNA_N_JOBS = int(os.environ.get('OPTUNA_N_JOBS', 0))  # 0 = auto (total_cores // 8)
+OPTUNA_N_JOBS = int(os.environ.get('OPTUNA_N_JOBS', 0))  # 0 = auto (total_cores // 8). 13900K=3, 128c=16.
 
 # ── Multi-GPU Fold-Parallel CPCV ──
 # Number of GPUs to use for parallel CPCV fold training.
