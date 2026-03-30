@@ -1644,14 +1644,13 @@ if __name__ == '__main__':
               _multi_gpu_mode = False
               log(f"  Single GPU — sequential CPCV")
           else:
-              # CPU path — original pickle checks apply
+              # CPU path — FIX-4/5: SharedMemory IPC copies raw CSR arrays (no pickle),
+              # so NNZ>int32 and >1M features are NOT bottlenecks anymore.
+              # Keep parallel enabled, log the stats for visibility.
               if _nnz_exceeds_int32 and _use_parallel_splits:
-                  _use_parallel_splits = False
-                  log(f"  Forcing sequential CPCV (CSR arrays too large for multiprocess pickle)")
-
+                  log(f"  NNZ exceeds int32 — SharedMemory IPC handles this (no pickle)")
               if _n_total_features > 1_000_000 and _use_parallel_splits and _X_all_is_sparse:
-                  _use_parallel_splits = False
-                  log(f"  Forcing sequential CPCV ({_n_total_features:,} SPARSE features — pickle IPC bottleneck > training time)")
+                  log(f"  {_n_total_features:,} SPARSE features — SharedMemory IPC (no pickle bottleneck)")
 
           # OPT-13: Disable GC during CPCV — LightGBM C++ does heavy lifting, Python GC is overhead
           gc.disable()
@@ -1715,9 +1714,19 @@ if __name__ == '__main__':
                       np.save(os.path.join(_gpu_shared_dir, f'hmm_overlay_fold{_wj}.npy'), _fold_ov)
                   log(f"  GPU-PARALLEL HMM: pre-computed per-fold overlays (no lookahead)")
 
+              # FIX-2: Cap per-worker threads for GPU parallel to avoid oversubscription.
+              # With num_threads=0 (auto), each of N GPU subprocesses auto-detects ALL cores,
+              # spawning N × total_cores threads total. Cap to total_cores / n_gpus.
+              _gpu_lgb_params = _base_lgb_params.copy()
+              _gpu_threads_per_worker = max(1, _total_cores // _num_gpus)
+              _gpu_lgb_params['num_threads'] = _gpu_threads_per_worker
+              log(f"  GPU-PARALLEL: num_threads per GPU worker: {_gpu_threads_per_worker} "
+                  f"({_num_gpus} GPUs × {_gpu_threads_per_worker} threads = "
+                  f"{_num_gpus * _gpu_threads_per_worker} total, {_total_cores} cores)")
+
               # Run GPU-parallel CPCV
               _gpu_results = run_cpcv_gpu_parallel(
-                  splits, _completed_folds, _gpu_shared_dir, _base_lgb_params,
+                  splits, _completed_folds, _gpu_shared_dir, _gpu_lgb_params,
                   feature_cols, _args.boost_rounds, tf_name,
                   _hmm_overlay_names_gpu, DB_DIR, n_gpus=_num_gpus,
               )
@@ -1857,7 +1866,16 @@ if __name__ == '__main__':
               _base_lgb_params = _base_lgb_params.copy()
               _base_lgb_params['num_threads'] = _threads_per_worker
               log(f"  num_threads per worker: {_base_lgb_params['num_threads']}")
-              X_csr = X_all.tocsr() if hasattr(X_all, 'tocsr') else sp_sparse.csr_matrix(X_all)
+
+              # FIX-1: Guard against dense data reaching parallel path — tocsr() on dense
+              # numpy allocates a full copy (80GB+ spike on 15m). Fail loud instead.
+              if not sp_sparse.issparse(X_all):
+                  raise RuntimeError(
+                      f"PARALLEL CPCV requires sparse X_all but got {type(X_all).__name__} "
+                      f"shape={X_all.shape}. Convert to sparse BEFORE training or use "
+                      f"--no-parallel-splits for dense matrices."
+                  )
+              X_csr = X_all.tocsr() if not isinstance(X_all, sp_sparse.csr_matrix) else X_all
 
               # Wave 3: SharedMemory for CPCV IPC — eliminates pickle bottleneck for 15m
               # Place CSR arrays in shared memory so workers attach instead of deserializing copies
@@ -1883,7 +1901,15 @@ if __name__ == '__main__':
                   _total_shm_mb = (X_csr.data.nbytes + X_csr.indices.nbytes + X_csr.indptr.nbytes) / 1e6
                   log(f"  SharedMemory IPC: {_total_shm_mb:.0f} MB in 3 blocks (eliminates pickle bottleneck)")
               except (ImportError, OSError) as _shm_err:
-                  log(f"  SharedMemory unavailable ({_shm_err}), falling back to pickle IPC")
+                  # FIX-4: SharedMemory is REQUIRED for large sparse matrices (no pickle fallback).
+                  # For small matrices (<1M features), pickle IPC is acceptable.
+                  if _n_total_features > 1_000_000 or _nnz_exceeds_int32:
+                      raise RuntimeError(
+                          f"SharedMemory IPC failed ({_shm_err}) and pickle cannot handle "
+                          f"{_n_total_features:,} features / NNZ>int32. "
+                          f"Fix SharedMemory or increase /dev/shm size."
+                      )
+                  log(f"  SharedMemory unavailable ({_shm_err}), falling back to pickle IPC (OK for <1M features)")
                   _use_shm = False
 
               worker_args = []
@@ -2171,7 +2197,20 @@ if __name__ == '__main__':
                                 _fold_result_path, DB_DIR),
                       )
                       _fold_proc.start()
-                      _fold_proc.join()
+                      # FIX-3: Timeout on subprocess join — hung folds block forever without this.
+                      _fold_proc.join(timeout=7200)  # 2hr max per fold
+                      if _fold_proc.is_alive():
+                          log(f"    WARNING: Fold {wi+1} subprocess timed out after 7200s — terminating")
+                          _fold_proc.terminate()
+                          _fold_proc.join(timeout=30)
+                          raise RuntimeError(
+                              f"CPCV fold {wi+1} subprocess hung for >7200s. "
+                              f"Check logs for OOM or deadlock."
+                          )
+                      if _fold_proc.exitcode != 0:
+                          raise RuntimeError(
+                              f"CPCV fold {wi+1} subprocess crashed with exit code {_fold_proc.exitcode}"
+                          )
                       # Read results from subprocess
                       with open(_fold_result_path, 'rb') as _frf:
                           _fold_res = pickle.load(_frf)
