@@ -37,15 +37,16 @@ def _llvm_ctpop_i64(typingctx, val):
 # ── Pack a dense binary column into uint64 bitarray ──
 
 
-@njit(cache=True)
+@njit(parallel=True, cache=True)
 def _pack_matrix(mat, n_cols, n_words):
     """Pack all columns of a dense binary matrix into bitarrays.
     mat: float32 (n_rows, n_cols) — binary 0/1 values
     Returns: uint64 (n_cols, n_words) — each row is a packed column
+    Outer loop parallelized over columns via prange (each column is independent).
     """
     packed = np.zeros((n_cols, n_words), dtype=np.uint64)
     n_rows = mat.shape[0]
-    for c in range(n_cols):
+    for c in prange(n_cols):
         for i in range(n_rows):
             if mat[i, c] != 0.0:
                 word_idx = i >> 6
