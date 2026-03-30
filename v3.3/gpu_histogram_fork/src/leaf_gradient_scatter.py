@@ -392,10 +392,10 @@ void warp_reduce_scatter_f64(
     for (long long j = start; j < end; j++) {
         int col = indices[j];
 
-        /* Compute active lane mask — threads exit CSR loops at different
-         * times, so we MUST use __ballot_sync to get the real active set.
-         * Using full_mask=0xffffffff reads undefined values from dead lanes. */
-        unsigned active = __ballot_sync(0xffffffff, true);
+        /* Compute active lane mask dynamically — threads exit CSR loops at
+         * different iterations, so 0xffffffff would read undefined values
+         * from exited lanes. __activemask() returns only executing lanes. */
+        unsigned active = __activemask();
 
         /* Warp-cooperative reduction for matching columns */
         double g_val = g;

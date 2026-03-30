@@ -51,6 +51,7 @@
  *   sm_89  (RTX 4090, L40)
  *   sm_90  (H100, H200)
  *   sm_100 (B200, B100)
+ *   sm_120 (next-gen)
  *   PTX fallback for future architectures.
  */
 

@@ -842,16 +842,11 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
     const std::vector<int8_t>& is_feature_used,
     bool use_subtract) {
 
-    /* TEMP DEBUG: force CPU histogram to verify it works */
-    {
-        SerialTreeLearner::ConstructHistograms(is_feature_used, use_subtract);
-        return;
-    }
-
     if (!gpu_initialized_) {
-        /* Fallback to CPU if GPU init failed */
-        SerialTreeLearner::ConstructHistograms(is_feature_used, use_subtract);
-        return;
+        /* GPU init failed — hard error, no silent CPU fallback */
+        Log::Fatal("[CUDASparseHist] GPU not initialized. Cannot build histograms. "
+                   "Call Init() first or check GPU availability.");
+        throw std::runtime_error("GPU histogram builder not initialized");
     }
 
     /* Deferred CSR upload: The Python wrapper calls LGBM_BoosterSetExternalCSR()
@@ -881,10 +876,10 @@ void CUDASparseHistTreeLearner::ConstructHistograms(
         Log::Info("[CUDASparseHist] CSR uploaded on first ConstructHistograms call");
     }
     if (!csr_uploaded_) {
-        /* Still no CSR data — fall back to CPU histogram building */
-        Log::Warning("[CUDASparseHist] No CSR available yet — CPU fallback");
-        SerialTreeLearner::ConstructHistograms(is_feature_used, use_subtract);
-        return;
+        /* No CSR data — hard error, no silent CPU fallback */
+        Log::Fatal("[CUDASparseHist] No CSR data available. Upload CSR via "
+                   "LGBM_BoosterSetExternalCSR() before training.");
+        throw std::runtime_error("No CSR data uploaded for GPU histogram building");
     }
 
     /* Get smaller/larger leaf info from the base class leaf splits.

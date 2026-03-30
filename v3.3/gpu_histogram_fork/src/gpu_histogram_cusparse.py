@@ -12,6 +12,7 @@ Requires: CuPy with CUDA support.
 """
 
 import os
+import hashlib
 import numpy as np
 import scipy.sparse as sp
 
@@ -23,6 +24,16 @@ except ImportError:
     CUDA_AVAILABLE = False
 
 _DUAL_CSR = os.environ.get('CUDA_DUAL_CSR', '0') in ('1', 'y', 'Y', 'yes')
+
+# Cache for the full GPU CSR and its transpose (uploaded once, reused every call)
+_gpu_csr_cache = {}   # keyed on matrix identity hash -> gpu_csr
+_gpu_csr_t_cache = {} # keyed on matrix identity hash -> gpu_csr.T
+
+
+def _matrix_identity_hash(csr: sp.csr_matrix) -> str:
+    """Compute a stable identity hash for a CSR matrix based on its data pointers.
+    Uses id() of the underlying arrays — fast O(1), changes only if matrix is rebuilt."""
+    return f"{id(csr.indptr)}_{id(csr.indices)}_{id(csr.data)}_{csr.shape}"
 
 
 def is_available() -> bool:
@@ -78,35 +89,36 @@ def gpu_build_histogram_cusparse(
         g_vec = grad.astype(np.float64)
         h_vec = hess.astype(np.float64)
 
-    # Slice to leaf rows on CPU, then transfer
-    leaf_csr = csr[row_indices].astype(np.float64)
-    leaf_g = g_vec[row_indices]
-    leaf_h = h_vec[row_indices]
+    # Upload full CSR to GPU once (stays resident). Cache keyed on matrix identity.
+    mat_key = _matrix_identity_hash(csr)
+    if mat_key not in _gpu_csr_cache:
+        _gpu_csr_cache.clear()  # evict old matrix if any
+        _gpu_csr_t_cache.clear()
+        _gpu_csr_cache[mat_key] = cp_sparse.csr_matrix(csr.astype(np.float64))
+    gpu_csr_full = _gpu_csr_cache[mat_key]
 
-    # Transfer to GPU
-    gpu_csr = cp_sparse.csr_matrix(leaf_csr)
-    gpu_g = cp.asarray(leaf_g)
-    gpu_h = cp.asarray(leaf_h)
+    # Build full-size masked gradient vector on GPU (non-leaf rows = 0)
+    # This avoids expensive CPU-side csr[row_indices] slicing per call
+    gpu_g_full = cp.zeros(csr.shape[0], dtype=cp.float64)
+    gpu_h_full = cp.zeros(csr.shape[0], dtype=cp.float64)
+    gpu_row_idx = cp.asarray(row_indices.astype(np.int64))
+    gpu_g_full[gpu_row_idx] = cp.asarray(g_vec[row_indices])
+    gpu_h_full[gpu_row_idx] = cp.asarray(h_vec[row_indices])
 
-    # SpMV: CSR.T @ grad = per-feature gradient sum (bin 1)
-    # Shape: (n_features,)
-    # Optimization D (CUDA_DUAL_CSR=1): Cache CSR.T to avoid repeated transpose
-    if _DUAL_CSR:
-        if not hasattr(gpu_build_histogram_cusparse, '_cached_csr_t') or \
-           gpu_build_histogram_cusparse._cached_shape != gpu_csr.shape:
-            gpu_build_histogram_cusparse._cached_csr_t = gpu_csr.T.tocsr()
-            gpu_build_histogram_cusparse._cached_shape = gpu_csr.shape
-        gpu_csr_t = gpu_build_histogram_cusparse._cached_csr_t
-    else:
-        gpu_csr_t = gpu_csr.T.tocsr()
-    hist_grad_bin1 = gpu_csr_t.dot(gpu_g)
-    hist_hess_bin1 = gpu_csr_t.dot(gpu_h)
+    # Cache CSR.T on GPU (keyed on matrix identity, not shape)
+    if mat_key not in _gpu_csr_t_cache:
+        _gpu_csr_t_cache[mat_key] = gpu_csr_full.T.tocsr()
+    gpu_csr_t = _gpu_csr_t_cache[mat_key]
 
-    # Total gradient/hessian for this leaf
-    total_g = float(cp.sum(gpu_g))
-    total_h = float(cp.sum(gpu_h))
+    # SpMV: CSR.T @ masked_grad = per-feature gradient sum (bin 1)
+    hist_grad_bin1 = gpu_csr_t.dot(gpu_g_full)
+    hist_hess_bin1 = gpu_csr_t.dot(gpu_h_full)
 
-    # Transfer back to CPU
+    # Total gradient/hessian for this leaf (sum of masked vectors = leaf sum)
+    total_g = float(cp.sum(gpu_g_full))
+    total_h = float(cp.sum(gpu_h_full))
+
+    # Transfer results back to CPU
     hg1 = cp.asnumpy(hist_grad_bin1)
     hh1 = cp.asnumpy(hist_hess_bin1)
 
