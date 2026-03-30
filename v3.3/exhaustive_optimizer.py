@@ -6,7 +6,7 @@ exhaustive_optimizer.py — Optuna TPE Optimizer (LightGBM)
 Replaces exhaustive grid search with Optuna's TPE sampler for intelligent
 Bayesian optimization across 6 timeframes (5m, 15m, 1H, 4H, 1D, 1W).
 
-Uses RTX 3090 GPU via CuPy (falls back to NumPy) for vectorized simulation.
+Uses RTX 3090 GPU via CuPy (REQUIRED — no CPU fallback) for vectorized simulation.
 LightGBM replaces XGBoost for model inference.
 
 Usage:
@@ -14,7 +14,7 @@ Usage:
     python exhaustive_optimizer.py --tf 1h --tf 4h --n-trials 500
 """
 
-import sys, os, io, time, json, warnings, pickle
+import sys, os, io, time, json, warnings, pickle, multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.stats import qmc
 if os.name == 'nt':
@@ -39,15 +39,13 @@ try:
     import cupy as cp
     # Verify GPU actually works (catches sm_120 / driver mismatch at import time)
     cp.array([1.0]) + cp.array([2.0])
-    xp = cp
     GPU_ARRAY = True
     print(f"[GPU] CuPy + CUDA detected — GPU verified — OPTUNA OPTIMIZER")
 except Exception as e:
-    if os.environ.get('ALLOW_CPU', '0') != '1':
-        raise RuntimeError(f"GPU REQUIRED: CuPy failed ({e}). Set ALLOW_CPU=1 for CPU mode.")
-    xp = np
-    GPU_ARRAY = False
-    print(f"[ALLOW_CPU=1] CuPy unavailable ({e}) — using NumPy (slower)")
+    raise RuntimeError(
+        f"GPU REQUIRED: CuPy/CUDA failed ({e}). "
+        f"Install CuPy with working CUDA. No CPU fallback."
+    )
 
 import lightgbm as lgb
 try:
@@ -75,10 +73,13 @@ START_TIME = time.time()
 TOTAL_COST_PER_TRADE = CONFIG_FEE_RATE  # from config.py (single source of truth)
 STARTING_BALANCE = CONFIG_STARTING_BALANCE
 
-# Batch size: number of parameter combos to simulate at once on GPU
-# RTX 3090 has 24 GB VRAM; each combo needs ~8 floats * n_bars * 4 bytes
-# Conservative default; auto-tuned per TF based on bar count
-GPU_BATCH_BASE = 500_000  # base batch for ~1000 bars
+# Batch size: auto-tuned per TF based on bar count
+# RTX 3090 has 24 GB VRAM; state arrays are N-sized (not N*T), so batch can be large
+# Reference: ~30 float32 state arrays * N * 4 bytes = ~120 bytes/combo
+# At 500K combos = ~60 MB state (fits easily). Scale inversely with bar count
+# to avoid excessive kernel launch time per batch.
+GPU_BATCH_REFERENCE_BARS = 1000  # reference bar count for 500K batch
+GPU_BATCH_REFERENCE_SIZE = 500_000  # batch size at reference bar count
 
 # Optimizer mode: 'sobol' (default) = Sobol sweep + Bayesian refinement, 'optuna' = pure TPE
 OPTIMIZER_MODE = os.environ.get('OPTIMIZER_MODE', 'sobol').lower()
@@ -399,10 +400,52 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
 
     NOTE: Because trailing stops and sequential trade logic require bar-by-bar state,
     we iterate over bars but vectorize across all N combos simultaneously.
-    This is the standard approach for GPU-accelerated backtesting.
+    Per-bar data is pre-computed on CPU to eliminate GPU→CPU sync overhead.
+    All .any() guards removed to avoid GPU sync stalls (masked ops are cheap).
     """
     N = params_batch.shape[0]
     T = len(confs)
+
+    # ---- PRE-COMPUTE: copy per-bar GPU data to CPU numpy (eliminates per-bar GPU→CPU syncs) ----
+    confs_cpu  = cp.asnumpy(confs)
+    dirs_cpu   = cp.asnumpy(dirs)
+    closes_cpu = cp.asnumpy(closes)
+    atrs_cpu   = cp.asnumpy(atrs)
+    highs_cpu  = cp.asnumpy(highs)
+    lows_cpu   = cp.asnumpy(lows)
+    regime_cpu = cp.asnumpy(regime).astype(np.int32)
+
+    # Clamp per-bar values (vectorized, CPU)
+    closes_cpu = np.maximum(closes_cpu, 1.0).astype(np.float32)
+    highs_cpu  = np.maximum(highs_cpu, closes_cpu).astype(np.float32)
+    lows_cpu   = np.maximum(lows_cpu, 1e-4).astype(np.float32)
+    atrs_cpu   = np.where(atrs_cpu > 0, atrs_cpu, closes_cpu * 0.01).astype(np.float32)
+
+    # Pre-compute regime multiplier arrays (T,) — eliminates per-bar regime lookup
+    REGIME_LEV_MULT_np  = np.array([CONFIG_REGIME_MULT[i]['lev']  for i in range(4)], dtype=np.float32)
+    REGIME_RISK_MULT_np = np.array([CONFIG_REGIME_MULT[i]['risk'] for i in range(4)], dtype=np.float32)
+    REGIME_STOP_MULT_np = np.array([CONFIG_REGIME_MULT[i]['stop'] for i in range(4)], dtype=np.float32)
+    REGIME_RR_MULT_np   = np.array([CONFIG_REGIME_MULT[i]['rr']   for i in range(4)], dtype=np.float32)
+    REGIME_HOLD_MULT_np = np.array([CONFIG_REGIME_MULT[i]['hold'] for i in range(4)], dtype=np.float32)
+
+    bar_lev_m  = REGIME_LEV_MULT_np[regime_cpu]   # (T,) float32
+    bar_risk_m = REGIME_RISK_MULT_np[regime_cpu]
+    bar_stop_m = REGIME_STOP_MULT_np[regime_cpu]
+    bar_rr_m   = REGIME_RR_MULT_np[regime_cpu]
+    bar_hold_m = REGIME_HOLD_MULT_np[regime_cpu]
+
+    # Pre-compute confidence tier multiplier for each bar (T,)
+    # CONFIDENCE_SIZE_TIERS is sorted descending; first match wins.
+    # Vectorize: iterate ascending (reverse), last overwrite = first match.
+    bar_conf_mult = np.full(T, 0.25, dtype=np.float32)  # default: below all tiers
+    for _ct, _cm in reversed(CONFIDENCE_SIZE_TIERS):
+        bar_conf_mult[confs_cpu >= _ct] = _cm
+
+    # Pre-compute drawdown protocol arrays for vectorized application
+    dd_protocol_levels = sorted(DRAWDOWN_PROTOCOL.keys(), reverse=True)
+    dd_thresholds = np.array([DRAWDOWN_PROTOCOL[k]['risk_multiplier'] for k in dd_protocol_levels], dtype=np.float32)
+    dd_thresh_vals = np.array(dd_protocol_levels, dtype=np.float32)
+    dd_min_confs = np.array([DRAWDOWN_PROTOCOL[k].get('min_confidence') or 0.0 for k in dd_protocol_levels], dtype=np.float32)
 
     # Unpack params — each is (N,)
     lev       = params_batch[:, 0]
@@ -441,16 +484,12 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
     trail_mult = xp_lib.abs(exit_type) * is_trail.astype(xp_lib.float32)  # 2 or 3 (or 0)
     is_partial = (~is_trail)                               # 0, 25, 50, 75 partial TP
 
-    # Pre-compute drawdown protocol thresholds (sorted descending for priority)
-    dd_protocol_levels = sorted(DRAWDOWN_PROTOCOL.keys(), reverse=True)
-    dd_protocol = []
-    for dd_thresh in dd_protocol_levels:
-        dd_cfg = DRAWDOWN_PROTOCOL[dd_thresh]
-        dd_protocol.append({
-            'threshold': dd_thresh,
-            'risk_mult': dd_cfg['risk_multiplier'],
-            'min_conf': dd_cfg.get('min_confidence'),
-        })
+    # Pre-compute partial TP scale (constant per combo, not per bar)
+    partial_pct_val = xp_lib.where(
+        is_partial & (exit_type > 0),
+        exit_type / 100.0,
+        xp_lib.ones(N, dtype=xp_lib.float32)
+    )
 
     # Drawdown protocol state: current risk multiplier and min_confidence override
     dd_risk_mult = xp_lib.ones(N, dtype=xp_lib.float32)
@@ -459,229 +498,159 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
     fee_rate = TOTAL_COST_PER_TRADE
     total_slippage = 2.0 * slippage  # applied to entry AND exit
 
-    # Regime multipliers derived from config.py (single source of truth)
-    REGIME_LEV_MULT_np  = np.array([CONFIG_REGIME_MULT[i]['lev']  for i in range(4)], dtype=np.float32)
-    REGIME_RISK_MULT_np = np.array([CONFIG_REGIME_MULT[i]['risk'] for i in range(4)], dtype=np.float32)
-    REGIME_STOP_MULT_np = np.array([CONFIG_REGIME_MULT[i]['stop'] for i in range(4)], dtype=np.float32)
-    REGIME_RR_MULT_np   = np.array([CONFIG_REGIME_MULT[i]['rr']   for i in range(4)], dtype=np.float32)
-    REGIME_HOLD_MULT_np = np.array([CONFIG_REGIME_MULT[i]['hold'] for i in range(4)], dtype=np.float32)
+    # Pre-allocate constant GPU arrays used inside loop
+    _ones_N  = xp_lib.ones(N, dtype=xp_lib.float32)
+    _zeros_N = xp_lib.zeros(N, dtype=xp_lib.float32)
+    _true_N  = xp_lib.ones(N, dtype=xp_lib.bool_)
+    _false_N = xp_lib.zeros(N, dtype=xp_lib.bool_)
 
     for t in range(T):
-        if not alive.any():
-            break
+        # Per-bar scalars (pre-computed on CPU — zero GPU sync)
+        c_val  = float(confs_cpu[t])
+        dirs_t = float(dirs_cpu[t])
+        p_val  = float(closes_cpu[t])
+        h_val  = float(highs_cpu[t])
+        l_val  = float(lows_cpu[t])
+        a_val  = float(atrs_cpu[t])
+        lev_m  = float(bar_lev_m[t])
+        risk_m = float(bar_risk_m[t])
+        stop_m = float(bar_stop_m[t])
+        rr_m   = float(bar_rr_m[t])
+        hold_m = float(bar_hold_m[t])
+        _conf_mult_t = float(bar_conf_mult[t])
 
-        c_val = float(confs[t])
-        dirs_t = float(dirs[t])  # +1=LONG, -1=SHORT, 0=FLAT
-        p_val = float(closes[t]) if closes[t] > 0 else 1.0
-        h_val = float(highs[t]) if highs[t] > 0 else p_val
-        l_val = float(lows[t]) if lows[t] > 0 else p_val
-        a_val = float(atrs[t]) if atrs[t] > 0 else p_val * 0.01
-
-        # Regime multipliers for this bar (scalar, broadcast to N combos)
-        r = int(regime[t])
-        lev_m = float(REGIME_LEV_MULT_np[r])
-        risk_m = float(REGIME_RISK_MULT_np[r])
-        stop_m = float(REGIME_STOP_MULT_np[r])
-        rr_m = float(REGIME_RR_MULT_np[r])
-        hold_m = float(REGIME_HOLD_MULT_np[r])
-
-        # --- Exit logic for those in trade ---
+        # --- Exit logic (no .any() guards — masked ops are cheap, GPU syncs are not) ---
         active = in_trade & alive
-        if active.any():
-            trade_bars += active.astype(xp_lib.int32)
+        trade_bars += active.astype(xp_lib.int32)
 
-            # 8C.3: Scale-in on bar 2 if profitable and not yet scaled in
-            bar2 = active & (trade_bars == 2) & (~scaled_in)
-            if bar2.any():
-                # Check profitability: current price vs entry
-                profitable_long = bar2 & (trade_dir == 1) & (p_val > entry_pr)
-                profitable_short = bar2 & (trade_dir == -1) & (p_val < entry_pr)
-                scale_in_mask = profitable_long | profitable_short
-                if scale_in_mask.any():
-                    # Add 50% size: multiply entry_conf_mult by 1.5
-                    entry_conf_mult = xp_lib.where(scale_in_mask,
-                                                   entry_conf_mult * 1.5, entry_conf_mult)
-                    # Update entry to weighted avg: (2/3 * old_entry + 1/3 * current)
-                    # Because original=1.0 share, adding 0.5 share at current price
-                    # total=1.5 shares, weights: 1.0/1.5=0.667, 0.5/1.5=0.333
-                    new_entry = entry_pr * (2.0 / 3.0) + p_val * (1.0 / 3.0)
-                    entry_pr = xp_lib.where(scale_in_mask, new_entry, entry_pr)
-                    # Widen stop by 20% from new entry
-                    old_stop_dist = xp_lib.abs(entry_pr - stop_pr)
-                    new_stop_dist = old_stop_dist * 1.2
-                    stop_pr = xp_lib.where(
-                        scale_in_mask & (trade_dir == 1),
-                        entry_pr - new_stop_dist, stop_pr)
-                    stop_pr = xp_lib.where(
-                        scale_in_mask & (trade_dir == -1),
-                        entry_pr + new_stop_dist, stop_pr)
-                    # Mark as scaled in
-                    scaled_in = xp_lib.where(scale_in_mask, True, scaled_in)
+        # 8C.3: Scale-in on bar 2 if profitable and not yet scaled in
+        bar2 = active & (trade_bars == 2) & (~scaled_in)
+        profitable_long  = bar2 & (trade_dir == 1) & (p_val > entry_pr)
+        profitable_short = bar2 & (trade_dir == -1) & (p_val < entry_pr)
+        scale_in_mask = profitable_long | profitable_short
+        entry_conf_mult = xp_lib.where(scale_in_mask, entry_conf_mult * 1.5, entry_conf_mult)
+        new_entry = entry_pr * (2.0 / 3.0) + p_val * (1.0 / 3.0)
+        entry_pr = xp_lib.where(scale_in_mask, new_entry, entry_pr)
+        old_stop_dist = xp_lib.abs(entry_pr - stop_pr)
+        new_stop_dist = old_stop_dist * 1.2
+        stop_pr = xp_lib.where(scale_in_mask & (trade_dir == 1),
+                               entry_pr - new_stop_dist, stop_pr)
+        stop_pr = xp_lib.where(scale_in_mask & (trade_dir == -1),
+                               entry_pr + new_stop_dist, stop_pr)
+        scaled_in = xp_lib.where(scale_in_mask, True, scaled_in)
 
-            # Update best price for trailing (use h_val for longs, l_val for shorts)
-            long_active = active & (trade_dir == 1)
-            short_active = active & (trade_dir == -1)
-            if long_active.any():
-                best_pr = xp_lib.where(long_active, xp_lib.maximum(best_pr, h_val), best_pr)
-            if short_active.any():
-                best_pr = xp_lib.where(short_active, xp_lib.minimum(best_pr, l_val), best_pr)
+        # Update best price for trailing (longs track highs, shorts track lows)
+        long_active  = active & (trade_dir == 1)
+        short_active = active & (trade_dir == -1)
+        best_pr = xp_lib.where(long_active, xp_lib.maximum(best_pr, h_val), best_pr)
+        best_pr = xp_lib.where(short_active, xp_lib.minimum(best_pr, l_val), best_pr)
 
-            # Trailing stop update: after reaching 1R profit, trail at trail_mult * ATR
-            trail_active = active & is_trail
-            if trail_active.any():
-                # 1R profit level
-                one_r_long  = entry_pr + stop_mult * a_val
-                one_r_short = entry_pr - stop_mult * a_val
-                past_1r_long  = trail_active & (trade_dir == 1) & (p_val >= one_r_long)
-                past_1r_short = trail_active & (trade_dir == -1) & (p_val <= one_r_short)
+        # Trailing stop update: after reaching 1R profit, trail at trail_mult * ATR
+        trail_active = active & is_trail
+        one_r_long   = entry_pr + stop_mult * a_val
+        one_r_short  = entry_pr - stop_mult * a_val
+        past_1r_long  = trail_active & (trade_dir == 1) & (p_val >= one_r_long)
+        past_1r_short = trail_active & (trade_dir == -1) & (p_val <= one_r_short)
+        new_trail_long  = best_pr - trail_mult * a_val
+        new_trail_short = best_pr + trail_mult * a_val
+        stop_pr = xp_lib.where(past_1r_long, xp_lib.maximum(stop_pr, new_trail_long), stop_pr)
+        stop_pr = xp_lib.where(past_1r_short, xp_lib.minimum(stop_pr, new_trail_short), stop_pr)
 
-                # Trail stop for longs: best_price - trail_mult * ATR
-                new_trail_long = best_pr - trail_mult * a_val
-                stop_pr = xp_lib.where(past_1r_long,
-                                       xp_lib.maximum(stop_pr, new_trail_long), stop_pr)
+        # SL check (use lows for longs, highs for shorts — intrabar barrier)
+        sl_long  = active & (trade_dir == 1)  & (l_val <= stop_pr)
+        sl_short = active & (trade_dir == -1) & (h_val >= stop_pr)
+        sl_hit = sl_long | sl_short
 
-                # Trail stop for shorts: best_price + trail_mult * ATR
-                new_trail_short = best_pr + trail_mult * a_val
-                stop_pr = xp_lib.where(past_1r_short,
-                                       xp_lib.minimum(stop_pr, new_trail_short), stop_pr)
+        # TP check (use highs for longs, lows for shorts — intrabar barrier)
+        tp_long  = active & (trade_dir == 1)  & (h_val >= tp_pr)
+        tp_short = active & (trade_dir == -1) & (l_val <= tp_pr)
+        tp_hit = tp_long | tp_short
 
-            # SL check (use lows for longs, highs for shorts — intrabar barrier)
-            sl_long  = active & (trade_dir == 1)  & (l_val <= stop_pr)
-            sl_short = active & (trade_dir == -1) & (h_val >= stop_pr)
-            sl_hit = sl_long | sl_short
+        # Max hold check (regime-adjusted)
+        hold_exit = active & (trade_bars >= max_hold * hold_m)
 
-            # TP check (use highs for longs, lows for shorts — intrabar barrier)
-            tp_long  = active & (trade_dir == 1)  & (h_val >= tp_pr)
-            tp_short = active & (trade_dir == -1) & (l_val <= tp_pr)
-            tp_hit = tp_long | tp_short
+        # Any exit
+        exiting = sl_hit | tp_hit | hold_exit
 
-            # Max hold check (regime-adjusted)
-            hold_exit = active & (trade_bars >= max_hold * hold_m)
+        # PnL calc — use barrier price for SL/TP exits, close for time exits
+        # Priority: SL > TP > hold (conservative — if both barriers hit intrabar, assume SL)
+        exit_price = xp_lib.where(sl_hit, stop_pr,
+                     xp_lib.where(tp_hit, tp_pr, p_val))
+        price_chg = (exit_price - entry_pr) / xp_lib.maximum(entry_pr, 1e-8) * trade_dir.astype(xp_lib.float32)
+        eff_lev = lev * lev_m
+        gross_pnl = price_chg * eff_lev
+        fee_cost  = (fee_rate + total_slippage) * eff_lev
+        net_pnl   = gross_pnl - fee_cost
 
-            # Any exit
-            exiting = sl_hit | tp_hit | hold_exit
+        # Partial TP scale (pre-computed partial_pct_val)
+        scale = xp_lib.where(tp_hit & is_partial & (exit_type > 0), partial_pct_val, _ones_N)
 
-            if exiting.any():
-                # PnL calc — use barrier price for SL/TP exits, close for time exits
-                # Priority: SL > TP > hold (conservative — if both barriers hit intrabar, assume SL)
-                exit_price = xp_lib.where(
-                    sl_hit, stop_pr,
-                    xp_lib.where(tp_hit, tp_pr,
-                                 xp_lib.full(N, p_val, dtype=xp_lib.float32)))
-                price_chg = (exit_price - entry_pr) / xp_lib.maximum(entry_pr, 1e-8) * trade_dir.astype(xp_lib.float32)
-                eff_lev = lev * lev_m
-                gross_pnl = price_chg * eff_lev
-                fee_cost  = (fee_rate + total_slippage) * eff_lev
-                net_pnl   = gross_pnl - fee_cost
+        eff_risk = risk_pct * risk_m * entry_conf_mult * dd_risk_mult
+        pnl_dollar = balance * eff_risk * net_pnl * scale
 
-                # Partial TP: for exit_type 25/50/75, reduce the take-profit PnL
-                # When TP is hit with partial, we get partial_pct of TP PnL and
-                # the rest runs to SL or max_hold. Simplified: scale TP exits.
-                # For simplicity in exhaustive search, partial TP means:
-                # if TP hit, realize (exit_type/100) of the profit now, rest at entry (break-even)
-                # Net effect: tp_pnl * (partial_pct + (1-partial_pct)*0) = tp_pnl * partial_pct
-                # But exit_type=0 means NO partial TP (full TP hit = full profit)
-                partial_pct_val = xp_lib.where(
-                    is_partial & (exit_type > 0),
-                    exit_type / 100.0,
-                    xp_lib.ones(N, dtype=xp_lib.float32)
-                )
-                # For non-TP exits (SL or hold), full PnL applies
-                # For TP exits with partial, scale down profit
-                scale = xp_lib.where(tp_hit & is_partial & (exit_type > 0),
-                                     partial_pct_val, xp_lib.ones(N, dtype=xp_lib.float32))
+        # Sortino accumulators (masked by exiting)
+        new_bal = xp_lib.maximum(balance + pnl_dollar, 1.0)
+        log_ret = xp_lib.log(new_bal / xp_lib.maximum(balance, 1.0))
+        sum_log_ret += xp_lib.where(exiting, log_ret.astype(xp_lib.float64), 0.0)
+        neg_mask = exiting & (log_ret < 0)
+        sum_neg_sq += xp_lib.where(neg_mask, (log_ret ** 2).astype(xp_lib.float64), 0.0)
+        count_neg += neg_mask.astype(xp_lib.int32)
+        total_trades += exiting.astype(xp_lib.int32)
 
-                eff_risk = risk_pct * risk_m * entry_conf_mult * dd_risk_mult  # confidence-scaled + DD protocol
-                pnl_dollar = balance * eff_risk * net_pnl * scale
+        # Update balance
+        balance = xp_lib.where(exiting, balance + pnl_dollar, balance)
+        wins    += (exiting & (pnl_dollar > 0)).astype(xp_lib.int32)
+        losses  += (exiting & (pnl_dollar <= 0)).astype(xp_lib.int32)
 
-                # Compute per-trade log return for Sortino
-                new_bal = xp_lib.maximum(balance + pnl_dollar, 1.0)
-                log_ret = xp_lib.log(new_bal / xp_lib.maximum(balance, 1.0))
+        # Reset trade state
+        in_trade        = xp_lib.where(exiting, False, in_trade)
+        trade_bars      = xp_lib.where(exiting, 0, trade_bars)
+        entry_conf_mult = xp_lib.where(exiting, 1.0, entry_conf_mult)
+        scaled_in       = xp_lib.where(exiting, False, scaled_in)
 
-                # Update Sortino accumulators
-                sum_log_ret += xp_lib.where(exiting, log_ret.astype(xp_lib.float64), 0.0)
-                neg_mask = exiting & (log_ret < 0)
-                sum_neg_sq += xp_lib.where(neg_mask, (log_ret ** 2).astype(xp_lib.float64), 0.0)
-                count_neg += neg_mask.astype(xp_lib.int32)
-                total_trades += exiting.astype(xp_lib.int32)
-
-                # Update balance
-                balance = xp_lib.where(exiting, balance + pnl_dollar, balance)
-                wins    += (exiting & (pnl_dollar > 0)).astype(xp_lib.int32)
-                losses  += (exiting & (pnl_dollar <= 0)).astype(xp_lib.int32)
-
-                # Reset trade state
-                in_trade   = xp_lib.where(exiting, False, in_trade)
-                trade_bars = xp_lib.where(exiting, 0, trade_bars)
-                entry_conf_mult = xp_lib.where(exiting, 1.0, entry_conf_mult)
-                scaled_in  = xp_lib.where(exiting, False, scaled_in)  # 8C.3: reset scale-in flag
-
-                # Check alive
-                alive = alive & (balance > 0)
+        # Check alive
+        alive = alive & (balance > 0)
 
         # --- Entry logic for those NOT in trade ---
         can_enter = (~in_trade) & alive
-        if can_enter.any():
-            # Use model direction (dirs_t): +1=LONG, -1=SHORT, 0=FLAT
-            # Only enter when confidence exceeds threshold AND model has a direction
-            # Drawdown protocol: enforce min_confidence override when in DD
-            eff_conf_th = xp_lib.maximum(conf_th, dd_min_conf)
-            go_long  = can_enter & (dirs_t == 1.0) & (c_val > eff_conf_th) & (dd_risk_mult > 0)
-            go_short = can_enter & (dirs_t == -1.0) & (c_val > eff_conf_th) & (dd_risk_mult > 0)
+        eff_conf_th = xp_lib.maximum(conf_th, dd_min_conf)
+        go_long  = can_enter & (dirs_t == 1.0) & (c_val > eff_conf_th) & (dd_risk_mult > 0)
+        go_short = can_enter & (dirs_t == -1.0) & (c_val > eff_conf_th) & (dd_risk_mult > 0)
+        entering = go_long | go_short
 
-            entering = go_long | go_short
+        new_dir = xp_lib.where(go_long, 1, xp_lib.where(go_short, -1, 0))
+        entry_conf_mult = xp_lib.where(entering, _conf_mult_t, entry_conf_mult)
+        entry_pr = xp_lib.where(entering, p_val, entry_pr)
 
-            if entering.any():
-                new_dir = xp_lib.where(go_long, 1, xp_lib.where(go_short, -1, 0))
+        # Stop loss (regime-adjusted)
+        sl_dist = stop_mult * stop_m * a_val
+        stop_pr = xp_lib.where(entering & (new_dir == 1), p_val - sl_dist,
+                  xp_lib.where(entering & (new_dir == -1), p_val + sl_dist, stop_pr))
 
-                # Confidence-scaled position sizing (matches live_trader.py)
-                # Higher confidence = larger position. Tiers from config.py.
-                _conf_mult = 0.25  # below all tiers
-                for _ct, _cm in CONFIDENCE_SIZE_TIERS:
-                    if c_val >= _ct:
-                        _conf_mult = _cm
-                        break
-                # Store conf_mult for this entry (used in PnL calc)
-                entry_conf_mult = xp_lib.where(entering, _conf_mult, entry_conf_mult)
+        # Take profit (regime-adjusted)
+        tp_dist = stop_mult * stop_m * a_val * rr * rr_m
+        tp_pr = xp_lib.where(entering & (new_dir == 1), p_val + tp_dist,
+                xp_lib.where(entering & (new_dir == -1), p_val - tp_dist, tp_pr))
 
-                # Entry price
-                entry_pr = xp_lib.where(entering, p_val, entry_pr)
-
-                # Stop loss (regime-adjusted)
-                sl_dist = stop_mult * stop_m * a_val
-                stop_pr = xp_lib.where(
-                    entering & (new_dir == 1),  p_val - sl_dist,
-                    xp_lib.where(entering & (new_dir == -1), p_val + sl_dist, stop_pr)
-                )
-
-                # Take profit (regime-adjusted)
-                tp_dist = stop_mult * stop_m * a_val * rr * rr_m
-                tp_pr = xp_lib.where(
-                    entering & (new_dir == 1),  p_val + tp_dist,
-                    xp_lib.where(entering & (new_dir == -1), p_val - tp_dist, tp_pr)
-                )
-
-                # Best price init (for trailing)
-                best_pr = xp_lib.where(entering, p_val, best_pr)
-
-                trade_dir  = xp_lib.where(entering, new_dir, trade_dir)
-                in_trade   = xp_lib.where(entering, True, in_trade)
-                trade_bars = xp_lib.where(entering, 0, trade_bars)
+        # Best price init (for trailing)
+        best_pr    = xp_lib.where(entering, p_val, best_pr)
+        trade_dir  = xp_lib.where(entering, new_dir, trade_dir)
+        in_trade   = xp_lib.where(entering, True, in_trade)
+        trade_bars = xp_lib.where(entering, 0, trade_bars)
 
         # Drawdown tracking (every bar)
         peak   = xp_lib.maximum(peak, balance)
         dd     = xp_lib.where(peak > 0, (peak - balance) / peak, 0.0)
         max_dd = xp_lib.maximum(max_dd, dd)
 
-        # Drawdown protocol: adjust risk/confidence based on current DD
-        # Reset to defaults first, then apply highest matching threshold
-        dd_risk_mult[:] = 1.0
-        dd_min_conf[:]  = 0.0
-        for dp in dd_protocol:
-            dd_breach = (dd >= dp['threshold'])
-            dd_risk_mult = xp_lib.where(dd_breach, dp['risk_mult'], dd_risk_mult)
-            if dp['min_conf'] is not None:
-                dd_min_conf = xp_lib.where(dd_breach, dp['min_conf'], dd_min_conf)
+        # Drawdown protocol: vectorized over protocol levels (no Python loop per combo)
+        dd_risk_mult = _ones_N.copy()
+        dd_min_conf  = _zeros_N.copy()
+        for _di in range(len(dd_thresh_vals)):
+            dd_breach = (dd >= float(dd_thresh_vals[_di]))
+            dd_risk_mult = xp_lib.where(dd_breach, float(dd_thresholds[_di]), dd_risk_mult)
+            if dd_min_confs[_di] > 0:
+                dd_min_conf = xp_lib.where(dd_breach, float(dd_min_confs[_di]), dd_min_conf)
 
     # --- Compute final metrics ---
     total_tr = (wins + losses).astype(xp_lib.float32)
@@ -789,6 +758,61 @@ def generate_sobol_candidates(grid, n_candidates, seed=OPTUNA_SEED):
 
 
 # ---------------------------------------------------------------------------
+# Vectorized profile extraction (replaces Python-list scan)
+# ---------------------------------------------------------------------------
+def _extract_profiles_vectorized(all_params, all_results):
+    """
+    Extract 4 profiles (dd10_best, dd10_sortino, dd15_best, dd15_sortino)
+    from (N, 7) params and (N, 7) results arrays using numpy indexing.
+    Replaces O(N) Python-list iteration with vectorized masking.
+    """
+    # results columns: [balance, max_dd_pct, win_rate, trade_count, roi_pct, sortino, total_trades]
+    bals     = all_results[:, 0]
+    dd_pcts  = all_results[:, 1]
+    trades   = all_results[:, 3]
+    sortinos = all_results[:, 5]
+
+    # Base mask: >= 10 trades
+    valid = trades >= 10
+
+    best = {
+        'dd10_best':    {'score': -np.inf, 'params': None, 'metrics': None},
+        'dd10_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
+        'dd15_best':    {'score': -np.inf, 'params': None, 'metrics': None},
+        'dd15_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
+    }
+
+    for dd_limit, prefix in [(10.0, 'dd10'), (15.0, 'dd15')]:
+        mask = valid & (dd_pcts <= dd_limit)
+        if not mask.any():
+            continue
+
+        # Best balance
+        masked_bals = np.where(mask, bals, -np.inf)
+        idx_best = np.argmax(masked_bals)
+        if masked_bals[idx_best] > -np.inf:
+            best[f'{prefix}_best'] = {
+                'score': float(bals[idx_best]),
+                'params': all_params[idx_best].copy(),
+                'metrics': all_results[idx_best].copy(),
+            }
+
+        # Best sortino (must be finite)
+        finite_sortino = mask & np.isfinite(sortinos)
+        if finite_sortino.any():
+            masked_sortinos = np.where(finite_sortino, sortinos, -np.inf)
+            idx_sort = np.argmax(masked_sortinos)
+            if masked_sortinos[idx_sort] > -np.inf:
+                best[f'{prefix}_sortino'] = {
+                    'score': float(sortinos[idx_sort]),
+                    'params': all_params[idx_sort].copy(),
+                    'metrics': all_results[idx_sort].copy(),
+                }
+
+    return best
+
+
+# ---------------------------------------------------------------------------
 # Sobol sweep + Bayesian refinement optimizer for one TF
 # ---------------------------------------------------------------------------
 def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
@@ -818,21 +842,14 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
     print(f"  Regime distribution: bull={regime_counts[0]} bear={regime_counts[1]} "
           f"sideways={regime_counts[2]} crash={regime_counts[3]}")
 
-    # Transfer market data to GPU ONCE
-    if GPU_ARRAY:
-        g_confs  = cp.asarray(confs)
-        g_dirs   = cp.asarray(dirs)
-        g_closes = cp.asarray(closes)
-        g_atrs   = cp.asarray(atrs)
-        g_highs  = cp.asarray(highs)
-        g_lows   = cp.asarray(lows)
-        g_regime = cp.asarray(regime)
-        xp_lib = cp
-    else:
-        g_confs, g_dirs, g_closes = confs, dirs, closes
-        g_atrs, g_highs, g_lows = atrs, highs, lows
-        g_regime = regime
-        xp_lib = np
+    # Transfer market data to GPU ONCE (CuPy required — no CPU fallback)
+    g_confs  = cp.asarray(confs)
+    g_dirs   = cp.asarray(dirs)
+    g_closes = cp.asarray(closes)
+    g_atrs   = cp.asarray(atrs)
+    g_highs  = cp.asarray(highs)
+    g_lows   = cp.asarray(lows)
+    g_regime = cp.asarray(regime)
 
     # ===== PHASE 1: Sobol sweep =====
     print(f"\n  --- Phase 1: Sobol Sweep ({n_candidates:,} candidates) ---")
@@ -840,10 +857,12 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
 
     all_params = generate_sobol_candidates(grid, n_candidates)
 
-    # Auto-tune batch size based on bar count and VRAM
-    # Each combo needs ~8 float32 state arrays * n_bars bytes for the simulation loop
-    # but simulate_batch allocates N-sized arrays (not N*T), so batch can be large
-    batch_size = min(GPU_BATCH_BASE, n_candidates)
+    # Auto-tune batch size based on bar count
+    # More bars = longer per-batch sim time, so keep batch size manageable
+    # Inversely scale: 1w (819 bars) gets 500K, 15m (227K bars) gets ~2.2K
+    adaptive_batch = int(GPU_BATCH_REFERENCE_SIZE * GPU_BATCH_REFERENCE_BARS / max(n_bars, 1))
+    adaptive_batch = max(adaptive_batch, 1024)  # floor at 1K combos
+    batch_size = min(adaptive_batch, n_candidates)
     # Round down to power-of-2 for GPU efficiency
     batch_size = 2 ** int(np.floor(np.log2(max(batch_size, 1))))
     print(f"  GPU batch size: {batch_size:,}")
@@ -857,17 +876,12 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
         end = min(start + batch_size, n_candidates)
         batch_params = all_params[start:end]
 
-        if GPU_ARRAY:
-            params_gpu = cp.asarray(batch_params)
-            results_gpu = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
-                                         g_highs, g_lows, g_regime, cp,
-                                         slippage=tf_slippage)
-            all_results[start:end] = cp.asnumpy(results_gpu)
-            del params_gpu, results_gpu
-        else:
-            all_results[start:end] = simulate_batch(batch_params, g_confs, g_dirs, g_closes,
-                                                     g_atrs, g_highs, g_lows, g_regime, np,
-                                                     slippage=tf_slippage)
+        params_gpu = cp.asarray(batch_params)
+        results_gpu = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
+                                     g_highs, g_lows, g_regime, cp,
+                                     slippage=tf_slippage)
+        all_results[start:end] = cp.asnumpy(results_gpu)
+        del params_gpu, results_gpu
 
         if (bi + 1) % max(1, n_batches // 10) == 0 or bi == n_batches - 1:
             pct = (bi + 1) / n_batches * 100
@@ -892,9 +906,8 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
 
     if n_valid == 0:
         print(f"  WARNING: No valid candidates found in Phase 1!")
-        if GPU_ARRAY:
-            del g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime
-            cp.get_default_memory_pool().free_all_blocks()
+        del g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime
+        cp.get_default_memory_pool().free_all_blocks()
         return {
             'dd10_best': {'score': -np.inf, 'params': None, 'metrics': None},
             'dd10_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
@@ -964,10 +977,9 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
           f"exit={top_exit_types} "
           f"conf=[{ref_conf_min:.3f},{ref_conf_max:.3f}]")
 
-    # All trial results: Phase 1 + Phase 2
-    all_trial_results = []
-    for i in range(n_candidates):
-        all_trial_results.append((all_params[i].copy(), all_results[i].copy()))
+    # Phase 2 trial results (Phase 1 already in all_params/all_results numpy arrays)
+    p2_params_list = []
+    p2_results_list = []
 
     trial_count = [0]
     t_start_p2 = time.time()
@@ -982,16 +994,11 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
         conf = trial.suggest_float('conf', ref_conf_min, ref_conf_max)
 
         params_np = np.array([[lev, risk, stop_atr, rr, hold, exit_type, conf]], dtype=np.float32)
-
-        if GPU_ARRAY:
-            params_gpu = cp.asarray(params_np)
-            results = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
-                                     g_highs, g_lows, g_regime, cp, slippage=tf_slippage)
-            results_np = cp.asnumpy(results)
-            del params_gpu, results
-        else:
-            results_np = simulate_batch(params_np, g_confs, g_dirs, g_closes, g_atrs,
-                                        g_highs, g_lows, g_regime, np, slippage=tf_slippage)
+        params_gpu = cp.asarray(params_np)
+        results = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
+                                 g_highs, g_lows, g_regime, cp, slippage=tf_slippage)
+        results_np = cp.asnumpy(results)
+        del params_gpu, results
 
         result = results_np[0]
         bal = float(result[0])
@@ -1000,7 +1007,8 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
         roi = float(result[4])
         sortino_val = float(result[5])
 
-        all_trial_results.append((params_np[0].copy(), results_np[0].copy()))
+        p2_params_list.append(params_np[0].copy())
+        p2_results_list.append(results_np[0].copy())
 
         trial.set_user_attr('balance', bal)
         trial.set_user_attr('max_dd', max_dd)
@@ -1054,8 +1062,8 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
             'conf': float(p[6]),
         })
 
-    _opt_n_jobs = min(_HW['cpu_count'], 8)
-    study.optimize(objective_phase2, n_trials=phase2_trials, n_jobs=_opt_n_jobs, show_progress_bar=False)
+    # n_jobs=1: GPU sims with N=1 per trial — threads fight over single CUDA context
+    study.optimize(objective_phase2, n_trials=phase2_trials, n_jobs=1, show_progress_bar=False)
 
     phase2_time = time.time() - t_phase2
     total_time = time.time() - t_phase1
@@ -1064,47 +1072,20 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
     if study.best_trial:
         print(f"  Best Phase 2 sortino (penalized): {study.best_value:.4f}")
 
-    # --- Extract 4 profiles from ALL results (Phase 1 + Phase 2) ---
-    best = {
-        'dd10_best':    {'score': -np.inf, 'params': None, 'metrics': None},
-        'dd10_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
-        'dd15_best':    {'score': -np.inf, 'params': None, 'metrics': None},
-        'dd15_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
-    }
+    # --- Extract 4 profiles from ALL results (Phase 1 + Phase 2) using numpy vectorized ---
+    # Merge Phase 1 + Phase 2 into single arrays
+    if p2_params_list:
+        combined_params = np.vstack([all_params, np.array(p2_params_list, dtype=np.float32)])
+        combined_results = np.vstack([all_results, np.array(p2_results_list, dtype=np.float32)])
+    else:
+        combined_params = all_params
+        combined_results = all_results
 
-    for params_arr, metrics_arr in all_trial_results:
-        bal = float(metrics_arr[0])
-        dd_pct = float(metrics_arr[1])
-        n_trades = float(metrics_arr[3])
-        sortino_val = float(metrics_arr[5])
-
-        if n_trades < 10:
-            continue
-
-        if dd_pct <= 10.0:
-            if bal > best['dd10_best']['score']:
-                best['dd10_best']['score'] = bal
-                best['dd10_best']['params'] = params_arr.copy()
-                best['dd10_best']['metrics'] = metrics_arr.copy()
-            if not np.isnan(sortino_val) and sortino_val > best['dd10_sortino']['score']:
-                best['dd10_sortino']['score'] = sortino_val
-                best['dd10_sortino']['params'] = params_arr.copy()
-                best['dd10_sortino']['metrics'] = metrics_arr.copy()
-
-        if dd_pct <= 15.0:
-            if bal > best['dd15_best']['score']:
-                best['dd15_best']['score'] = bal
-                best['dd15_best']['params'] = params_arr.copy()
-                best['dd15_best']['metrics'] = metrics_arr.copy()
-            if not np.isnan(sortino_val) and sortino_val > best['dd15_sortino']['score']:
-                best['dd15_sortino']['score'] = sortino_val
-                best['dd15_sortino']['params'] = params_arr.copy()
-                best['dd15_sortino']['metrics'] = metrics_arr.copy()
+    best = _extract_profiles_vectorized(combined_params, combined_results)
 
     # Free GPU memory
-    if GPU_ARRAY:
-        del g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime
-        cp.get_default_memory_pool().free_all_blocks()
+    del g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime
+    cp.get_default_memory_pool().free_all_blocks()
 
     return best
 
@@ -1134,25 +1115,14 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
     print(f"  Regime distribution: bull={regime_counts[0]} bear={regime_counts[1]} "
           f"sideways={regime_counts[2]} crash={regime_counts[3]}")
 
-    # Transfer market data to GPU ONCE (shared across all trials)
-    if GPU_ARRAY:
-        g_confs  = cp.asarray(confs)
-        g_dirs   = cp.asarray(dirs)
-        g_closes = cp.asarray(closes)
-        g_atrs   = cp.asarray(atrs)
-        g_highs  = cp.asarray(highs)
-        g_lows   = cp.asarray(lows)
-        g_regime = cp.asarray(regime)
-        xp_lib = cp
-    else:
-        g_confs  = confs
-        g_dirs   = dirs
-        g_closes = closes
-        g_atrs   = atrs
-        g_highs  = highs
-        g_lows   = lows
-        g_regime = regime
-        xp_lib = np
+    # Transfer market data to GPU ONCE (CuPy required — no CPU fallback)
+    g_confs  = cp.asarray(confs)
+    g_dirs   = cp.asarray(dirs)
+    g_closes = cp.asarray(closes)
+    g_atrs   = cp.asarray(atrs)
+    g_highs  = cp.asarray(highs)
+    g_lows   = cp.asarray(lows)
+    g_regime = cp.asarray(regime)
 
     # Extract parameter ranges from TF_GRIDS
     lev_min, lev_max = int(grid['lev'][0]), int(grid['lev'][-1])
@@ -1167,8 +1137,9 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
           f"stop=[{stop_min},{stop_max}] rr=[{rr_min},{rr_max}] "
           f"hold=[{hold_min},{hold_max}] exit={exit_types} conf=[{conf_min},{conf_max}]")
 
-    # Track ALL trial results for 4-profile extraction
-    all_trial_results = []  # list of (params_array, metrics_array)
+    # Track ALL trial results for vectorized profile extraction
+    _trial_params_list = []
+    _trial_results_list = []
     t_start = time.time()
     trial_count = [0]  # mutable for closure
 
@@ -1183,18 +1154,12 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
 
         # Build (1, 7) param array for simulate_batch
         params_np = np.array([[lev, risk, stop_atr, rr, hold, exit_type, conf]], dtype=np.float32)
-
-        if GPU_ARRAY:
-            params_gpu = cp.asarray(params_np)
-            results = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
-                                     g_highs, g_lows, g_regime, cp,
-                                     slippage=tf_slippage)
-            results_np = cp.asnumpy(results)
-            del params_gpu, results
-        else:
-            results_np = simulate_batch(params_np, g_confs, g_dirs, g_closes, g_atrs,
-                                        g_highs, g_lows, g_regime, np,
-                                        slippage=tf_slippage)
+        params_gpu = cp.asarray(params_np)
+        results = simulate_batch(params_gpu, g_confs, g_dirs, g_closes, g_atrs,
+                                 g_highs, g_lows, g_regime, cp,
+                                 slippage=tf_slippage)
+        results_np = cp.asnumpy(results)
+        del params_gpu, results
 
         # results_np: (1, 7) = [balance, max_dd_pct, win_rate, trade_count, roi_pct, sortino, total_trades]
         result = results_np[0]
@@ -1204,8 +1169,9 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
         roi = float(result[4])
         sortino_val = float(result[5])
 
-        # Store for 4-profile extraction later
-        all_trial_results.append((params_np[0].copy(), results_np[0].copy()))
+        # Store for vectorized profile extraction
+        _trial_params_list.append(params_np[0].copy())
+        _trial_results_list.append(results_np[0].copy())
 
         # Store metrics as user attributes for later filtering
         trial.set_user_attr('balance', bal)
@@ -1256,59 +1222,30 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
     )
 
     print(f"\n  Starting Optuna optimization ({n_trials} trials)...")
-    # n_jobs from hardware_detect, capped at 8 to avoid excessive memory with CuPy concurrent trials
-    _opt_n_jobs = min(_HW['cpu_count'], 8)
-    study.optimize(objective, n_trials=n_trials, n_jobs=_opt_n_jobs, show_progress_bar=False)
+    # n_jobs=1: GPU sims with N=1 per trial — threads fight over single CUDA context
+    study.optimize(objective, n_trials=n_trials, n_jobs=1, show_progress_bar=False)
 
     total_time = time.time() - t_start
     print(f"\n  Completed {n_trials} trials in {total_time:.1f}s "
           f"({n_trials / max(total_time, 0.01):.1f} trials/sec)")
     print(f"  Best trial sortino (penalized): {study.best_value:.4f}")
 
-    # --- Extract 4 profiles from ALL trial results ---
-    best = {
-        'dd10_best':    {'score': -np.inf, 'params': None, 'metrics': None},
-        'dd10_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
-        'dd15_best':    {'score': -np.inf, 'params': None, 'metrics': None},
-        'dd15_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
-    }
-
-    for params_arr, metrics_arr in all_trial_results:
-        bal = float(metrics_arr[0])
-        dd_pct = float(metrics_arr[1])
-        trades = float(metrics_arr[3])
-        sortino_val = float(metrics_arr[5])
-
-        # Require at least 10 trades
-        if trades < 10:
-            continue
-
-        # DD <= 10% profiles
-        if dd_pct <= 10.0:
-            if bal > best['dd10_best']['score']:
-                best['dd10_best']['score'] = bal
-                best['dd10_best']['params'] = params_arr.copy()
-                best['dd10_best']['metrics'] = metrics_arr.copy()
-            if not np.isnan(sortino_val) and sortino_val > best['dd10_sortino']['score']:
-                best['dd10_sortino']['score'] = sortino_val
-                best['dd10_sortino']['params'] = params_arr.copy()
-                best['dd10_sortino']['metrics'] = metrics_arr.copy()
-
-        # DD <= 15% profiles
-        if dd_pct <= 15.0:
-            if bal > best['dd15_best']['score']:
-                best['dd15_best']['score'] = bal
-                best['dd15_best']['params'] = params_arr.copy()
-                best['dd15_best']['metrics'] = metrics_arr.copy()
-            if not np.isnan(sortino_val) and sortino_val > best['dd15_sortino']['score']:
-                best['dd15_sortino']['score'] = sortino_val
-                best['dd15_sortino']['params'] = params_arr.copy()
-                best['dd15_sortino']['metrics'] = metrics_arr.copy()
+    # --- Extract 4 profiles using numpy vectorized indexing ---
+    if _trial_params_list:
+        combined_params = np.array(_trial_params_list, dtype=np.float32)
+        combined_results = np.array(_trial_results_list, dtype=np.float32)
+        best = _extract_profiles_vectorized(combined_params, combined_results)
+    else:
+        best = {
+            'dd10_best':    {'score': -np.inf, 'params': None, 'metrics': None},
+            'dd10_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
+            'dd15_best':    {'score': -np.inf, 'params': None, 'metrics': None},
+            'dd15_sortino': {'score': -np.inf, 'params': None, 'metrics': None},
+        }
 
     # Free GPU memory
-    if GPU_ARRAY:
-        del g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime
-        cp.get_default_memory_pool().free_all_blocks()
+    del g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows, g_regime
+    cp.get_default_memory_pool().free_all_blocks()
 
     return best
 
@@ -1358,10 +1295,9 @@ def _optimize_single_tf(args_tuple):
     tf_name, n_trials, gpu_id = args_tuple
     import gc
     try:
-        # Pin this worker to a specific GPU
-        if GPU_ARRAY:
-            cp.cuda.Device(gpu_id).use()
-            print(f"\n{elapsed()} Worker {tf_name.upper()} pinned to GPU {gpu_id}", flush=True)
+        # Pin this worker to a specific GPU (CuPy always available)
+        cp.cuda.Device(gpu_id).use()
+        print(f"\n{elapsed()} Worker {tf_name.upper()} pinned to GPU {gpu_id}", flush=True)
 
         print(f"\n{elapsed()} Loading data for {tf_name.upper()} (worker, GPU {gpu_id})...", flush=True)
         data = load_tf_data(tf_name)
@@ -1411,7 +1347,7 @@ def main(n_trials=200):
     mode_label = 'SOBOL + BAYESIAN' if OPTIMIZER_MODE == 'sobol' else 'OPTUNA TPE'
     print(f"\n{'='*70}")
     print(f"  {mode_label} OPTIMIZER (LightGBM)")
-    print(f"  GPU Array: {'CuPy (CUDA)' if GPU_ARRAY else 'NumPy (CPU)'}")
+    print(f"  GPU Array: CuPy (CUDA) — GPU REQUIRED")
     print(f"  GPUs:      {_N_GPUS}")
     if OPTIMIZER_MODE == 'sobol':
         print(f"  Phase 1:   {SOBOL_N_CANDIDATES:,} Sobol candidates per TF")
@@ -1442,7 +1378,9 @@ def main(n_trials=200):
         # Parallel: one TF per GPU, round-robin GPU assignment
         print(f"\n  PARALLEL OPTIMIZATION: {opt_workers} workers across {_N_GPUS} GPUs")
         worker_args = [(tf_name, n_trials, i % _N_GPUS) for i, tf_name in enumerate(tf_order)]
-        with ProcessPoolExecutor(max_workers=opt_workers) as pool:
+        # CUDA is NOT fork-safe — must use spawn context to avoid corrupted GPU state
+        spawn_ctx = mp.get_context('spawn')
+        with ProcessPoolExecutor(max_workers=opt_workers, mp_context=spawn_ctx) as pool:
             futures = {pool.submit(_optimize_single_tf, wa): wa[0] for wa in worker_args}
             for future in as_completed(futures):
                 tf_name = futures[future]
@@ -1457,8 +1395,7 @@ def main(n_trials=200):
         import gc; gc.collect()
     else:
         # Sequential fallback (single GPU)
-        if GPU_ARRAY:
-            cp.cuda.Device(0).use()
+        cp.cuda.Device(0).use()
         for tf_name in tf_order:
             print(f"\n{elapsed()} Loading data for {tf_name.upper()}...")
             data = load_tf_data(tf_name)
