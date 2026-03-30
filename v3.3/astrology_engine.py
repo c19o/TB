@@ -15,6 +15,7 @@ All functions accept a datetime and return signal data.
 """
 import ephem
 import math
+import numpy as np
 from datetime import datetime, timedelta
 from functools import lru_cache
 
@@ -220,8 +221,9 @@ def _is_near_eclipse(dt):
                 return True, "lunar"
 
         return False, None
-    except Exception:
-        return False, None
+    except Exception as e:
+        print(f"[WARN] is_eclipse_near failed for {dt}: {e}")
+        return np.nan, np.nan
 
 
 def is_eclipse_window(dt, window_days=7):
@@ -695,8 +697,9 @@ def is_voc_moon_classical(dt):
                         return False, hours_to_change  # Aspect found, NOT VOC
 
         return True, hours_to_change  # No aspects found -> VOC
-    except Exception:
-        return False, None
+    except Exception as e:
+        print(f"[WARN] is_voc_moon_classical failed for {dt}: {e}")
+        return np.nan, np.nan
 
 
 # ===========================================================================
@@ -745,8 +748,9 @@ def get_moon_node_signal(dt):
             return 'south_conjunction', angle_south
 
         return None, None
-    except Exception:
-        return None, None
+    except Exception as e:
+        print(f"[WARN] get_moon_node_signal failed for {dt}: {e}")
+        return np.nan, np.nan
 
 
 # ===========================================================================
@@ -859,8 +863,9 @@ def get_planet_dignity_score(planet_name, dt):
             score += 1
 
         return score
-    except Exception:
-        return 0
+    except Exception as e:
+        print(f"[WARN] get_planet_dignity_score failed for {planet_name} at {dt}: {e}")
+        return np.nan
 
 
 def get_planetary_strength_index(dt):
@@ -896,8 +901,9 @@ def is_saturn_station(dt, window_days=3):
             if retro_future != retro_today:
                 return True, "station_retrograde" if retro_future else "station_direct"
         return False, None
-    except Exception:
-        return False, None
+    except Exception as e:
+        print(f"[WARN] is_saturn_station failed for {dt}: {e}")
+        return np.nan, np.nan
 
 
 def is_mars_retrograde_signal(dt):
@@ -955,8 +961,9 @@ def get_ingress_chart_bias(dt, window_days=7):
                     return True, sign_at, score
 
         return False, None, 0.0
-    except Exception:
-        return False, None, 0.0
+    except Exception as e:
+        print(f"[WARN] get_ingress_chart_bias failed for {dt}: {e}")
+        return np.nan, np.nan, np.nan
 
 
 # ===========================================================================
@@ -996,8 +1003,9 @@ def _get_btc_natal_asc_lon():
         lst = float(obs.sidereal_time())  # radians
         asc_lon = math.degrees(lst) % 360
         return asc_lon
-    except Exception:
-        return 0.0
+    except Exception as e:
+        print(f"[WARN] _get_btc_natal_asc_lon failed: {e}")
+        return np.nan
 
 
 def get_btc_lot_of_spirit():
@@ -1015,8 +1023,9 @@ def get_btc_lot_of_spirit():
         # Night chart Spirit: Asc + Moon - Sun
         lot = (asc + moon_lon - sun_lon) % 360
         return lot
-    except Exception:
-        return 0.0
+    except Exception as e:
+        print(f"[WARN] get_btc_lot_of_spirit failed: {e}")
+        return np.nan
 
 
 def get_btc_lot_of_fortune():
@@ -1036,8 +1045,9 @@ def get_btc_lot_of_fortune():
         # Night chart Fortune = Asc + Sun - Moon
         lot = (asc + sun_lon - moon_lon) % 360
         return lot
-    except Exception:
-        return 0.0
+    except Exception as e:
+        print(f"[WARN] get_btc_lot_of_fortune failed: {e}")
+        return np.nan
 
 
 def get_zodiacal_releasing_sign(dt):
@@ -1071,8 +1081,9 @@ def get_zodiacal_releasing_sign(dt):
             current_sign_idx = (current_sign_idx + 1) % 12
 
         return ZODIAC_SIGNS[lot_spirit_sign_idx], False
-    except Exception:
-        return "Unknown", False
+    except Exception as e:
+        print(f"[WARN] get_zodiacal_releasing_sign failed for {dt}: {e}")
+        return np.nan, np.nan
 
 
 # ===========================================================================
@@ -1283,8 +1294,9 @@ def get_essential_dignity_scores(dt):
             sun_score -= 4.0
         result['sun_dignity'] = sun_score
         total += sun_score
-    except Exception:
-        result['sun_dignity'] = 0.0
+    except Exception as e:
+        print(f"[WARN] sun dignity calculation failed: {e}")
+        result['sun_dignity'] = np.nan
     result['total_dignity'] = total
     return result
 

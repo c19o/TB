@@ -2329,9 +2329,9 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             tw['dominant_colors'] = None
 
         # --- Color helper columns for aggregation ---
-        tw['_has_gold_num'] = pd.to_numeric(tw['has_gold'], errors='coerce').fillna(0)
-        tw['_has_red_num'] = pd.to_numeric(tw['has_red'], errors='coerce').fillna(0)
-        tw['_has_green_num'] = pd.to_numeric(tw['has_green'], errors='coerce').fillna(0)
+        tw['_has_gold_num'] = pd.to_numeric(tw['has_gold'], errors='coerce')
+        tw['_has_red_num'] = pd.to_numeric(tw['has_red'], errors='coerce')
+        tw['_has_green_num'] = pd.to_numeric(tw['has_green'], errors='coerce')
         tw['_has_any_color'] = ((tw['_has_gold_num'] > 0) |
                                 (tw['_has_red_num'] > 0) |
                                 (tw['_has_green_num'] > 0)).astype(int)
@@ -2462,7 +2462,7 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             for eng_col in ['favorite_count', 'retweet_count', 'reply_count']:
                 if eng_col in tw.columns:
                     dr_col = eng_col.replace('_count', '').replace('favorite', 'likes') + '_dr'
-                    _eng_vals = pd.to_numeric(tw[eng_col], errors='coerce').fillna(0).values
+                    _eng_vals = pd.to_numeric(tw[eng_col], errors='coerce').values
                     _eng_int = np.where(_eng_vals > 0, np.abs(_eng_vals).astype(np.int64), 0)
                     tw[dr_col] = np.where(_eng_int > 0, digital_root_vec(_eng_int), 0)
 
@@ -3246,7 +3246,7 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
         is_spike = out['liq_total_spike'] > 2.0
         spike_decay = is_spike.astype(float)
         for shift_n in range(1, 6):
-            spike_decay = spike_decay + is_spike.shift(shift_n).fillna(0).astype(float) * (1 - shift_n / 6)
+            spike_decay = spike_decay + is_spike.shift(shift_n).astype(float) * (1 - shift_n / 6)
         out['post_liq_flag'] = (spike_decay > 0).astype(int)
 
     # --- OI + Price Divergence ---
@@ -6349,7 +6349,7 @@ def compute_decay_features(df: pd.DataFrame, esoteric_frames: dict,
     eclipse = _col('eclipse_window')
     if eclipse is not None:
         eclipse_onset = (
-            (eclipse == 1) & (eclipse.shift(1).fillna(0) == 0)
+            (eclipse == 1) & (eclipse.shift(1) == 0)
         ).astype(float)
         eclipse_onset[eclipse.isna()] = np.nan
         events.append(('eclipse', eclipse_onset, True))

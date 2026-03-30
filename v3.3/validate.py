@@ -176,10 +176,10 @@ def check_config_params():
     # -- Per-TF min_data_in_leaf (must be <= rare signal frequency ~10-20) --
     mdil = cfg.TF_MIN_DATA_IN_LEAF
     for tf_name, val in mdil.items():
-        check(f"{tf_name} min_data_in_leaf <= 15",
-              val <= 15,
+        check(f"{tf_name} min_data_in_leaf <= 10",
+              val <= 10,
               f"{tf_name} min_data_in_leaf={val} -- rare signals fire 10-20x. "
-              f"Values >15 make them invisible. FIX: config.py TF_MIN_DATA_IN_LEAF")
+              f"Values >10 make them invisible. FIX: config.py TF_MIN_DATA_IN_LEAF")
 
     # -- Class weights (SHORT upweighting) --
     cw = cfg.TF_CLASS_WEIGHT

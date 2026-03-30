@@ -549,7 +549,7 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
 
         # Per-TF aware ranges — aggressive regularization for low-row TFs
         num_leaves = trial.suggest_int('num_leaves', 4, _tf_nl_cap)
-        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(3, _tf_mdil), 15)
+        min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(3, _tf_mdil), 10)
         feature_fraction = trial.suggest_float('feature_fraction', 0.7, 1.0)
         feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.7, 1.0)
         bagging_fraction = trial.suggest_float('bagging_fraction', 0.7, 1.0)
