@@ -1665,9 +1665,12 @@ if __name__ == '__main__':
               _multi_gpu_mode = False
               log(f"  Single GPU — sequential CPCV")
           else:
-              # CPU path — dense matrices MUST fail (parallel workers expect sparse CSR)
+              # CPU path — dense matrices must be converted to sparse CSR for parallel workers
               if not _X_all_is_sparse and _use_parallel_splits:
-                  raise RuntimeError("CPCV parallel requires sparse CSR input — dense matrix detected. Convert to sparse first.")
+                  import scipy.sparse as _sp_convert
+                  log(f"  Converting dense matrix to sparse CSR for parallel CPCV ({X_all.shape})")
+                  X_all = _sp_convert.csr_matrix(X_all)
+                  _X_all_is_sparse = True
 
               # SharedMemory IPC copies raw CSR arrays (no pickle),
               # so NNZ>int32 and >1M features are NOT bottlenecks anymore.
