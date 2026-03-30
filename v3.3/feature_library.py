@@ -868,7 +868,7 @@ TF_CONFIG = {
     },
     '1w': {
         'bucket_seconds': 604800,
-        'return_bars': [1, 4, 12],
+        'return_bars': [1, 4, 12, 26, 52],  # +6mo, +12mo returns for multi-month trades
         'lag_bars': [1, 4, 8],
         'vol_short': 4,
         'vol_long': 12,
@@ -1020,10 +1020,14 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['above_sma200'] = (c > out['sma_200']).astype(int)
 
     # --- RSI ---
-    for p in [7, 14, 21]:
+    for p in [7, 14, 21, 26]:
         out[f'rsi_{p}'] = compute_rsi(c, p)
     out['rsi_14_ob'] = (out['rsi_14'] > 70).astype(int)
     out['rsi_14_os'] = (out['rsi_14'] < 30).astype(int)
+
+    # --- 52-week features ---
+    out['price_vs_52w_high'] = (c / c.rolling(52).max()).astype(np.float32)
+    out['price_vs_52w_low'] = (c / c.rolling(52).min()).astype(np.float32)
 
     # --- Bollinger Bands ---
     mid = c.rolling(20).mean()
@@ -5498,7 +5502,7 @@ TRIPLE_BARRIER_CONFIG = {
     '1h':  {'tp_atr_mult': 1.2, 'sl_atr_mult': 1.2, 'max_hold_bars': 48},   # 7-100 bar trades, 50/49/0% split
     '4h':  {'tp_atr_mult': 1.5, 'sl_atr_mult': 1.5, 'max_hold_bars': 72},   # 10-140 bar trades, 51/49/0% split
     '1d':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 90},   # 42-144 bar trades, 56/43/1% split
-    '1w':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 50},   # 11-94 bar trades, 64/31/4% split
+    '1w':  {'tp_atr_mult': 2.0, 'sl_atr_mult': 2.0, 'max_hold_bars': 78},   # 9-158 bar trades, captures full BTC half-cycles
 }
 
 
@@ -5639,8 +5643,8 @@ def compute_targets(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
 # SAR-NUMEROLOGY HYBRIDS (AlphaNumetrix-inspired)
 # ============================================================
 
-def compute_sar_numerology_features(result: pd.DataFrame) -> pd.DataFrame:
-    """SAR-numerology hybrid features (AlphaNumetrix-inspired).
+def compute_sar_numerology_features(result: pd.DataFrame, df: pd.DataFrame = None) -> pd.DataFrame:
+    """SAR-numerology hybrid features (AlphaNumetrix-inspired). df is ignored (compat with 2-arg calls).
 
     Takes the result DataFrame AFTER TA + numerology features are computed,
     and creates hybrid features that apply numerological interpretation to
@@ -5746,6 +5750,86 @@ def compute_sar_numerology_features(result: pd.DataFrame) -> pd.DataFrame:
 
     print(f"    SAR-numerology hybrid features: {len(out.columns)} cols")
     return out
+
+
+def compute_ta_crosses(result, tf_name='1w'):
+    """Curated TA x TA and esoteric x TA crosses. Creates binarized columns on-the-fly."""
+    out = {}
+    cols = set(result.columns)
+
+    # Step 1: Create binarized columns from continuous features (quartile-based)
+    _bin_map = {}  # cache binarized arrays
+    def _get_bin(col, tier):
+        """Get binarized version: HIGH=top25%, LOW=bottom25%, EXTREME_HIGH=top10%, EXTREME_LOW=bottom10%"""
+        key = f"{col}_{tier}"
+        if key in _bin_map:
+            return _bin_map[key]
+        if col not in cols:
+            return None
+        v = result[col].values.astype(np.float64)
+        valid = ~np.isnan(v)
+        if valid.sum() < 10:
+            return None
+        if tier == 'HIGH':
+            thresh = np.nanpercentile(v, 75)
+            arr = (v >= thresh).astype(np.float32)
+        elif tier == 'LOW':
+            thresh = np.nanpercentile(v, 25)
+            arr = (v <= thresh).astype(np.float32)
+        elif tier == 'EXTREME_HIGH':
+            thresh = np.nanpercentile(v, 90)
+            arr = (v >= thresh).astype(np.float32)
+        elif tier == 'EXTREME_LOW':
+            thresh = np.nanpercentile(v, 10)
+            arr = (v <= thresh).astype(np.float32)
+        else:
+            return None
+        arr[~valid] = np.nan
+        _bin_map[key] = arr
+        return arr
+
+    def _get_raw(col):
+        """Get raw binary column (already 0/1)."""
+        if col in cols:
+            return result[col].values.astype(np.float32)
+        return None
+
+    def _cross_bin(col_a, tier_a, col_b, tier_b, name):
+        """Cross two binarized features."""
+        a = _get_bin(col_a, tier_a) if tier_a else _get_raw(col_a)
+        b = _get_bin(col_b, tier_b) if tier_b else _get_raw(col_b)
+        if a is not None and b is not None:
+            out[name] = (a * b).astype(np.float32)
+
+    # Step 2: TA x TA crosses (using on-the-fly binarization)
+    _cross_bin('sma_200_slope', 'HIGH', 'volume_sma_20', 'LOW', 'tt_quiet_uptrend')
+    _cross_bin('sma_200_slope', 'HIGH', 'adx_14', 'HIGH', 'tt_momentum_trend')
+    _cross_bin('sma_200_slope', 'LOW', 'volume_sma_20', 'HIGH', 'tt_confirmed_bear')
+    _cross_bin('sma_200_slope', 'EXTREME_LOW', 'rsi_14', 'LOW', 'tt_capitulation')
+    _cross_bin('close_vs_ema_200', 'EXTREME_HIGH', 'volume_sma_20', 'HIGH', 'tt_euphoria')
+    _cross_bin('rsi_14', 'HIGH', 'sma_200_slope', 'LOW', 'tt_bear_divergence')
+    _cross_bin('rsi_14', 'LOW', 'sma_200_slope', 'HIGH', 'tt_oversold_reversal')
+    _cross_bin('close_vs_ema_200', 'HIGH', 'volume_sma_20', 'LOW', 'tt_stealth_accumulation')
+    _cross_bin('atr_14', 'EXTREME_HIGH', 'volume_sma_20', 'HIGH', 'tt_volatility_breakout')
+    _cross_bin('close_vs_sma_200', 'LOW', 'rsi_14', 'LOW', 'tt_deep_value')
+
+    # Step 3: Esoteric x TA crosses
+    _cross_bin('jupiter_saturn_regime', 'HIGH', 'sma_200_slope', 'HIGH', 'et_cosmic_bull')
+    _cross_bin('jupiter_saturn_regime', 'LOW', 'sma_200_slope', 'LOW', 'et_cosmic_bear')
+    if 'is_fibonacci_day' in cols:
+        _cross_bin('volume_sma_20', 'HIGH', None, None, '_tmp')  # just to get binarized volume
+        fib = _get_raw('is_fibonacci_day')
+        vol_h = _get_bin('volume_sma_20', 'HIGH')
+        if fib is not None and vol_h is not None:
+            out['et_sacred_breakout'] = (fib * vol_h).astype(np.float32)
+
+    # Step 4: Bear-specific crosses (fix PrecS=38%)
+    _cross_bin('close_vs_sma_200', 'EXTREME_LOW', 'volume_sma_20', 'HIGH', 'tt_panic_selling')
+    _cross_bin('rsi_14', 'EXTREME_LOW', 'atr_14', 'EXTREME_HIGH', 'tt_crash_signal')
+
+    if out:
+        return pd.concat([result, pd.DataFrame(out, index=result.index)], axis=1)
+    return result
 
 
 # ============================================================
@@ -6118,6 +6202,12 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     sar_num_feats = compute_sar_numerology_features(result)
     for col in sar_num_feats.columns:
         result[col] = sar_num_feats[col]
+
+    # 13d. TA x TA and esoteric x TA crosses
+    t0 = time.time()
+    result = compute_ta_crosses(result, tf_name)
+    n_ta_crosses = len([c for c in result.columns if c.startswith('tt_') or c.startswith('et_')])
+    print(f"    TA x TA crosses: {time.time()-t0:.1f}s ({n_ta_crosses} cols)", flush=True)
 
     # 14. Targets (only for backfill)
     if include_targets and mode == 'backfill':

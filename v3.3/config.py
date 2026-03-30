@@ -354,6 +354,7 @@ SKIP_FEATURES_BY_TF = {
 # AlphaNumetrix proves: EMAs + RSI + SAR backbone + numerology interpretation = edge.
 # Result: ~200-300 features (from ~3500) — much better for 819 rows.
 LEAN_1W_MODE = True
+BINARY_1W_MODE = True  # Convert 3-class (SHORT/FLAT/LONG) to binary (DOWN/UP), drop FLAT rows
 
 # TA features to KEEP in lean 1w mode (everything else gets dropped).
 # These are the AlphaNumetrix backbone: SAR + EMAs + RSI + price-relative measures.
@@ -383,6 +384,13 @@ LEAN_1W_TA_KEEPLIST = frozenset([
     'price_level_gematria',
     'sar_close_ratio', 'sar_close_ratio_dr',
     'ema_cross_21_50', 'ema_cross_50_200', 'price_vs_sar_flip_dr',
+    # 52-week features (multi-month patterns for 9-158 bar trades)
+    'return_26bar', 'return_52bar', 'rsi_26',
+    'price_vs_52w_high', 'price_vs_52w_low',
+    # Additional proven TA from v5 top features
+    'close_vs_sma_100', 'close_vs_sma_200',
+    'avwap_from_swing_high', 'avwap_from_swing_low', 'avwap_position',
+    'supertrend_bullish', 'supertrend_direction',
 ])
 
 # Prefixes for features that are ALWAYS kept in lean 1w mode regardless of TA keeplist.
@@ -428,6 +436,12 @@ LEAN_1W_ALWAYS_KEEP_PREFIXES = tuple(PROTECTED_FEATURE_PREFIXES) + (
     'ema200_digit', 'ema200_digital',
     'price_sar_d', 'price_level_gematria', 'price_vs_sar_flip',
     'ema_cross_',
+    # TA x TA and esoteric x TA crosses
+    'tt_', 'et_',
+    # Tweet engagement features
+    'tweet_', 'engagement_',
+    # Google Trends derived
+    'gtrends_',
     # Target columns (must keep!)
     'target_', 'label_',
     # OHLCV (needed downstream)

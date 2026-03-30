@@ -38,6 +38,12 @@ import sqlite3
 from datetime import datetime
 from numba import njit
 
+def _fix_binary_preds(preds):
+    """Convert binary 1D predictions to 2D [P(DOWN), P(UP)] for compat with 3-class eval code."""
+    if preds.ndim == 1:
+        return np.column_stack([1 - preds, preds])
+    return preds
+
 DB_DIR = os.environ.get('SAVAGE22_DB_DIR', os.path.dirname(os.path.abspath(__file__)))
 # v3.1: resolve feature data from v3.0 shared dir — import from config (single source of truth)
 try:
@@ -1317,6 +1323,21 @@ if __name__ == '__main__':
           log(f"  Triple-barrier labels (tp={tb_cfg['tp_atr_mult']}xATR, sl={tb_cfg['sl_atr_mult']}xATR, hold={tb_cfg['max_hold_bars']}): "
               f"{int(n_long)} LONG, {int(n_short)} SHORT, {int(n_flat)} FLAT, {int(n_nan)} NaN")
 
+          # ── BINARY MODE for 1w ──
+          from config import LEAN_1W_MODE
+          _BINARY_1W = getattr(__import__('config'), 'BINARY_1W_MODE', False)
+          if _BINARY_1W and tf_name == '1w':
+              # Convert 3-class → binary: SHORT(0)→0, FLAT(1)→NaN(drop), LONG(2)→1
+              _flat_mask = (y_3class == 1)
+              y_3class[_flat_mask] = np.nan  # mark FLAT as NaN → excluded from training
+              # Remap: SHORT(0)→0(DOWN), LONG(2)→1(UP)
+              _valid_binary = ~np.isnan(y_3class)
+              y_3class[_valid_binary] = (y_3class[_valid_binary] == 2).astype(float)
+              n_up = int((y_3class == 1).sum())
+              n_down = int((y_3class == 0).sum())
+              n_dropped = int(_flat_mask.sum())
+              log(f"  BINARY MODE: {n_up} UP + {n_down} DOWN = {n_up+n_down} rows (dropped {n_dropped} FLAT)")
+
           # Also keep old return_col for backward compat logging
           return_col = cfg['return_col']
           if return_col not in df.columns:
@@ -1618,6 +1639,14 @@ if __name__ == '__main__':
               log(f"  force_row_wise=True for {tf_name} (high rows/bundles ratio)")
           else:
               _base_lgb_params['force_col_wise'] = True
+          # ── BINARY MODE: override objective ──
+          if _BINARY_1W and tf_name == '1w':
+              _base_lgb_params['objective'] = 'binary'
+              _base_lgb_params.pop('num_class', None)
+              _base_lgb_params['learning_rate'] = 0.3  # higher for binary
+              _base_lgb_params['metric'] = 'binary_logloss'
+              log(f"  BINARY MODE: objective=binary, LR=0.3")
+
           # Cap num_threads for small datasets (LightGBM docs: >64 threads on <10K rows = poor scaling)
           _n_rows = X_all.shape[0] if not hasattr(X_all, 'nnz') else X_all.shape[0]
           if _n_rows < 10_000 and _base_lgb_params.get('num_threads', 0) == 0:
@@ -2595,18 +2624,20 @@ if __name__ == '__main__':
                       )
 
                   # Predict OOS — pass best_iteration so GPU path uses only the best trees
-                  preds_3c = model.predict(X_test, num_iteration=model.best_iteration)  # shape (N, 3)
+                  preds_3c = _fix_binary_preds(model.predict(X_test, num_iteration=model.best_iteration))
+                  _n_classes = preds_3c.shape[1]
+                  _labels = list(range(_n_classes))
                   pred_labels = np.argmax(preds_3c, axis=1)
                   acc = accuracy_score(y_test, pred_labels)
-                  prec_long = precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0)
+                  prec_long = precision_score(y_test, pred_labels, labels=[_n_classes-1], average='macro', zero_division=0)
                   prec_short = precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0)
-                  mlogloss = log_loss(y_test, preds_3c, labels=[0, 1, 2])
+                  mlogloss = log_loss(y_test, preds_3c, labels=_labels)
 
                   # Evaluate IS (full training data) for proper PBO
-                  is_preds_3c = _predict_chunked(model, X_train, num_iteration=model.best_iteration)
+                  is_preds_3c = _fix_binary_preds(_predict_chunked(model, X_train, num_iteration=model.best_iteration))
                   is_pred_labels = np.argmax(is_preds_3c, axis=1)
                   is_acc = float(accuracy_score(y_train, is_pred_labels))
-                  is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
+                  is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=_labels))
                   # IS Sharpe from simulated returns: +1 correct, -1 wrong
                   _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
                   _is_std = np.std(_is_sim_ret, ddof=1)
@@ -2899,12 +2930,14 @@ if __name__ == '__main__':
               )
 
           # Evaluate on val set (held-out 15% from end, used for early stopping)
-          final_preds_3c = final_model.predict(X_val_f, num_iteration=final_model.best_iteration)  # shape (N, 3)
+          final_preds_3c = _fix_binary_preds(final_model.predict(X_val_f, num_iteration=final_model.best_iteration))
+          _fn_classes = final_preds_3c.shape[1]
+          _fn_labels = list(range(_fn_classes))
           final_labels = np.argmax(final_preds_3c, axis=1)
           final_acc = accuracy_score(y_val_f, final_labels)
-          final_prec_l = precision_score(y_val_f, final_labels, labels=[2], average='macro', zero_division=0)
+          final_prec_l = precision_score(y_val_f, final_labels, labels=[_fn_classes-1], average='macro', zero_division=0)
           final_prec_s = precision_score(y_val_f, final_labels, labels=[0], average='macro', zero_division=0)
-          final_mlogloss = log_loss(y_val_f, final_preds_3c, labels=[0, 1, 2])
+          final_mlogloss = log_loss(y_val_f, final_preds_3c, labels=_fn_labels)
           log(f"  FINAL: Acc={final_acc:.3f} PrecL={final_prec_l:.3f} PrecS={final_prec_s:.3f} "
               f"mlogloss={final_mlogloss:.4f} Trees={final_model.best_iteration} Features={len(_final_feature_cols)}")
 
