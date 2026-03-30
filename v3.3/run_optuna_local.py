@@ -482,7 +482,7 @@ class _RoundPruningCallback:
 # ============================================================
 def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
                            max_hold, parent_ds, row_subsample=1.0,
-                           use_gpu=False, gpu_cfg=None):
+                           use_gpu=False, gpu_cfg=None, actual_n_jobs=1):
     """Build an Optuna objective for Phase 1 rapid search.
 
     Uses LR=0.15, ES=15, max 60 rounds, 2-fold CPCV.
@@ -564,7 +564,7 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         params = V3_LGBM_PARAMS.copy()
         params.update({
             'is_enable_sparse': True,  # always True — permission gate for sparse CSR, not data coercion
-            'num_threads': max(1, (get_cpu_count() or 4) // max(1, int(os.environ.get('OPTUNA_N_JOBS', '1')))),
+            'num_threads': max(1, (get_cpu_count() or 4) // max(1, actual_n_jobs)),
             'num_leaves': num_leaves,
             'min_data_in_leaf': min_data_in_leaf,
             'feature_fraction': feature_fraction,
@@ -649,9 +649,16 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                         break
                 model = booster
             else:
-                # CPU path — OPT-10: no round-level pruning callback (conflicts with fold-level WilcoxonPruner)
-                # Use early_stopping(50) for intra-fold ES only
-                callbacks = [lgb.early_stopping(es_patience), lgb.log_evaluation(0)]
+                # CPU path — H13 FIX: Enable round-level pruning via _RoundPruningCallback.
+                # With 2-fold CPCV, fold-level reporting only gives 2 steps — WilcoxonPruner
+                # needs ≥2 steps before acting, making it a no-op. Round-level reporting
+                # gives up to (folds × rounds/interval) steps, enabling real pruning.
+                # Expected 30-50% Phase 1 speedup from early trial termination.
+                callbacks = [
+                    lgb.early_stopping(es_patience),
+                    lgb.log_evaluation(0),
+                    _RoundPruningCallback(trial, fold_i, rounds, interval=10),
+                ]
 
                 model = lgb.train(
                     params, dtrain,
@@ -1278,6 +1285,25 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         except OSError as _e:
             log.warning(f"  Could not remove {bin_path}: {_e}")
 
+    # H-4 FIX: Staleness check — if parquet or NPZ is newer than cached binary, invalidate.
+    # Prevents training on stale features after a feature rebuild.
+    if os.path.exists(bin_path):
+        bin_mtime = os.path.getmtime(bin_path)
+        _stale_sources = []
+        for _src_pattern in [f'features_{tf_name}.parquet', f'features_BTC_{tf_name}.parquet',
+                             f'v2_crosses_BTC_{tf_name}.npz']:
+            for _src_dir in [DB_DIR, V30_DATA_DIR]:
+                _src_path = os.path.join(_src_dir, _src_pattern)
+                if os.path.exists(_src_path) and os.path.getmtime(_src_path) > bin_mtime:
+                    _stale_sources.append(_src_pattern)
+                    break
+        if _stale_sources:
+            log.info(f"  Invalidating cached Dataset binary (source newer): {', '.join(_stale_sources)}")
+            try:
+                os.remove(bin_path)
+            except OSError as _e:
+                log.warning(f"  Could not remove stale {bin_path}: {_e}")
+
     # Try loading pre-built binary first (instant — skips EFB reconstruction)
     if os.path.exists(bin_path):
         log.info(f"  Loading parent Dataset from binary: {bin_path}")
@@ -1400,15 +1426,13 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
              f"ES={OPTUNA_PHASE1_ES_PATIENCE}, rounds={OPTUNA_PHASE1_ROUNDS}")
     phase1_start = time.time()
 
-    # Store n_jobs in env for thread calculation inside objective
-    os.environ['OPTUNA_N_JOBS'] = str(n_jobs)
-
     objective_p1 = build_phase1_objective(
         X_all, y, sample_weights, feature_cols, is_sparse, tf_name,
         max_hold, parent_ds=_parent_ds,
         row_subsample=row_subsample,
         use_gpu=search_use_gpu,
         gpu_cfg=gpu_cfg if gpu_cfg.enabled else None,
+        actual_n_jobs=n_jobs,
     )
 
     # Count existing completed trials to determine remaining
@@ -1468,27 +1492,57 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
     best_val_score = float('inf')
     val_results = []
 
-    for rank, trial in enumerate(top_trials):
-        log.info(f"    Validating trial #{trial.number} (Phase 1 mlogloss={trial.value:.4f})...")
+    # H-3 FIX: Parallelize validation gate — each trial validates independently.
+    # Uses ThreadPoolExecutor (not Process) because parent_ds can't be pickled.
+    # Each validation uses num_threads=0 (full cores), so we cap workers to avoid
+    # oversubscription: max 2 concurrent validations (each gets half the cores).
+    _val_max_workers = min(len(top_trials), max(1, n_jobs))
+    if _val_max_workers > 1:
+        log.info(f"    Parallel validation: {_val_max_workers} workers")
+        from concurrent.futures import ThreadPoolExecutor
+        _val_futures = {}
+        with ThreadPoolExecutor(max_workers=_val_max_workers) as _val_pool:
+            for trial in top_trials:
+                log.info(f"    Submitting trial #{trial.number} (Phase 1 mlogloss={trial.value:.4f})...")
+                fut = _val_pool.submit(
+                    validate_config,
+                    trial.params, X_all, y, sample_weights, is_sparse, tf_name,
+                    max_hold, parent_ds=_parent_ds, use_gpu=search_use_gpu,
+                )
+                _val_futures[fut] = trial
 
-        val_score = validate_config(
-            trial.params, X_all, y, sample_weights, is_sparse, tf_name,
-            max_hold, parent_ds=_parent_ds, use_gpu=search_use_gpu,
-        )
-
-        val_results.append({
-            'trial_number': trial.number,
-            'phase1_mlogloss': float(trial.value),
-            'validation_mlogloss': val_score,
-            'params': trial.params,
-        })
-
-        log.info(f"    Trial #{trial.number}: validation mlogloss={val_score:.4f} "
-                 f"(Phase 1: {trial.value:.4f})")
-
-        if val_score < best_val_score:
-            best_val_score = val_score
-            best_params = trial.params.copy()
+            for fut in _val_futures:
+                trial = _val_futures[fut]
+                val_score = fut.result()
+                val_results.append({
+                    'trial_number': trial.number,
+                    'phase1_mlogloss': float(trial.value),
+                    'validation_mlogloss': val_score,
+                    'params': trial.params,
+                })
+                log.info(f"    Trial #{trial.number}: validation mlogloss={val_score:.4f} "
+                         f"(Phase 1: {trial.value:.4f})")
+                if val_score < best_val_score:
+                    best_val_score = val_score
+                    best_params = trial.params.copy()
+    else:
+        for rank, trial in enumerate(top_trials):
+            log.info(f"    Validating trial #{trial.number} (Phase 1 mlogloss={trial.value:.4f})...")
+            val_score = validate_config(
+                trial.params, X_all, y, sample_weights, is_sparse, tf_name,
+                max_hold, parent_ds=_parent_ds, use_gpu=search_use_gpu,
+            )
+            val_results.append({
+                'trial_number': trial.number,
+                'phase1_mlogloss': float(trial.value),
+                'validation_mlogloss': val_score,
+                'params': trial.params,
+            })
+            log.info(f"    Trial #{trial.number}: validation mlogloss={val_score:.4f} "
+                     f"(Phase 1: {trial.value:.4f})")
+            if val_score < best_val_score:
+                best_val_score = val_score
+                best_params = trial.params.copy()
 
     val_elapsed = time.time() - val_start
     log.info(f"  Validation Gate done in {val_elapsed:.0f}s: "
@@ -1606,7 +1660,7 @@ def main():
         n_jobs = _gpu_cfg.n_jobs
         log.info(f"  Multi-GPU: auto-set n_jobs={n_jobs} (1 trial per GPU)")
     else:
-        n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, total_cores // 16)
+        n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, total_cores // 8)
 
     log.info(f"Optuna LightGBM Search v3.3 (Phase 1 + Validation Gate)")
     log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}")

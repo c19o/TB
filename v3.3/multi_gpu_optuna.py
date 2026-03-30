@@ -106,7 +106,7 @@ def get_multi_gpu_config(total_cores=None):
     if multi_gpu_env == '0':
         log.info("  MULTI_GPU=0: multi-GPU disabled by env var")
         return MultiGPUConfig(num_gpus=0, enabled=False, device_type='cpu',
-                              n_jobs=max(1, total_cores // 16))
+                              n_jobs=max(1, total_cores // 8))
 
     # Check explicit GPU count override
     lgbm_num_gpus = int(os.environ.get('LGBM_NUM_GPUS', '0'))
@@ -121,7 +121,7 @@ def get_multi_gpu_config(total_cores=None):
         if multi_gpu_env == '1':
             log.warning("  MULTI_GPU=1 but no GPUs detected — falling back to CPU")
         return MultiGPUConfig(num_gpus=0, enabled=False, device_type='cpu',
-                              n_jobs=max(1, total_cores // 16))
+                              n_jobs=max(1, total_cores // 8))
 
     # Auto-detect: enable if >1 GPU, or if MULTI_GPU=1 with 1 GPU
     if multi_gpu_env == '1':
