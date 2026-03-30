@@ -436,6 +436,9 @@ LEAN_1W_ALWAYS_KEEP_PREFIXES = tuple(PROTECTED_FEATURE_PREFIXES) + (
     'ema200_digit', 'ema200_digital',
     'price_sar_d', 'price_level_gematria', 'price_vs_sar_flip',
     'ema_cross_',
+    # Prime number features (sacred geometry — indivisible market energy)
+    'prime_', 'price_is_prime', 'sar_is_prime', 'rsi_is_prime',
+    'week_is_prime', 'doy_is_prime', 'price_prime_digit_count',
     # TA x TA and esoteric x TA crosses
     'tt_', 'et_',
     # Tweet engagement features

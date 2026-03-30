@@ -5833,6 +5833,235 @@ def compute_ta_crosses(result, tf_name='1w'):
 
 
 # ============================================================
+# PRIME NUMBER FEATURES
+# ============================================================
+
+@njit(cache=True)
+def _is_prime_numba(arr):
+    """Check if integer values are prime via trial division. Numba-accelerated."""
+    out = np.zeros(len(arr), dtype=np.float32)
+    for i in range(len(arr)):
+        n = abs(int(arr[i]))
+        if n < 2:
+            continue
+        if n < 4:
+            out[i] = 1.0
+            continue
+        if n % 2 == 0 or n % 3 == 0:
+            continue
+        j = 5
+        is_p = True
+        while j * j <= n:
+            if n % j == 0 or n % (j + 2) == 0:
+                is_p = False
+                break
+            j += 6
+        if is_p:
+            out[i] = 1.0
+    return out
+
+
+@njit(cache=True)
+def _count_prime_digits(arr):
+    """Count prime digits (2,3,5,7) in integer representation of each value."""
+    out = np.zeros(len(arr), dtype=np.float32)
+    for i in range(len(arr)):
+        n = abs(int(arr[i]))
+        if n == 0:
+            continue
+        while n > 0:
+            d = n % 10
+            if d == 2 or d == 3 or d == 5 or d == 7:
+                out[i] += 1.0
+            n //= 10
+    return out
+
+
+@njit(cache=True)
+def _digit_sum_numba(arr):
+    """Sum of all digits in integer part of each value. Numba-accelerated."""
+    out = np.zeros(len(arr), dtype=np.float32)
+    for i in range(len(arr)):
+        n = abs(int(arr[i]))
+        if n == 0:
+            continue
+        while n > 0:
+            out[i] += n % 10
+            n //= 10
+    return out
+
+
+def _sieve_primes(limit):
+    """Sieve of Eratosthenes up to limit. Returns sorted numpy array of primes."""
+    sieve = np.ones(limit + 1, dtype=np.bool_)
+    sieve[0] = sieve[1] = False
+    for i in range(2, int(limit**0.5) + 1):
+        if sieve[i]:
+            sieve[i*i::i] = False
+    return np.where(sieve)[0].astype(np.int64)
+
+
+# Module-level cache for prime sieve (computed once)
+_PRIMES_120K = _sieve_primes(120000)
+
+
+@njit(cache=True)
+def _consecutive_green_streak(close, open_):
+    """Count consecutive green (close > open) candle streak at each bar."""
+    n = len(close)
+    out = np.zeros(n, dtype=np.float64)
+    streak = 0
+    for i in range(n):
+        if close[i] > open_[i]:
+            streak += 1
+        else:
+            streak = 0
+        out[i] = streak
+    return out
+
+
+def compute_prime_features(result, tf_name='1w'):
+    """Prime number features across price, time, and indicators.
+    Primes = indivisible numbers = foundational market energy."""
+    out = {}
+    cols = set(result.columns)
+
+    # PRICE PRIMES
+    if 'close' in result.columns:
+        close = result['close'].values.astype(np.float64)
+        out['price_is_prime'] = _is_prime_numba(close)
+        out['price_prime_digit_count'] = _count_prime_digits(close)
+
+        # price_nearest_prime_distance — distance to nearest prime in price space
+        close_int = np.floor(np.abs(close)).astype(np.int64)
+        idx_arr = np.searchsorted(_PRIMES_120K, close_int)
+        dist_up = _PRIMES_120K[np.minimum(idx_arr, len(_PRIMES_120K) - 1)] - close_int
+        dist_down = close_int - _PRIMES_120K[np.maximum(idx_arr - 1, 0)]
+        out['price_nearest_prime_dist'] = np.minimum(dist_up, dist_down).astype(np.float32)
+
+        # price modular prime residues
+        out['price_mod_7'] = (close % 7).astype(np.float32)
+        out['price_mod_11'] = (close % 11).astype(np.float32)
+        out['price_mod_13'] = (close % 13).astype(np.float32)
+
+    # SAR PRIME
+    if 'sar_value' in result.columns:
+        out['sar_is_prime'] = _is_prime_numba(result['sar_value'].values.astype(np.float64))
+
+    # RSI PRIME
+    if 'rsi_14' in result.columns:
+        out['rsi_is_prime'] = _is_prime_numba(result['rsi_14'].values.astype(np.float64))
+
+    # TIME PRIMES
+    if hasattr(result.index, 'isocalendar'):
+        week = result.index.isocalendar().week.values.astype(np.float64)
+        out['week_is_prime'] = _is_prime_numba(week)
+        doy = result.index.dayofyear.values.astype(np.float64)
+        out['doy_is_prime'] = _is_prime_numba(doy)
+
+    # hour_is_prime — only for sub-daily TFs (not 1w/1d)
+    if tf_name not in ('1w', '1d') and hasattr(result.index, 'hour'):
+        out['hour_is_prime'] = _is_prime_numba(result.index.hour.values.astype(np.float64))
+
+    # consecutive_green_is_prime — is the streak of green bars a prime number?
+    if 'close' in result.columns and 'open' in result.columns:
+        streak = _consecutive_green_streak(
+            result['close'].values.astype(np.float64),
+            result['open'].values.astype(np.float64))
+        out['streak_green_is_prime'] = _is_prime_numba(streak)
+
+    # atr_digit_sum_is_prime
+    if 'atr_14' in cols:
+        atr_ds = _digit_sum_numba(result['atr_14'].values.astype(np.float64))
+        out['atr_digit_sum_is_prime'] = _is_prime_numba(atr_ds.astype(np.float64))
+
+    # volume_digit_sum_is_prime
+    if 'volume' in cols:
+        vol_ds = _digit_sum_numba(result['volume'].values.astype(np.float64))
+        out['volume_digit_sum_is_prime'] = _is_prime_numba(vol_ds.astype(np.float64))
+
+    # PRIME CONFLUENCE (count of ALL prime conditions true — updated to include new ones)
+    prime_cols = [v for k, v in out.items()
+                  if k.endswith('_is_prime') or k == 'price_is_prime']
+    if prime_cols:
+        stack = np.column_stack(prime_cols)
+        out['prime_confluence'] = np.nansum(stack, axis=1).astype(np.float32)
+
+    if out:
+        result = pd.concat([result, pd.DataFrame(out, index=result.index)], axis=1)
+
+    # ── PRIME × ESOTERIC CROSSES ──
+    # Safe AND crosses with column existence checks
+    cols = set(result.columns)
+
+    def _safe_cross(name, col_a, col_b):
+        """Multiply two binary/float columns safely. Both must exist."""
+        if col_a in cols and col_b in cols:
+            a = result[col_a].values.astype(np.float32)
+            b = result[col_b].values.astype(np.float32)
+            cross_out[name] = (a * b).astype(np.float32)
+
+    def _safe_cross_binarize(name, col_a, col_b, quantile=0.75, above=True):
+        """Cross col_a (binary) with binarized col_b (top/bottom quantile)."""
+        if col_a not in cols or col_b not in cols:
+            return
+        a = result[col_a].values.astype(np.float64)
+        b = result[col_b].values.astype(np.float64)
+        valid = ~np.isnan(b)
+        if valid.sum() < 10:
+            return
+        thresh = np.nanpercentile(b, quantile * 100 if above else (1 - quantile) * 100)
+        b_bin = (b >= thresh).astype(np.float32) if above else (b <= thresh).astype(np.float32)
+        b_bin[~valid] = np.nan
+        cross_out[name] = (a.astype(np.float32) * b_bin).astype(np.float32)
+
+    cross_out = {}
+
+    # PRIME × ASTROLOGY
+    _safe_cross('prime_x_mercury_retro', 'price_is_prime', 'ae_mercury_retrograde')
+    _safe_cross_binarize('prime_x_jupiter_saturn_HIGH', 'price_is_prime',
+                         'jupiter_saturn_regime', quantile=0.75, above=True)
+    _safe_cross('week_prime_x_eclipse', 'week_is_prime', 'eclipse_window')
+    if 'ae_eclipse_window' in cols and 'week_is_prime' in cols:
+        cross_out['week_prime_x_ae_eclipse'] = (
+            result['week_is_prime'].values.astype(np.float32) *
+            result['ae_eclipse_window'].values.astype(np.float32))
+    _safe_cross('prime_confluence_x_lunar_wax', 'prime_confluence', 'lunar_waxing_flag')
+    _safe_cross_binarize('doy_prime_x_jupiter_saturn_LOW', 'doy_is_prime',
+                         'jupiter_saturn_regime', quantile=0.25, above=False)
+
+    # PRIME × NUMEROLOGY
+    _safe_cross('prime_x_fibonacci_day', 'price_is_prime', 'is_fibonacci_day')
+    # price_is_prime × SAR digit root match (price_sar_dr_diff == 0)
+    if 'price_is_prime' in cols and 'price_sar_dr_diff' in cols:
+        dr_match = (result['price_sar_dr_diff'].values == 0).astype(np.float32)
+        cross_out['prime_x_sar_dr_match'] = (
+            result['price_is_prime'].values.astype(np.float32) * dr_match)
+    # prime_confluence × angel_number (any angel pattern in price)
+    _safe_cross('prime_confluence_x_angel', 'prime_confluence', 'price_angel_count')
+    # Also try sar_angel_pattern
+    _safe_cross('prime_confluence_x_sar_angel', 'prime_confluence', 'sar_angel_pattern')
+    # week_is_prime × month_digital_root (combined numerological energy)
+    if 'week_is_prime' in cols and 'month_digital_root' in cols:
+        cross_out['week_prime_x_month_dr'] = (
+            result['week_is_prime'].values.astype(np.float32) *
+            result['month_digital_root'].values.astype(np.float32))
+
+    # PRIME × SPACE WEATHER
+    _safe_cross('prime_day_x_kp_storm', 'doy_is_prime', 'sw_kp_is_storm')
+    _safe_cross_binarize('prime_confluence_x_kp_high', 'prime_confluence',
+                         'sw_kp_index', quantile=0.75, above=True)
+
+    # PRIME × HEBREW
+    _safe_cross('prime_week_x_shmita', 'week_is_prime', 'shemitah_year')
+
+    if cross_out:
+        result = pd.concat([result, pd.DataFrame(cross_out, index=result.index)], axis=1)
+
+    return result
+
+
+# ============================================================
 # MAIN ENTRY POINT
 # ============================================================
 
@@ -6208,6 +6437,12 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     result = compute_ta_crosses(result, tf_name)
     n_ta_crosses = len([c for c in result.columns if c.startswith('tt_') or c.startswith('et_')])
     print(f"    TA x TA crosses: {time.time()-t0:.1f}s ({n_ta_crosses} cols)", flush=True)
+
+    # 13e. Prime number features
+    t0 = time.time()
+    result = compute_prime_features(result, tf_name)
+    n_prime = len([c for c in result.columns if c.startswith('prime_') or c.endswith('_is_prime') or c == 'price_prime_digit_count'])
+    print(f"    Prime features: {time.time()-t0:.1f}s ({n_prime} cols)", flush=True)
 
     # 14. Targets (only for backfill)
     if include_targets and mode == 'backfill':
