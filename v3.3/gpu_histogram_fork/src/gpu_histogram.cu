@@ -24,13 +24,14 @@
  *        -gencode arch=compute_89,code=sm_89 \
  *        -gencode arch=compute_90,code=sm_90 \
  *        -gencode arch=compute_100,code=sm_100 \
- *        -gencode arch=compute_100,code=compute_100 \
+ *        -gencode arch=compute_120,code=sm_120 \
+ *        -gencode arch=compute_120,code=compute_120 \
  *        -o libgpu_histogram.so gpu_histogram.cu
  *
- * The final -gencode with code=compute_100 embeds PTX for forward compat
+ * The final -gencode with code=compute_120 embeds PTX for forward compat
  * with future architectures.
  *
- * Requires: CUDA 12.0+ (sm_100 needs CUDA 12.8+), driver 535+
+ * Requires: CUDA 12.0+ (sm_100 needs CUDA 12.8+, sm_120 needs CUDA 13.0+), driver 535+
  */
 
 #include "gpu_histogram.h"
@@ -154,8 +155,10 @@ struct GpuHistContext_ {
     /* ---- Gradients/Hessians (double-buffered pinned + device) ---- */
     double*   d_grad;          /* [n_rows * num_classes] on GPU */
     double*   d_hess;          /* [n_rows * num_classes] on GPU */
-    double*   h_grad_pinned;   /* pinned host buffer A */
-    double*   h_hess_pinned;   /* pinned host buffer A */
+    double*   h_grad_pinned[2];  /* pinned host buffer A and B */
+    double*   h_hess_pinned[2];  /* pinned host buffer A and B */
+    int       grad_buf_idx;      /* which pinned buffer is current (0 or 1) */
+    cudaEvent_t grad_h2d_done;   /* event signaling prior H2D is complete */
 
     /* ---- Leaf row indices ---- */
     int32_t*  d_leaf_rows;     /* [n_rows] max — reused per node */
@@ -315,7 +318,7 @@ __device__ __forceinline__ double warp_reduce_by_key_f64(
      * Returns accumulated value for the "leader" of each key group.
      *
      * IMPORTANT: active_mask must reflect actually active lanes
-     * (via __ballot_sync), NOT 0xffffffff. Threads exit CSR loops
+     * (via __activemask()), NOT 0xffffffff. Threads exit CSR loops
      * at different times — dead lanes return undefined values. */
     for (int offset = 16; offset > 0; offset >>= 1) {
         int32_t other_key = __shfl_down_sync(active_mask, my_key, offset);
@@ -374,7 +377,7 @@ __global__ void sparse_hist_build_warp_kernel(
      * same column (bin) and reduce before the atomic.
      *
      * BUG FIX: Each thread has different NNZ per row, so threads exit
-     * the CSR loop at different iterations. We use __ballot_sync() to
+     * the CSR loop at different iterations. We use __activemask() to
      * compute the active lane mask dynamically — NOT a hardcoded
      * 0xffffffff which reads undefined values from exited lanes. */
 
@@ -383,8 +386,11 @@ __global__ void sparse_hist_build_warp_kernel(
         for (int64_t j = start; j < end; j++) {
             int32_t col = indices[j];
 
-            /* Compute active lane mask: only lanes still in their CSR loop */
-            unsigned active = __ballot_sync(0xffffffff, true);
+            /* Compute active lane mask dynamically — threads exit CSR loop
+             * at different iterations, so 0xffffffff would read undefined
+             * values from exited lanes. __activemask() returns only the
+             * lanes that are actually executing this instruction. */
+            unsigned active = __activemask();
 
             /* Warp-reduce grad values for matching columns */
             double g_reduced = warp_reduce_by_key_f64(col, g, active);
@@ -403,7 +409,7 @@ __global__ void sparse_hist_build_warp_kernel(
             if (bin == 0) continue;
             int32_t col = indices[j];
 
-            unsigned active = __ballot_sync(0xffffffff, true);
+            unsigned active = __activemask();
 
             double g_reduced = warp_reduce_by_key_f64(col, g, active);
             double h_reduced = warp_reduce_by_key_f64(col, h, active);
@@ -912,9 +918,17 @@ GpuHistError gpu_hist_init(
         CUDA_CHECK_OOM(cudaMalloc(&ctx->d_hess, g_bytes), fail_cleanup);
         ctx->gpu_bytes_allocated += g_bytes * 2;
 
-        /* Pinned host buffers for async H2D */
-        CUDA_CHECK_OOM(cudaMallocHost(&ctx->h_grad_pinned, g_bytes), fail_cleanup);
-        CUDA_CHECK_OOM(cudaMallocHost(&ctx->h_hess_pinned, g_bytes), fail_cleanup);
+        /* Double-buffered pinned host buffers for async H2D —
+         * prevents race where memcpy overwrites pinned buffer while
+         * a prior cudaMemcpyAsync is still in flight. */
+        CUDA_CHECK_OOM(cudaMallocHost(&ctx->h_grad_pinned[0], g_bytes), fail_cleanup);
+        CUDA_CHECK_OOM(cudaMallocHost(&ctx->h_hess_pinned[0], g_bytes), fail_cleanup);
+        CUDA_CHECK_OOM(cudaMallocHost(&ctx->h_grad_pinned[1], g_bytes), fail_cleanup);
+        CUDA_CHECK_OOM(cudaMallocHost(&ctx->h_hess_pinned[1], g_bytes), fail_cleanup);
+        ctx->grad_buf_idx = 0;
+
+        /* Event to track when the previous H2D completes */
+        CUDA_CHECK_OOM(cudaEventCreate(&ctx->grad_h2d_done), fail_cleanup);
     }
 
     /* ---- Allocate leaf row and partition buffers ---- */
@@ -998,8 +1012,11 @@ fail_cleanup:
     if (ctx->d_data)         cudaFree(ctx->d_data);
     if (ctx->d_grad)         cudaFree(ctx->d_grad);
     if (ctx->d_hess)         cudaFree(ctx->d_hess);
-    if (ctx->h_grad_pinned)  cudaFreeHost(ctx->h_grad_pinned);
-    if (ctx->h_hess_pinned)  cudaFreeHost(ctx->h_hess_pinned);
+    if (ctx->h_grad_pinned[0])  cudaFreeHost(ctx->h_grad_pinned[0]);
+    if (ctx->h_grad_pinned[1])  cudaFreeHost(ctx->h_grad_pinned[1]);
+    if (ctx->h_hess_pinned[0])  cudaFreeHost(ctx->h_hess_pinned[0]);
+    if (ctx->h_hess_pinned[1])  cudaFreeHost(ctx->h_hess_pinned[1]);
+    if (ctx->grad_h2d_done)     cudaEventDestroy(ctx->grad_h2d_done);
     if (ctx->d_leaf_rows)    cudaFree(ctx->d_leaf_rows);
     if (ctx->d_leaf_id)      cudaFree(ctx->d_leaf_id);
     if (ctx->d_count_buf)    cudaFree(ctx->d_count_buf);
@@ -1034,16 +1051,29 @@ GpuHistError gpu_hist_update_gradients(
     GpuHistContext_* ctx = handle;
     size_t bytes = (size_t)ctx->n_rows * ctx->num_classes * sizeof(double);
 
-    /* Copy to pinned staging buffers (fast, L1/L2 bandwidth) */
-    memcpy(ctx->h_grad_pinned, gradients, bytes);
-    memcpy(ctx->h_hess_pinned, hessians, bytes);
+    /* Wait for the PREVIOUS H2D to complete before writing to the
+     * alternate pinned buffer. This prevents the race condition where
+     * memcpy overwrites a pinned buffer that cudaMemcpyAsync is still
+     * reading from. */
+    CUDA_CHECK(ctx, cudaEventSynchronize(ctx->grad_h2d_done));
+
+    /* Flip to the alternate pinned buffer */
+    int buf = ctx->grad_buf_idx;
+    ctx->grad_buf_idx = 1 - buf;
+
+    /* Copy to the current pinned staging buffer (fast, L1/L2 bandwidth) */
+    memcpy(ctx->h_grad_pinned[buf], gradients, bytes);
+    memcpy(ctx->h_hess_pinned[buf], hessians, bytes);
 
     /* Async H2D via pinned memory — overlaps with prior D2H or compute */
     cudaStream_t s = ctx->streams[ctx->stream_h2d];
-    CUDA_CHECK(ctx, cudaMemcpyAsync(ctx->d_grad, ctx->h_grad_pinned, bytes,
+    CUDA_CHECK(ctx, cudaMemcpyAsync(ctx->d_grad, ctx->h_grad_pinned[buf], bytes,
                                     cudaMemcpyHostToDevice, s));
-    CUDA_CHECK(ctx, cudaMemcpyAsync(ctx->d_hess, ctx->h_hess_pinned, bytes,
+    CUDA_CHECK(ctx, cudaMemcpyAsync(ctx->d_hess, ctx->h_hess_pinned[buf], bytes,
                                     cudaMemcpyHostToDevice, s));
+
+    /* Record event so the next call knows when this H2D completes */
+    CUDA_CHECK(ctx, cudaEventRecord(ctx->grad_h2d_done, s));
 
     return GPU_HIST_OK;
 }
@@ -1087,6 +1117,7 @@ GpuHistError gpu_hist_build(
     int n_hist_elems = n_hist_bins * 2;
     hist_zero_kernel<<<grid_blocks(n_hist_elems), BLOCK_SIZE, 0, s_comp>>>(
         ctx->d_hist, n_hist_elems);
+    CUDA_CHECK(ctx, cudaGetLastError());
 
     int n_blocks = grid_blocks(n_leaf_rows);
 
@@ -1128,6 +1159,7 @@ GpuHistError gpu_hist_build(
                 ctx->d_leaf_rows, n_leaf_rows,
                 class_id, ctx->num_classes,
                 ctx->d_hist, ts, te);
+            CUDA_CHECK(ctx, cudaGetLastError());
         }
     } else if (_use_warp_reduce) {
         /* Optimization B: Warp-cooperative atomic kernel.
@@ -1328,10 +1360,15 @@ GpuHistError gpu_hist_cleanup(GpuHistHandle handle) {
     if (ctx->h_batch_leaf_buf)   cudaFreeHost(ctx->h_batch_leaf_buf);
     if (ctx->h_batch_offsets)    free(ctx->h_batch_offsets);
 
-    /* Free pinned host memory */
-    if (ctx->h_grad_pinned)  cudaFreeHost(ctx->h_grad_pinned);
-    if (ctx->h_hess_pinned)  cudaFreeHost(ctx->h_hess_pinned);
-    if (ctx->h_hist_pinned)  cudaFreeHost(ctx->h_hist_pinned);
+    /* Free double-buffered pinned host memory */
+    if (ctx->h_grad_pinned[0])  cudaFreeHost(ctx->h_grad_pinned[0]);
+    if (ctx->h_grad_pinned[1])  cudaFreeHost(ctx->h_grad_pinned[1]);
+    if (ctx->h_hess_pinned[0])  cudaFreeHost(ctx->h_hess_pinned[0]);
+    if (ctx->h_hess_pinned[1])  cudaFreeHost(ctx->h_hess_pinned[1]);
+    if (ctx->h_hist_pinned)     cudaFreeHost(ctx->h_hist_pinned);
+
+    /* Destroy gradient H2D event */
+    if (ctx->grad_h2d_done) cudaEventDestroy(ctx->grad_h2d_done);
 
     /* Destroy streams */
     for (int i = 0; i < ctx->num_streams; i++) {

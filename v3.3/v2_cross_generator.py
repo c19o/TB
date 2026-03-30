@@ -59,17 +59,23 @@ try:
 except ImportError:
     _HAS_THREADPOOLCTL = False
 # Set Numba/OMP thread count BEFORE import — can't change after first use.
-# With many Python threads (128+), each Numba prange must use few sub-threads
-# to avoid thread exhaustion (128 × 512 = crash).
+# Strategy: OMP_NUM_THREADS controls MKL baseline, but _mkl_dot() overrides
+# via threadpoolctl for SpGEMM calls. Numba gets full core count for prange.
+# MKL_DYNAMIC=FALSE prevents MKL from auto-shrinking its thread pool.
 if 'NUMBA_NUM_THREADS' not in os.environ:
     try:
         _ncpu = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         _ncpu = os.cpu_count() or 1
-    _numba_threads = max(4, min(_ncpu, 64))  # FIX: was max(1,min(8,_ncpu//32)) → 1 on 24c (23 cores idle)
+    _numba_threads = max(4, _ncpu)  # Full cores for Numba prange kernels
     os.environ['NUMBA_NUM_THREADS'] = str(_numba_threads)
 if 'OMP_NUM_THREADS' not in os.environ:
-    os.environ['OMP_NUM_THREADS'] = os.environ.get('NUMBA_NUM_THREADS', '4')
+    try:
+        _ncpu_omp = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        _ncpu_omp = os.cpu_count() or 1
+    os.environ['OMP_NUM_THREADS'] = str(_ncpu_omp)
+os.environ.setdefault('MKL_DYNAMIC', 'FALSE')
 
 # Module-level CPU count for MKL threadpoolctl — resolves after NUMBA env, before Numba import
 try:
@@ -144,11 +150,12 @@ def log(msg):
 
 def _mkl_dot(a, b):
     """MKL sparse SpGEMM with threadpoolctl override.
-    OMP_NUM_THREADS=4 is set globally to prevent Numba thread exhaustion,
-    but this caps MKL to 3% of cores. Boost MKL threads here via scoped override.
+    Uses full CPU count for MKL — sparse matmul at 0.3% density is memory-bandwidth
+    bound and benefits from all cores up to NUMA saturation. threadpoolctl scopes
+    the boost to this call only, preventing thread exhaustion in other phases.
     """
     if _HAS_THREADPOOLCTL:
-        with _threadpool_limits(limits=max(4, _cpu_count // 2), user_api='openmp'):
+        with _threadpool_limits(limits=_cpu_count, user_api='openmp'):
             return _dot_product_mkl(a, b, cast=True)
     return _dot_product_mkl(a, b, cast=True)
 
@@ -1955,16 +1962,11 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         """True if we've hit the max_crosses cap."""
         return max_crosses is not None and _total_collected >= max_crosses
 
-    # ── Thread reset: binarization done, switch to matmul thread count ──
-    # Binarization used full cpu_count (set by cloud_run_tf.py for speed).
-    # Sparse matmul loops use 4 threads to prevent thread exhaustion on 256-core machines.
-    try:
-        from numba import set_num_threads as _numba_set_threads
-        _numba_set_threads(4)
-        os.environ['NUMBA_NUM_THREADS'] = '4'
-        log("  NUMBA threads reset to 4 for matmul phase (was full cpu_count for binarization)")
-    except Exception:
-        pass  # safe — matmul will use whatever threads were set at import
+    # ── Thread count: keep full cores for matmul phase ──
+    # MKL thread exhaustion is handled by threadpoolctl scoping in _mkl_dot(),
+    # not by global throttling. Numba prange kernels use all cores.
+    log(f"  Matmul phase: NUMBA_NUM_THREADS={os.environ.get('NUMBA_NUM_THREADS', 'unset')}, "
+        f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', 'unset')} (full cores, scoped via threadpoolctl)")
 
     # ── Define all 12 cross steps as descriptors ──
     # Each step: (step_num, prefix, label, left_n, left_a, right_n, right_a, pre_fn, est_ram_gb)

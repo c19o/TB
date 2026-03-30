@@ -4,7 +4,7 @@ cuda_compat.py -- CUDA compatibility layer for diverse GPU environments
 ========================================================================
 Handles wildly different driver/CUDA combos across vast.ai, RunPod, GCP, etc.
 
-Our fork is compiled with CUDA 12.6, SM targets 80;86;89;90 + PTX fallback.
+Our fork is compiled with CUDA 12.6, SM targets 80;86;89;90;100;120 + PTX fallback.
 This module detects the runtime, verifies compatibility, installs matching
 CuPy, and configures the environment for optimal operation.
 
@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 # The CUDA version our fork was compiled against
 COMPILED_CUDA_VERSION = (12, 6)
 # SM architectures we have native SASS for (PTX fallback for newer)
-COMPILED_SM_TARGETS = [80, 86, 89, 90]
+COMPILED_SM_TARGETS = [80, 86, 89, 90, 100, 120]
 
 # Driver -> max CUDA version mapping (from NVIDIA compatibility table)
 DRIVER_CUDA_MAP = {

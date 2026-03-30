@@ -460,15 +460,15 @@ if TF in SKIP_CROSSES_TFS:
     log(f"  Matrix signal comes from base feature diversity on {TF}")
 
 # --- Dynamic OMP/NUMBA for cross gen phase ---
-# OMP stays at 4 (limits sparse matmul thread exhaustion on 256-core machines).
-# NUMBA gets full cpu_count for the binarization phase (percentile threshold calc is
-# deterministic regardless of thread count — Perplexity-validated 2026-03-30).
-# v2_cross_generator.py resets NUMBA to 4 before the sparse matmul loop.
-os.environ['OMP_NUM_THREADS'] = '4'
-_numba_threads_binarize = cpu_count  # Full cores for binarization (deterministic)
-_numba_threads_matmul = 4            # Limited for sparse matmul (thread exhaustion prevention)
-os.environ['NUMBA_NUM_THREADS'] = str(_numba_threads_binarize)
-log(f"Cross gen phase: OMP_NUM_THREADS=4, NUMBA_NUM_THREADS={_numba_threads_binarize} (binarization) → {_numba_threads_matmul} (matmul, set by cross_generator)")
+# Full core count for both OMP (MKL SpGEMM) and NUMBA (prange kernels).
+# Thread exhaustion is prevented by threadpoolctl scoping in _mkl_dot(), not
+# by global throttling. MKL_DYNAMIC=FALSE prevents MKL from auto-shrinking.
+os.environ['OMP_NUM_THREADS'] = str(cpu_count)
+os.environ['NUMBA_NUM_THREADS'] = str(cpu_count)
+os.environ['MKL_DYNAMIC'] = 'FALSE'
+os.environ.setdefault('OMP_PROC_BIND', 'close')
+os.environ.setdefault('OMP_PLACES', 'cores')
+log(f"Cross gen phase: OMP_NUM_THREADS={cpu_count}, NUMBA_NUM_THREADS={cpu_count}, MKL_DYNAMIC=FALSE (all {cpu_count} cores active)")
 
 npz_path = f'v2_crosses_BTC_{TF}.npz'
 # Check both CWD and _SCRIPT_DIR for existing NPZ

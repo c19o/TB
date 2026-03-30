@@ -76,19 +76,19 @@ class _GpuHistHandle(ctypes.c_void_p):
 # Return code constants (must match gpu_histogram.h enum)
 # ---------------------------------------------------------------------------
 GPU_HIST_OK = 0
-GPU_HIST_ERR_CUDA = 1
+GPU_HIST_ERR_NO_DEVICE = 1
 GPU_HIST_ERR_OOM = 2
 GPU_HIST_ERR_INVALID_ARG = 3
-GPU_HIST_ERR_NOT_INIT = 4
-GPU_HIST_ERR_INTERNAL = 5
+GPU_HIST_ERR_CUDA = 4
+GPU_HIST_ERR_NOT_INIT = 5
 
 _RC_MESSAGES = {
     GPU_HIST_OK: "OK",
-    GPU_HIST_ERR_CUDA: "CUDA runtime error",
+    GPU_HIST_ERR_NO_DEVICE: "No CUDA-capable GPU found or device_id out of range",
     GPU_HIST_ERR_OOM: "GPU out of memory",
     GPU_HIST_ERR_INVALID_ARG: "Invalid argument",
+    GPU_HIST_ERR_CUDA: "CUDA runtime error",
     GPU_HIST_ERR_NOT_INIT: "Not initialized (call init first)",
-    GPU_HIST_ERR_INTERNAL: "Internal error",
 }
 
 
