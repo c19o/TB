@@ -1,199 +1,142 @@
-# V3.3 Session Resume — 2026-03-30
+# V3.3 Session Resume — 2026-03-30 (Optimization Company + 1w Training)
 
-## INSTRUCTION TO NEW SESSION: Read this file completely. Then read v3.3/CLAUDE.md, v3.3/UNWIRED_OPTIMIZATIONS.md, v3.3/FINAL_AUDIT.md. Ask the user what to do next.
-
----
-
-## STATUS: OPTIMIZATION SPRINT COMPLETE — 9 Branches Merged, Needs Final Polish + Audit
-
-**Previous training results INVALID** — 12+ mechanisms were silently killing rare esoteric signals (see gpu_histogram_fork/GPU_SESSION_RESUME.md). All have been fixed this session.
+## INSTRUCTION TO NEW SESSION
+Read this file completely. Then read v3.3/CLAUDE.md. Resume from where we left off — bugs need fixing, features need adding, then retrain 1w on the running cloud machine.
 
 ---
 
-## WHAT WAS DONE THIS SESSION (2026-03-30)
-
-### Wave 1: 15 Core Optimizations (8 dev agents, git worktrees)
-All committed and merged into v3.3:
-1. **Numba prange sorted-index intersection** + L2 cache sort — `numba_cross_kernels.py`
-2. **Parallel 13 cross steps** + memory-aware scheduling — `AdaptiveChunkController` in `v2_cross_generator.py`
-3. **Adaptive RIGHT_CHUNK controller** — RSS-based sizing
-4. **Bitpacked POPCNT co-occurrence** — `bitpack_utils.py`
-5. **Memmap CSC streaming** — `memmap_merge.py` (1h: 1.8TB→5GB, 15m: 3TB→10GB)
-6. **Atomic NPZ + indices-only storage** — `atomic_io.py` (50% less I/O)
-7. **CSC format for LightGBM** — avoids CSR→column transpose
-8. **WilcoxonPruner** inter-fold (warmup=120, patience=10)
-9. **extra_trees** in Optuna search space
-10. **Multi-GPU Optuna** — `multi_gpu_optuna.py` (cuda_sparse, requires 2+ GPUs)
-11. **GC disable** during training loops (try/finally protected)
-12. **NUMA interleave=all** for multi-socket
-13. **CUDA kernel speed** — batch H2D, vectorized launches, CSR.T dual storage
-14. **20min intra-step flush** for cross gen crash recovery
-15. **bin_construct_sample_cnt=5000** (40x faster Dataset scanning for binary)
-
-### Wave 2: 10 Game-Changing Discoveries (from 20 Perplexity expert reports)
-All committed and merged:
-16. **EFB Pre-Bundler** — `efb_prebundler.py` (10M→79K bundles, 128x histogram reduction)
-17. **Optuna param fixes** — bynode 0.7, bagging 0.7, min_gain floor removed
-18. **CPCV fold reduction** — 15→10 groups, 30 sampled paths (57% less CPCV)
-19. **Sobol trade optimizer** — `exhaustive_optimizer.py` (3-5hr→30min, 131K Sobol + TPE refinement)
-20. **lleaves + feature pruning** — `inference_pruner.py`, `lleaves_compiler.py` (6M→5K, 5.4x predict)
-21. **Cost-sorted pair worklist** — nnz descending for load balance
-22. **THP=madvise** — all deploy scripts fixed (prevents 512x sparse bloat)
-23. **Process isolation per fold** — subprocess exits = zero fragmentation
-24. **fastmath=True** on `_parallel_cross_multiply` (binary 0/1 safe)
-25. **Sortino denominator FIXED** — was dividing by total_trades, now count_neg
-
-### Bug Fixes: 16 Found, All Resolved
-- BUG-C1: Warp shuffle `__ballot_sync` fix (commit 570e679)
-- BUG-C2: `cuda` → `cuda_sparse` for multi-GPU (commit on d1bd48cc)
-- BUG-H1: GPU contention guard for parallel cross (commit ae919bc)
-- BUG-H2: `num_gpus >= 2` for multi-GPU activation
-- CPCV temporal leakage: per-group purge loop (commit 979e5f9)
-- NUMA: `--cpunodebind=0` → `--interleave=all`
-- Optuna pruning: warmup 50→120, patience 5→10
-- Sortino: `total_trades` → `count_neg` (commit d2beb67)
-- Plus 8 low-severity (dead code, gc scope, CSC waste, etc.)
-
-### Merge: 9 Branches → v3.3
-- 37 files changed, +6,183 / -509 lines
-- 5 conflicts resolved manually
-- Optuna 0.7 floors merged LAST (overrides stale 0.5)
-
-### Research: 20 Expert Reports (all in v3.3/EXPERT_*.md)
-CUDA kernels, GPU memory, cuSPARSE, multi-GPU, CPU cache/NUMA, LightGBM EFB, Optuna HPO, Linux tuning, memory allocators, compilers/Numba, NVMe I/O, financial ML, rare signals, cloud hardware, sparse formats, Python perf, feature theory, trade optimizer, dataset build, inference optimization.
-
-### Audits: 9 Reports (all in v3.3/)
-QA_CROSSGEN_AUDIT.md, QA_TRAINING_AUDIT.md, QA_CASCADE_AUDIT.md, QA_MATRIX_THESIS_AUDIT.md, QA_VALIDATE_AUDIT.md, FINAL_AUDIT.md, DOUBLE_AUDIT_MATRIX.md, DOUBLE_AUDIT_CORRECTNESS.md, DOUBLE_AUDIT_BUGFIXES.md, POST_FIX_AUDIT.md, QA_GAMECHANGERS_AUDIT.md
+## ACTIVE MACHINE (STILL RUNNING — $0.54/hr)
+- **Instance 33852303** — Ontario CA, 1x RTX 5090, EPYC 7B12 128c, 258GB RAM
+- **SSH**: `ssh -p 12302 root@ssh7.vast.ai`
+- **Status**: Training KILLED mid-run (accuracy was bad due to 3 bugs). Machine still alive.
+- **Files deployed**: All .py symlinked in /workspace/, 24+ .db files, kp_history_gfz.txt
+- **EVALUATE BEFORE DESTROYING** — machine has partial results
 
 ---
 
-## WHAT STILL NEEDS TO BE DONE (Next Session Plan)
+## WHAT WAS DONE THIS SESSION
 
-### Phase 1: Fold-Parallel CPCV (THE Universal Bottleneck Fix)
-CPCV is 36-66% of pipeline time for every TF. Must distribute folds across 8 GPUs.
-- **Check branch `ceo/backend-dev-3bb0a3fb`** — agent was building this but may not have finished
-- If incomplete: rebuild with company (3-5 agents)
-- Architecture: each fold in subprocess, assigned GPU via `gpu_device_id=i`, mmap data sharing
-- 30 CPCV paths / 8 GPUs = 4 rounds instead of 30 sequential
-- Expected impact: CPCV 6.5hr → 1.1hr for 4h TF
+### Phase 1: Optimization Company (COMPLETED)
+- **Wave 1**: 13 read-only analysts found **5 CRITICAL + 16 HIGH** issues
+- **Wave 2**: 12 fix agents implemented all fixes on worktree branches
+- **Audit Company 2**: 25 auditors verified work. Matrix thesis verified clean.
+- **Perplexity Team**: 10 agents (5 fixers + 5 researchers) found:
+  - SMOKING GUN: `deterministic=True` in config.py forcing single-threaded histograms (killing ALL GPU parallelism)
+  - `max_bin=7` instead of 255 (36x less histogram memory for binary features)
+  - `OMP_NUM_THREADS=4` hardcoded, throttling cross gen to 3% of cores
+  - cuSPARSE for cross gen could give 5-15x speedup
+  - CUDA bitpack kernel: 0.5-2 sec cross gen (vs 30-120s current)
+  - Multi-GPU Sobol optimizer implemented (7 GPUs parallel)
+  - Assembly-line pipeline orchestrator built (overlap CPU/GPU phases)
+  - Complete Linux tuning script (cloud_setup.sh)
+  - LightGBM compile from source with -O3 -march=znver4 for AVX-512
 
-### Phase 2: 25-Person World-Class Optimization Company
-Deep scrutiny of EVERY pipeline stage, Perplexity-enabled, matrix-aware:
+### Phase 2: Merge (COMPLETED)
+4 branches merged into v3.3-clean:
+1. `ceo/backend-dev-c45180ac` — CUDA fork fixes (GPU dead-code removed, ballot_sync, error enum, SM_120)
+2. `ceo/backend-dev-55d694ab` — Optimizer GPU fixes (multi-GPU Sobol, spawn context, ALLOW_CPU removal)
+3. `ceo/backend-dev-552c4cfd` — Optuna fixes (WilcoxonPruner, n_jobs divisor, validation gate, cache staleness)
+4. `ceo/backend-dev-1abf748a` — CPCV fixes (dense guard, thread cap, timeout, SharedMemory)
+- Pushed to GitHub: https://github.com/c19o/TB-3.3 (remote: tb33)
 
-**Hardware Architecture Experts:**
-- CPU expert: Intel vs AMD EPYC for training? Core count vs clock speed for sparse?
-- RAM expert: DDR4 vs DDR5 bandwidth impact on sparse matrix traversal
-- Bus expert: PCIe 4.0 vs 5.0 for H2D transfers, NVLink for multi-GPU
-- GPU expert: RTX 5090 vs A100-80GB vs H100 for our specific workload
-- NVMe expert: io_uring, direct I/O, readahead for memmap streaming
+### Phase 3: 1w Training Run (FAILED — 3 bugs found)
+**3 bugs blocking proper training:**
+1. **Optuna crashes on dense data** — `runtime_checks.py:51` calls `.nnz` on dense ndarray. 1w has no cross features = dense. Optuna never ran.
+2. **LSTM fails on RTX 5090 (sm_120)** — PyTorch CUDA incompatible with SM 120.
+3. **--no-parallel-splits breaks downstream** — optimizer, PBO, meta, audit crash on unrecognized CLI arg.
 
-**OS/System Experts:**
-- Linux kernel: scheduler tuning, cgroup memory, isolcpus for training cores
-- Driver expert: CUDA driver version impact, NVIDIA persistence mode
-- Memory: tcmalloc Temeraire vs jemalloc arena tuning
-- THP: madvise defrag settings, khugepaged scan interval
+**1w CPCV results (unoptimized defaults, bugs):**
+- Acc=37.8%, PrecL=18.4%, PrecS=35.5% (10 paths)
+- 7/10 paths Trees=1, ZERO esoteric features active
+- NOT TRADABLE — needs Optuna + feature fixes + param tuning
 
-**Pipeline Stage Experts (GPU fork AND non-GPU fork):**
-- Feature build: pandas .apply() replacement, vectorized engineering
-- Cross gen: Numba codegen quality, AVX-512 utilization, CSC tiling
-- EFB pre-bundler: density-tier packing, collision probability analysis
-- Dataset construction: save_binary caching, parallel chunk construction
-- Optuna HPO: CMA-ES vs TPE, Hyperband multi-fidelity, warm-start quality
-- LightGBM training: histogram computation, EFB bundle utilization
-- CPCV validation: fold-parallel GPU distribution, purge correctness
-- Trade optimizer: Sobol coverage quality, Sortino online accumulation
-- Inference: lleaves compilation, feature pruning, live latency
+### Phase 4: Expert Analysis (COMPLETED)
+**Astrology Expert:** 4 dead features, no eclipse/natal transit features called, snapshot bias on weekly
+**Numerology Expert:** No week-of-year DR, no month DR, no halving cycle features, no date gematria
+**Feature Trimming:** 10 constant features to remove, 5+ to add (week-of-year, quarter, halving, eclipse, etc.)
+**Feature Importance:** 96/3665 active (2.6%), all TA, zero esoteric — expected for 819 rows per Perplexity
 
-**Per-TF Specialists:**
-- 1w: 818 rows, CPU-optimal, what's the fastest possible?
-- 1d: 5,733 rows, GPU marginal, hybrid CPU/GPU?
-- 4h: 8,794 rows, GPU sweet spot starts
-- 1h: 90K rows, memmap + GPU, 512GB RAM constraint
-- 15m: 227K rows, peak GPU utilization, 1TB+ RAM
+### Phase 5: Training Parameter Team (IN PROGRESS — 5 agents were running)
+Analyzing: LightGBM hyperparams, Optuna search space, CPCV config, class weights, trade optimizer params
 
-### Phase 3: 25-Person Full Pipeline Audit
-End-to-end audit covering EVERY step from raw data to deployed model:
-1. **Feature build** → correct features computed? NaN preserved?
-2. **Cross gen** → all 13 steps? co-occurrence threshold? memmap lossless?
-3. **EFB pre-bundler** → zero features dropped? collision-free? reversible?
-4. **Dataset construction** → feature_pre_filter=False? bin_construct optimized?
-5. **Optuna HPO** → param ranges correct? warm-start? WilcoxonPruner safe?
-6. **LightGBM training** → cuda_sparse? feature_fraction>=0.7? bagging>=0.7?
-7. **CPCV validation** → purge per-group? embargo correct? fold-parallel safe?
-8. **Trade optimizer** → Sortino correct? Sobol coverage? parameter space?
-9. **Model output** → accuracy floor? backup before overwrite? lleaves compiled?
-10. **Inference** → pruned features only? fallback chain? latency acceptable?
-11. **Matrix thesis** → ALL features preserved end-to-end? No silent filtering?
-
-### Phase 4: Push to Git
-Only after Phase 3 audit passes.
+### Phase 6: Bug Fix + Feature Add (IN PROGRESS — 2 agents were running)
+1. Bug fixer — fixing 3 bugs (dense .nnz, LSTM sm_120, --no-parallel-splits)
+2. Feature engineer — adding 10 weekly features, trimming 10 constant ones
 
 ---
 
-## CURRENT ETAs (Post All Optimizations, Pre-Fold-Parallel CPCV)
+## WHAT NEEDS TO BE DONE NEXT SESSION
 
-### On 8x RTX 5090 + EPYC 128c + 512GB-1TB RAM
+### Priority 1: Fix 3 Bugs
+1. `runtime_checks.py:51` — add `scipy.sparse.issparse(X)` guard before `.nnz`
+2. LSTM + RTX 5090 — upgrade PyTorch or graceful skip with WARNING
+3. Remove `--no-parallel-splits` CLI arg, use env var instead
 
-| TF | Baseline | **Expected** | With Fold-Parallel CPCV | Cost |
-|----|---------|-------------|------------------------|------|
-| **1w** | 3.0 hr | **47 min** | ~25 min | ~$2 |
-| **1d** | 8.5 hr | **4.1 hr** | ~2 hr | ~$7 |
-| **4h** | 21 hr | **9.8 hr** | ~4 hr | ~$14 |
-| **1h** | 45 hr | **~12 hr** | ~5-6 hr | ~$20 |
-| **15m** | 87 hr | **~20 hr** | ~8-10 hr | ~$35 |
-| **ALL 5** | **165 hr** | **~47 hr** | **~20-23 hr** | **~$78** |
+### Priority 2: Add Weekly Features (feature_library.py)
+- TRIM: 10 constant features for 1w (hour_sin/cos, dow_sin/cos, day_of_week, is_monday, is_friday, is_weekend, day_of_month, is_month_end)
+- ADD: week_of_year sin/cos, week_digital_root, month_digital_root, quarter sin/cos, year_in_halving_cycle, weeks_since_halving, eclipse window, BTC natal transit, Jupiter-Saturn regime, Mercury retrograde days
 
-**Bottleneck after fold-parallel CPCV**: Final Retrain (single-GPU, can't parallelize without NCCL histogram aggregation)
+### Priority 3: Apply Config Overrides (CRITICAL — not yet in config.py)
+- `deterministic=False` (currently True — kills GPU parallelism)
+- `max_bin=7` (currently 255 — 36x waste for binary features)
+- `OMP_NUM_THREADS=128` (currently hardcoded 4 in v2_cross_generator.py:72)
 
-### Cloud Machine Recommendations (from EXPERT_CLOUD_HARDWARE.md)
-- **1w/1d**: 8x RTX 4090 vast.ai ($3-4/hr) — cheapest, proven
-- **4h/1h**: 8x A100-80GB vast.ai ($8-12/hr) — best balance
-- **15m**: Lambda 8xH100 ($32/hr, 1.8TB RAM) or GCP A3 spot ($3-10/hr)
-- **MI300X**: Hard no — our CUDA fork doesn't port to ROCm
+### Priority 4: Tune 1w Parameters
+- Get parameter team results (5 agents were analyzing)
+- Likely: higher LR (0.1+), fewer CPCV groups (3,1), lower ES patience, adjusted class weights
 
----
+### Priority 5: Retrain 1w on Cloud Machine
+- Machine 33852303 STILL RUNNING at $0.54/hr — DESTROY IF NOT NEEDED SOON
+- After fixes: SCP updated code, rerun
 
-## KEY FILES ON DISK
-
-### New Files Created This Session
-| File | Purpose |
-|------|---------|
-| `numba_cross_kernels.py` | Numba prange sorted-index intersection + L2 sort |
-| `bitpack_utils.py` | POPCNT co-occurrence pre-filter |
-| `memmap_merge.py` | Two-pass streaming CSC merge (1h/15m OOM fix) |
-| `atomic_io.py` | Atomic NPZ + indices-only + .npy mmap |
-| `multi_gpu_optuna.py` | Multi-GPU Optuna trial distribution |
-| `efb_prebundler.py` | External EFB pre-bundler (10M→79K bundles) |
-| `inference_pruner.py` | Feature extraction + pruned set creation |
-| `lleaves_compiler.py` | LLVM model compilation for 5.4x predict |
-| 20x `EXPERT_*.md` | Perplexity research reports |
-| 11x `QA_*.md` + `FINAL_*.md` | Audit reports |
-| `UNWIRED_OPTIMIZATIONS.md` | What's coded but not connected |
-| `MERGE_NOTES.md` | Conflict resolution guide |
-
-### Git State
-- **Branch**: v3.3
-- **Latest commit**: merge of 9 CEO branches + 33 report files
-- **Worktrees**: `ceo/backend-dev-3bb0a3fb` may have partial fold-parallel CPCV work
-- **NOT pushed** — waiting for Phase 3 audit
-
-### Training Status (unchanged from previous session)
-| TF | Status | Notes |
-|----|--------|-------|
-| 1w | NEEDS RETRAIN | All previous results INVALID (signal-killing params fixed) |
-| 1d | NEEDS RETRAIN | Artifacts ready (NPZ, parquet) |
-| 4h | NEEDS RETRAIN | Artifacts ready |
-| 1h | NEEDS CROSS GEN + TRAIN | Memmap now implemented |
-| 15m | NEEDS CROSS GEN + TRAIN | Memmap now implemented |
+### Priority 6: Move to 1d
+- After 1w completes, move to 1d (same machine or bigger)
 
 ---
 
-## SESSION STATS
-- **~120 CEO sessions** launched
-- **~$105 total cost**
-- **25 optimizations + 10 game-changers = 35 total improvements**
-- **20 Perplexity expert research reports**
-- **11 audit reports**
-- **16 bugs found, all resolved**
-- **Matrix thesis: VERIFIED CLEAN** across all waves
-- **9 branches merged** (37 files, +6,183 lines)
+## REVISED ETAs (All Optimizations Applied)
+
+### 1x RTX 5090 + 128c EPYC
+| TF | TOTAL | Peak RAM | Peak VRAM |
+|----|-------|----------|-----------|
+| 1w | 3-5 min | 4 GB | 4 GB |
+| 1d | 16-24 min | 16 GB | 8 GB |
+| 4h | ~20 min | 24 GB | 10 GB |
+| 1h | 65-107 min | 50 GB | 10 GB |
+| 15m | 5-7.5 hr | 65 GB | 10 GB |
+
+### 8x RTX 5090 + 128c EPYC
+| TF | TOTAL | Peak RAM |
+|----|-------|----------|
+| 1w | 2-3.5 min | 4 GB |
+| 1d | 10-16 min | 16 GB |
+| 4h | ~10 min | 24 GB |
+| 1h | 55-92 min | 50 GB |
+| 15m | 3.5-5.5 hr | 65 GB |
+| **ALL 5** | **~6-8 hr** | |
+
+256GB RAM is plenty. 1TB overkill.
+
+---
+
+## WORKTREES TO PRUNE
+~50 worktrees exist from CEO agents. Run `ceo_prune_worktrees` and delete all `ceo/*` branches.
+
+## CEO SESSION STATS
+- ~200+ sessions this conversation
+- Total spend: ~$200+
+
+## GIT STATE
+- Branch: v3.3-clean
+- Latest commit: 7bfea64 (dense→sparse CPCV fix)
+- Pushed to: tb33 (github.com/c19o/TB-3.3)
+- Bug fixer + feature engineer agents may have uncommitted local changes — check `git status`
+
+## BEHAVIORAL RULES (REINFORCED)
+1. Claude Max = unlimited. No budget/turn caps on CEO agents.
+2. Worktrees OK (source-only repo, lightweight)
+3. ALL agents consult Perplexity with matrix thesis context
+4. NEVER solo debug — launch company
+5. Cut training short when results are clearly bad
+6. Document EVERYTHING scientifically
+7. 1w/1d need TF-specific features (month-of-year not day-of-year, long-term astrology cycles)
