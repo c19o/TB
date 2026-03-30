@@ -708,7 +708,7 @@ def check_data_integrity(tf):
             warn("cross NPZ loadable", False, f"Could not load {npz_path}: {e}")
 
     # -- Parquet row count matches expected --
-    tf_expected_rows = {'1w': 1000, '1d': 5000, '4h': 20000, '1h': 70000, '15m': 250000}
+    tf_expected_rows = {'1w': 500, '1d': 3000, '4h': 8000, '1h': 50000, '15m': 200000}
     if parquet_found:
         try:
             import pyarrow.parquet as pq

@@ -463,165 +463,181 @@ def _cpcv_split_worker(args_tuple):
     Returns: (wi, acc, prec_long, prec_short, mlogloss, best_iter,
               model_bytes, preds_3c, y_test, test_idx_valid,
               importance, is_acc, is_mlogloss, is_sharpe)
+    On error: returns (wi, None, ..., None) with error logged to stderr.
     """
     (wi, train_idx, test_idx, X_data, X_indices, X_indptr, X_shape,
      y_3class, sample_weights, feature_cols, lgb_params,
      num_boost_round, tf_name, gpu_id,
      hmm_overlay, hmm_overlay_names) = args_tuple
 
-    import os
+    import os, sys, traceback
     import numpy as np
     from scipy import sparse
     import lightgbm as lgb
     from sklearn.metrics import accuracy_score, precision_score, log_loss
 
-    # Wave 3: SharedMemory IPC — reconstruct CSR from shared memory if available
-    if isinstance(X_data, dict):
-        # X_data is actually _shm_info dict; X_indices/X_indptr/X_shape are None
-        from multiprocessing.shared_memory import SharedMemory as _SHM
-        _shm_info = X_data
-        _shm_d = _SHM(name=_shm_info['data_name'], create=False)
-        _shm_i = _SHM(name=_shm_info['indices_name'], create=False)
-        _shm_p = _SHM(name=_shm_info['indptr_name'], create=False)
-        _data = np.ndarray(_shm_info['data_shape'], dtype=np.dtype(_shm_info['data_dtype']), buffer=_shm_d.buf)
-        _indices = np.ndarray(_shm_info['indices_shape'], dtype=np.dtype(_shm_info['indices_dtype']), buffer=_shm_i.buf)
-        _indptr = np.ndarray(_shm_info['indptr_shape'], dtype=np.dtype(_shm_info['indptr_dtype']), buffer=_shm_p.buf)
-        X_all = sparse.csr_matrix((_data, _indices, _indptr), shape=_shm_info['matrix_shape'], copy=False)
-        _shm_d.close()
-        _shm_i.close()
-        _shm_p.close()
-    else:
-        # Reconstruct matrix in worker from pickle'd arrays
-        X_all = sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
+    # Isolate OpenMP thread count per worker (safety net against fork inheritance)
+    _nth = str(lgb_params.get('num_threads', 1))
+    os.environ['OMP_NUM_THREADS'] = _nth
+    os.environ['MKL_NUM_THREADS'] = _nth
 
-    y_train_raw = y_3class[train_idx]
-    y_test_raw = y_3class[test_idx]
-    train_valid = ~np.isnan(y_train_raw)
-    test_valid = ~np.isnan(y_test_raw)
+    try:
+        # Wave 3: SharedMemory IPC — reconstruct CSR from shared memory if available
+        if isinstance(X_data, dict):
+            # X_data is actually _shm_info dict; X_indices/X_indptr/X_shape are None
+            from multiprocessing.shared_memory import SharedMemory as _SHM
+            _shm_info = X_data
+            _shm_d = _SHM(name=_shm_info['data_name'], create=False)
+            _shm_i = _SHM(name=_shm_info['indices_name'], create=False)
+            _shm_p = _SHM(name=_shm_info['indptr_name'], create=False)
+            _data = np.ndarray(_shm_info['data_shape'], dtype=np.dtype(_shm_info['data_dtype']), buffer=_shm_d.buf)
+            _indices = np.ndarray(_shm_info['indices_shape'], dtype=np.dtype(_shm_info['indices_dtype']), buffer=_shm_i.buf)
+            _indptr = np.ndarray(_shm_info['indptr_shape'], dtype=np.dtype(_shm_info['indptr_dtype']), buffer=_shm_p.buf)
+            X_all = sparse.csr_matrix((_data, _indices, _indptr), shape=_shm_info['matrix_shape'], copy=False)
+            _shm_d.close()
+            _shm_i.close()
+            _shm_p.close()
+        else:
+            # Reconstruct matrix in worker from pickle'd arrays
+            X_all = sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
 
-    X_train = X_all[train_idx][train_valid]
-    y_train = y_train_raw[train_valid].astype(int)
-    X_test = X_all[test_idx][test_valid]
-    y_test = y_test_raw[test_valid].astype(int)
+        y_train_raw = y_3class[train_idx]
+        y_test_raw = y_3class[test_idx]
+        train_valid = ~np.isnan(y_train_raw)
+        test_valid = ~np.isnan(y_test_raw)
 
-    # T-2 FIX: Apply per-fold HMM overlay (fitted on train-end-date only, no lookahead)
-    # hmm_overlay is (N, n_hmm_cols) float32 pre-computed by the parent process per fold.
-    # hstack only on the subset rows — cheap since overlay is small (4 cols).
-    if hmm_overlay is not None and len(hmm_overlay_names) > 0:
-        _Xtr_hmm = sparse.csr_matrix(hmm_overlay[train_idx][train_valid])
-        X_train = sparse.hstack([X_train, _Xtr_hmm], format='csr')
-        del _Xtr_hmm
-        _Xte_hmm = sparse.csr_matrix(hmm_overlay[test_idx][test_valid])
-        X_test = sparse.hstack([X_test, _Xte_hmm], format='csr')
-        del _Xte_hmm
-        feature_cols = list(feature_cols) + list(hmm_overlay_names)
-    test_idx_valid = test_idx[test_valid]
+        X_train = X_all[train_idx][train_valid]
+        y_train = y_train_raw[train_valid].astype(int)
+        X_test = X_all[test_idx][test_valid]
+        y_test = y_test_raw[test_valid].astype(int)
 
-    min_train = 50 if tf_name in ('1w', '1d') else 300
-    min_test = 20 if tf_name in ('1w', '1d') else 50
-    n_train = X_train.shape[0]
-    n_test = X_test.shape[0]
-    if n_train < min_train or n_test < min_test:
+        # T-2 FIX: Apply per-fold HMM overlay (fitted on train-end-date only, no lookahead)
+        # hmm_overlay is (N, n_hmm_cols) float32 pre-computed by the parent process per fold.
+        # hstack only on the subset rows — cheap since overlay is small (4 cols).
+        if hmm_overlay is not None and len(hmm_overlay_names) > 0:
+            _Xtr_hmm = sparse.csr_matrix(hmm_overlay[train_idx][train_valid])
+            X_train = sparse.hstack([X_train, _Xtr_hmm], format='csr')
+            del _Xtr_hmm
+            _Xte_hmm = sparse.csr_matrix(hmm_overlay[test_idx][test_valid])
+            X_test = sparse.hstack([X_test, _Xte_hmm], format='csr')
+            del _Xte_hmm
+            feature_cols = list(feature_cols) + list(hmm_overlay_names)
+        test_idx_valid = test_idx[test_valid]
+
+        min_train = 50 if tf_name in ('1w', '1d') else 300
+        min_test = 20 if tf_name in ('1w', '1d') else 50
+        n_train = X_train.shape[0]
+        n_test = X_test.shape[0]
+        if n_train < min_train or n_test < min_test:
+            return (wi, None, None, None, None, None, None, None, None, None, None, None, None, None)
+
+        w_train = sample_weights[train_idx][train_valid]
+
+        params = lgb_params.copy()
+
+        # 85/15 train/val split for early stopping — scale floor to dataset size
+        # For 1w (443 train rows), floor=100 steals 23% leaving only 343 for training.
+        # Use 15% target with floor scaled to max(20, n_train//10) instead.
+        _val_floor = max(20, n_train // 10)
+        val_size = max(int(n_train * 0.15), _val_floor)
+        if val_size >= n_train - _val_floor:
+            val_size = max(n_train // 5, 20)
+        X_val_es = X_train[-val_size:]
+        y_val_es = y_train[-val_size:]
+        w_val_es = w_train[-val_size:]
+        X_train_es = X_train[:-val_size]
+        y_train_es = y_train[:-val_size]
+        w_train_es = w_train[:-val_size]
+
+        _w_ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
+        dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
+                             feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
+        dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
+        _es_rounds_w = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
+
+        # GPU sparse path: detect in-worker (subprocess doesn't inherit parent globals)
+        _worker_gpu = hasattr(lgb.Booster, 'set_external_csr') and os.environ.get('ALLOW_CPU', '0') != '1'
+        if _worker_gpu and sparse.issparse(X_train_es):
+            _X_csr_w = X_train_es.tocsr() if not isinstance(X_train_es, sparse.csr_matrix) else X_train_es
+            _gpu_params = dict(params)
+            _gpu_params['device_type'] = 'cuda_sparse'
+            _gpu_params.pop('force_col_wise', None)
+            if 'histogram_pool_size' not in _gpu_params:
+                _gpu_params['histogram_pool_size'] = 512
+            # No CPU fallback — GPU-or-nothing
+            # If set_external_csr fails, crash loud
+            booster = lgb.Booster(_gpu_params, dtrain)
+            booster.set_external_csr(_X_csr_w)
+            booster.add_valid(dval, 'val')
+            best_score_w = None
+            best_iter_w = 0
+            _hb_w = None  # higher_better flag
+            for _ri in range(num_boost_round):
+                booster.update()
+                val_result = booster.eval_valid()
+                if val_result:
+                    _sc = val_result[0][2]
+                    if _hb_w is None:
+                        _hb_w = val_result[0][3]
+                        best_score_w = _sc
+                        best_iter_w = _ri + 1
+                    elif (_hb_w and _sc > best_score_w) or (not _hb_w and _sc < best_score_w):
+                        best_score_w = _sc
+                        best_iter_w = _ri + 1
+                    elif (_ri + 1) - best_iter_w >= _es_rounds_w:
+                        break
+            model = booster
+            model.best_iteration = best_iter_w if best_iter_w > 0 else (_ri + 1)
+            del _X_csr_w
+        else:
+            model = lgb.train(
+                params, dtrain,
+                num_boost_round=num_boost_round,
+                valid_sets=[dtrain, dval],
+                valid_names=['train', 'val'],
+                callbacks=[lgb.early_stopping(_es_rounds_w), lgb.log_evaluation(0)],
+            )
+
+        # OOS predictions — use best_iteration so GPU path (which no longer truncates via
+        # model_to_string) evaluates only the first best_iter trees, identical to the
+        # old model_to_string() restore but without 87MB × N serializations.
+        preds_3c = model.predict(X_test, num_iteration=model.best_iteration)
+        pred_labels = np.argmax(preds_3c, axis=1)
+        acc = float(accuracy_score(y_test, pred_labels))
+        prec_long = float(precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0))
+        prec_short = float(precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0))
+        mlogloss = float(log_loss(y_test, preds_3c, labels=[0, 1, 2]))
+
+        # IS metrics for PBO
+        is_preds_3c = model.predict(X_train, num_iteration=model.best_iteration)
+        is_pred_labels = np.argmax(is_preds_3c, axis=1)
+        is_acc = float(accuracy_score(y_train, is_pred_labels))
+        is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
+        _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
+        _is_std = np.std(_is_sim_ret, ddof=1)
+        is_sharpe = float(np.mean(_is_sim_ret) / max(_is_std, 1e-10) * np.sqrt(252))
+
+        importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='gain')))
+
+        # Serialize model
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix='.txt', delete=False)
+        tmp.close()
+        model.save_model(tmp.name)
+        with open(tmp.name, 'rb') as f:
+            model_bytes = f.read()
+        import os as _os
+        _os.unlink(tmp.name)
+
+        return (wi, acc, prec_long, prec_short, mlogloss, model.best_iteration,
+                model_bytes, preds_3c.copy(), y_test.copy(), test_idx_valid.copy(),
+                importance, is_acc, is_mlogloss, is_sharpe)
+
+    except Exception as _worker_err:
+        # Log to stderr (visible in parent) and return graceful failure tuple
+        print(f"[CPCV WORKER {wi}] CRASH: {type(_worker_err).__name__}: {_worker_err}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return (wi, None, None, None, None, None, None, None, None, None, None, None, None, None)
-
-    w_train = sample_weights[train_idx][train_valid]
-
-    params = lgb_params.copy()
-
-    # 85/15 train/val split for early stopping
-    val_size = max(int(n_train * 0.15), 100)
-    if val_size >= n_train:
-        val_size = max(n_train // 5, 20)
-    X_val_es = X_train[-val_size:]
-    y_val_es = y_train[-val_size:]
-    w_val_es = w_train[-val_size:]
-    X_train_es = X_train[:-val_size]
-    y_train_es = y_train[:-val_size]
-    w_train_es = w_train[:-val_size]
-
-    _w_ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
-    dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
-                         feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
-    dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, feature_name=feature_cols, free_raw_data=False, params=_w_ds_params)
-    _es_rounds_w = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
-
-    # GPU sparse path: detect in-worker (subprocess doesn't inherit parent globals)
-    _worker_gpu = hasattr(lgb.Booster, 'set_external_csr') and os.environ.get('ALLOW_CPU', '0') != '1'
-    if _worker_gpu and sparse.issparse(X_train_es):
-        _X_csr_w = X_train_es.tocsr() if not isinstance(X_train_es, sparse.csr_matrix) else X_train_es
-        _gpu_params = dict(params)
-        _gpu_params['device_type'] = 'cuda_sparse'
-        _gpu_params.pop('force_col_wise', None)
-        if 'histogram_pool_size' not in _gpu_params:
-            _gpu_params['histogram_pool_size'] = 512
-        # No CPU fallback — GPU-or-nothing
-        # If set_external_csr fails, crash loud
-        booster = lgb.Booster(_gpu_params, dtrain)
-        booster.set_external_csr(_X_csr_w)
-        booster.add_valid(dval, 'val')
-        best_score_w = None
-        best_iter_w = 0
-        _hb_w = None  # higher_better flag
-        for _ri in range(num_boost_round):
-            booster.update()
-            val_result = booster.eval_valid()
-            if val_result:
-                _sc = val_result[0][2]
-                if _hb_w is None:
-                    _hb_w = val_result[0][3]
-                    best_score_w = _sc
-                    best_iter_w = _ri + 1
-                elif (_hb_w and _sc > best_score_w) or (not _hb_w and _sc < best_score_w):
-                    best_score_w = _sc
-                    best_iter_w = _ri + 1
-                elif (_ri + 1) - best_iter_w >= _es_rounds_w:
-                    break
-        model = booster
-        model.best_iteration = best_iter_w if best_iter_w > 0 else (_ri + 1)
-        del _X_csr_w
-    else:
-        model = lgb.train(
-            params, dtrain,
-            num_boost_round=num_boost_round,
-            valid_sets=[dtrain, dval],
-            valid_names=['train', 'val'],
-            callbacks=[lgb.early_stopping(_es_rounds_w), lgb.log_evaluation(0)],
-        )
-
-    # OOS predictions — use best_iteration so GPU path (which no longer truncates via
-    # model_to_string) evaluates only the first best_iter trees, identical to the
-    # old model_to_string() restore but without 87MB × N serializations.
-    preds_3c = model.predict(X_test, num_iteration=model.best_iteration)
-    pred_labels = np.argmax(preds_3c, axis=1)
-    acc = float(accuracy_score(y_test, pred_labels))
-    prec_long = float(precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0))
-    prec_short = float(precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0))
-    mlogloss = float(log_loss(y_test, preds_3c, labels=[0, 1, 2]))
-
-    # IS metrics for PBO
-    is_preds_3c = model.predict(X_train, num_iteration=model.best_iteration)
-    is_pred_labels = np.argmax(is_preds_3c, axis=1)
-    is_acc = float(accuracy_score(y_train, is_pred_labels))
-    is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
-    _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
-    _is_std = np.std(_is_sim_ret, ddof=1)
-    is_sharpe = float(np.mean(_is_sim_ret) / max(_is_std, 1e-10) * np.sqrt(252))
-
-    importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='gain')))
-
-    # Serialize model
-    import tempfile
-    tmp = tempfile.NamedTemporaryFile(suffix='.txt', delete=False)
-    tmp.close()
-    model.save_model(tmp.name)
-    with open(tmp.name, 'rb') as f:
-        model_bytes = f.read()
-    import os as _os
-    _os.unlink(tmp.name)
-
-    return (wi, acc, prec_long, prec_short, mlogloss, model.best_iteration,
-            model_bytes, preds_3c.copy(), y_test.copy(), test_idx_valid.copy(),
-            importance, is_acc, is_mlogloss, is_sharpe)
 
 
 def _isolated_fold_worker(shared_dir, wi, train_idx, test_idx,
@@ -680,10 +696,11 @@ def _isolated_fold_worker(shared_dir, wi, train_idx, test_idx,
     w_train = np.array(sample_weights[train_idx][train_valid])
     params = lgb_params.copy()
 
-    # 85/15 train/val split for early stopping
+    # 85/15 train/val split for early stopping — floor scales with dataset size
     n_tr = X_train.shape[0]
-    val_size = max(int(n_tr * 0.15), 100)
-    if val_size >= n_tr:
+    _val_floor_i = max(20, n_tr // 10)
+    val_size = max(int(n_tr * 0.15), _val_floor_i)
+    if val_size >= n_tr - _val_floor_i:
         val_size = max(n_tr // 5, 20)
     X_val_es = X_train[-val_size:]
     y_val_es = y_train[-val_size:]
@@ -692,10 +709,11 @@ def _isolated_fold_worker(shared_dir, wi, train_idx, test_idx,
     y_train_es = y_train[:-val_size]
     w_train_es = w_train[:-val_size]
 
-    _ds_kw = dict(feature_name=feature_cols, free_raw_data=False,
-                  params={'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1})
-    dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es, **_ds_kw)
-    dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, **_ds_kw)
+    _ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
+    dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
+                         feature_name=feature_cols, free_raw_data=False, params=_ds_params)
+    dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
+                       feature_name=feature_cols, free_raw_data=False, params=_ds_params)
     _es_rounds = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
 
     model = lgb.train(
@@ -827,10 +845,11 @@ def _gpu_fold_worker(fold_id, gpu_id, shared_dir, train_idx, test_idx,
         w_train = np.array(sample_weights[train_idx][train_valid])
         params = lgb_params.copy()
 
-        # 85/15 train/val split for early stopping
+        # 85/15 train/val split for early stopping — floor scales with dataset size
         n_tr = X_train.shape[0]
-        val_size = max(int(n_tr * 0.15), 100)
-        if val_size >= n_tr:
+        _val_floor_g = max(20, n_tr // 10)
+        val_size = max(int(n_tr * 0.15), _val_floor_g)
+        if val_size >= n_tr - _val_floor_g:
             val_size = max(n_tr // 5, 20)
         X_val_es = X_train[-val_size:]
         y_val_es = y_train[-val_size:]
@@ -839,10 +858,11 @@ def _gpu_fold_worker(fold_id, gpu_id, shared_dir, train_idx, test_idx,
         y_train_es = y_train[:-val_size]
         w_train_es = w_train[:-val_size]
 
-        _ds_kw = dict(feature_name=feature_cols, free_raw_data=False,
-                      params={'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1})
-        dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es, **_ds_kw)
-        dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, **_ds_kw)
+        _ds_params = {'feature_pre_filter': False, 'max_bin': params.get('max_bin', 255), 'min_data_in_bin': 1}
+        dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es,
+                             feature_name=feature_cols, free_raw_data=False, params=_ds_params)
+        dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es,
+                           feature_name=feature_cols, free_raw_data=False, params=_ds_params)
         _es_rounds = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
 
         # GPU cuda_sparse training — after CUDA_VISIBLE_DEVICES isolation,
@@ -1159,6 +1179,7 @@ if __name__ == '__main__':
   except RuntimeError:
       pass  # already set
   from concurrent.futures import ProcessPoolExecutor
+  from concurrent.futures.process import BrokenProcessPool
   _parser = argparse.ArgumentParser()
   _parser.add_argument('--tf', action='append', help='Only train specific TFs (can repeat)')
   _parser.add_argument('--boost-rounds', type=int, default=800, help='LightGBM num_boost_round (default 800)')
@@ -1645,6 +1666,10 @@ if __name__ == '__main__':
               log(f"  Single GPU — sequential CPCV")
           else:
               # CPU path — original pickle checks apply
+              if not _X_all_is_sparse and _use_parallel_splits:
+                  _use_parallel_splits = False
+                  log(f"  Forcing sequential CPCV (DENSE matrix — parallel workers expect sparse CSR)")
+
               if _nnz_exceeds_int32 and _use_parallel_splits:
                   _use_parallel_splits = False
                   log(f"  Forcing sequential CPCV (CSR arrays too large for multiprocess pickle)")
@@ -1849,8 +1874,25 @@ if __name__ == '__main__':
                   _ram_workers = max(1, int(get_available_ram_gb() * 0.6 / max(0.1, _data_gb)))
               except (ImportError, Exception):
                   _ram_workers = _total_cores
-              _n_workers = int(os.environ.get('V3_CPCV_WORKERS', min(_pending_splits, _total_cores, _ram_workers)))
-              _threads_per_worker = max(1, _total_cores // _n_workers)
+              # Row-aware worker cap: LightGBM docs say >64 threads on <10K rows = poor scaling.
+              # For small datasets, fewer workers with more threads each is better than many workers.
+              _n_rows = X_all.shape[0]
+              if _n_rows < 2000:
+                  _row_workers = max(1, min(2, _pending_splits))  # 1w/1d: 1-2 workers max
+              elif _n_rows < 10000:
+                  _row_workers = max(1, min(4, _pending_splits))  # 4h: up to 4 workers
+              else:
+                  _row_workers = _pending_splits  # 1h/15m: full parallelism
+              _n_workers = int(os.environ.get('V3_CPCV_WORKERS', min(_pending_splits, _total_cores, _ram_workers, _row_workers)))
+              _threads_per_worker = max(1, min(32, _total_cores // _n_workers))
+              # Thread cap for small datasets: LightGBM says don't use >64 threads for <10K rows.
+              # For CPCV train sets (~54% of N), actual per-fold rows = N * 0.54.
+              # Scale thread cap: 1 thread per ~25 train rows, capped at _total_cores//_n_workers.
+              _approx_fold_rows = int(_n_rows * 0.54)
+              _thread_cap_by_rows = max(1, _approx_fold_rows // 25)
+              if _threads_per_worker > _thread_cap_by_rows:
+                  _threads_per_worker = _thread_cap_by_rows
+                  log(f"  Thread cap: {_thread_cap_by_rows} threads/worker (scaled to ~{_approx_fold_rows} fold rows)")
               log(f"\n  PARALLEL CPCV: {_pending_splits} pending splits, {_n_workers} workers x {_threads_per_worker} threads = {_n_workers * _threads_per_worker} total ({_total_cores} cores)")
 
               # Set num_threads per worker to avoid oversubscription (each worker gets fair share of cores)
@@ -1911,65 +1953,94 @@ if __name__ == '__main__':
                           _hmm_overlay_names_par,
                       ))
 
-              with ProcessPoolExecutor(max_workers=_n_workers) as executor:
-                  for result in executor.map(_cpcv_split_worker, worker_args):
-                      (wi, acc, prec_long, prec_short, mlogloss_val, best_iter,
-                       model_bytes, preds_3c, y_test, test_idx_valid,
-                       importance, is_acc, is_mlogloss, is_sharpe) = result
+              # Use 'spawn' context to avoid fork+OpenMP deadlock (GCC bug: forked
+              # OpenMP runtime is in undefined state, causes hangs/crashes in LightGBM).
+              import multiprocessing as _mp_ctx
+              _spawn_ctx = _mp_ctx.get_context('spawn')
 
-                      if acc is None:
-                          log(f"  Path {wi+1}/{len(splits)}: SKIP -- not enough samples")
-                          continue
+              _n_failed_folds = 0
+              try:
+                  with ProcessPoolExecutor(max_workers=_n_workers, mp_context=_spawn_ctx) as executor:
+                      for result in executor.map(_cpcv_split_worker, worker_args):
+                          (wi, acc, prec_long, prec_short, mlogloss_val, best_iter,
+                           model_bytes, preds_3c, y_test, test_idx_valid,
+                           importance, is_acc, is_mlogloss, is_sharpe) = result
 
-                      oos_predictions.append({
-                          'path': wi,
-                          'test_indices': test_idx_valid,
-                          'y_true': y_test,
-                          'y_pred_probs': preds_3c,
-                          'y_pred_labels': np.argmax(preds_3c, axis=1),
-                          'is_accuracy': is_acc,
-                          'is_mlogloss': is_mlogloss,
-                          'is_sharpe': is_sharpe,
-                      })
-                      window_results.append({
-                          'window': wi + 1, 'accuracy': acc,
-                          'prec_long': prec_long, 'prec_short': prec_short,
-                          'mlogloss': mlogloss_val,
-                          'train_size': 0, 'test_size': len(y_test),
-                          'n_trees': best_iter,
-                          'importance': importance,
-                      })
-                      log(f"  Path {wi+1}/{len(splits)}: "
-                          f"Acc={acc:.3f} PrecL={prec_long:.3f} PrecS={prec_short:.3f} mlogloss={mlogloss_val:.4f} Trees={best_iter}")
+                          if acc is None:
+                              log(f"  Path {wi+1}/{len(splits)}: SKIP -- not enough samples or worker error")
+                              _n_failed_folds += 1
+                              continue
 
-                      if acc > best_acc:
-                          best_acc = acc
-                          # Deserialize best model
-                          import tempfile as _tmpmod
-                          _tmp = _tmpmod.NamedTemporaryFile(suffix='.txt', delete=False)
-                          _tmp.write(model_bytes)
-                          _tmp.close()
-                          best_model_obj = lgb.Booster(model_file=_tmp.name)
-                          os.unlink(_tmp.name)
+                          oos_predictions.append({
+                              'path': wi,
+                              'test_indices': test_idx_valid,
+                              'y_true': y_test,
+                              'y_pred_probs': preds_3c,
+                              'y_pred_labels': np.argmax(preds_3c, axis=1),
+                              'is_accuracy': is_acc,
+                              'is_mlogloss': is_mlogloss,
+                              'is_sharpe': is_sharpe,
+                          })
+                          window_results.append({
+                              'window': wi + 1, 'accuracy': acc,
+                              'prec_long': prec_long, 'prec_short': prec_short,
+                              'mlogloss': mlogloss_val,
+                              'train_size': 0, 'test_size': len(y_test),
+                              'n_trees': best_iter,
+                              'importance': importance,
+                          })
+                          log(f"  Path {wi+1}/{len(splits)}: "
+                              f"Acc={acc:.3f} PrecL={prec_long:.3f} PrecS={prec_short:.3f} mlogloss={mlogloss_val:.4f} Trees={best_iter}")
 
-                      # Checkpoint after each fold (crash-safe resume)
-                      _completed_folds.add(wi)
-                      try:
-                          from atomic_io import atomic_save_pickle
-                          atomic_save_pickle({
-                              'oos_predictions': oos_predictions,
-                              'window_results': window_results,
-                              'completed_folds': list(_completed_folds),
-                              'best_acc': best_acc,
-                          }, _cpcv_ckpt_path)
-                      except ImportError:
-                          with open(_cpcv_ckpt_path, 'wb') as _ckf:
-                              pickle.dump({
+                          if acc > best_acc:
+                              best_acc = acc
+                              # Deserialize best model
+                              import tempfile as _tmpmod
+                              _tmp = _tmpmod.NamedTemporaryFile(suffix='.txt', delete=False)
+                              _tmp.write(model_bytes)
+                              _tmp.close()
+                              best_model_obj = lgb.Booster(model_file=_tmp.name)
+                              os.unlink(_tmp.name)
+
+                          # Checkpoint after each fold (crash-safe resume)
+                          _completed_folds.add(wi)
+                          try:
+                              from atomic_io import atomic_save_pickle
+                              atomic_save_pickle({
                                   'oos_predictions': oos_predictions,
                                   'window_results': window_results,
                                   'completed_folds': list(_completed_folds),
                                   'best_acc': best_acc,
-                              }, _ckf)
+                              }, _cpcv_ckpt_path)
+                          except ImportError:
+                              with open(_cpcv_ckpt_path, 'wb') as _ckf:
+                                  pickle.dump({
+                                      'oos_predictions': oos_predictions,
+                                      'window_results': window_results,
+                                      'completed_folds': list(_completed_folds),
+                                      'best_acc': best_acc,
+                                  }, _ckf)
+
+              except (BrokenProcessPool, Exception) as _pool_err:
+                  log(f"\n  PARALLEL CPCV POOL ERROR: {type(_pool_err).__name__}: {_pool_err}")
+                  log(f"  Completed {len(_completed_folds)} folds before crash — checkpoint saved")
+                  # If zero folds completed, this is a hard failure — propagate to cloud_run_tf.py
+                  if not window_results:
+                      for _sb in _shm_blocks:
+                          try:
+                              _sb.close()
+                              _sb.unlink()
+                          except Exception:
+                              pass
+                      raise RuntimeError(
+                          f"Parallel CPCV failed with 0 completed folds: {_pool_err}"
+                      ) from _pool_err
+                  else:
+                      log(f"  WARNING: {len(worker_args) - len(window_results)} folds lost — "
+                          f"continuing with {len(window_results)} completed folds")
+
+              if _n_failed_folds > 0:
+                  log(f"  WARNING: {_n_failed_folds} folds returned None (skipped or worker error)")
 
               # Wave 3: Cleanup SharedMemory blocks after parallel CPCV
               for _sb in _shm_blocks:
@@ -2289,8 +2360,9 @@ if __name__ == '__main__':
                   # Split training fold into 85% train + 15% validation for early stopping
                   # (never use test set for model selection — preserves OOS integrity)
                   n_tr = X_train.shape[0]
-                  val_size = max(int(n_tr * 0.15), 100)
-                  if val_size >= n_tr:
+                  _val_floor_s = max(20, n_tr // 10)
+                  val_size = max(int(n_tr * 0.15), _val_floor_s)
+                  if val_size >= n_tr - _val_floor_s:
                       val_size = max(n_tr // 5, 20)  # fallback for tiny folds
                   X_val_es = X_train[-val_size:]
                   y_val_es = y_train[-val_size:]
@@ -2665,9 +2737,10 @@ if __name__ == '__main__':
           # Accuracy floor — don't save a model worse than random
           ACCURACY_FLOOR = 0.40  # 3-class random = 33%, floor at 40%
           if final_acc < ACCURACY_FLOOR:
-              log(f"  ACCURACY BELOW FLOOR: {final_acc:.3f} < {ACCURACY_FLOOR}. "
-                  f"Model NOT saved. Check Optuna params or data.")
-              # Don't save the model, but do save the checkpoint for debugging
+              log(f"  *** ACCURACY BELOW FLOOR: {final_acc:.3f} < {ACCURACY_FLOOR}. "
+                  f"Model NOT saved. Check Optuna params or data. ***")
+              log(f"  FATAL: model_{tf_name}.json will NOT exist — pipeline cannot continue.")
+              sys.exit(1)
           else:
               # Atomic save: write to temp then rename (prevents corrupt model on crash)
               _model_path = f'{DB_DIR}/model_{tf_name}.json'
@@ -2744,6 +2817,11 @@ if __name__ == '__main__':
       log(f"\n  TRAINING FAILED: {_e}")
       import traceback
       traceback.print_exc()
+      # Propagate failure so cloud_run_tf.py sees non-zero exit
+      if not gc.isenabled():
+          gc.enable()
+          gc.collect()
+      sys.exit(1)
   finally:
       # BUG-L7 FIX: ensure GC is always re-enabled even if training crashes
       if not gc.isenabled():

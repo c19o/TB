@@ -1,163 +1,122 @@
-# V3.3 GPU Histogram Fork — Session Resume
+# V3.3 Session Resume — 2026-03-30 (Post-Training Run)
 
 ## INSTRUCTION TO NEW SESSION
-Read this file completely, then read `v3.3/MASTER_FIX_PLAN.md` and `docs/BUG_REGISTRY.md`.
-The pipeline has been through a MASSIVE audit and fix session (44 agents, $46, 30+ bugs fixed).
-ALL previous training results are INVALID — must retrain everything with fixed pipeline.
+Read this file completely. Then read v3.3/CLAUDE.md. The 1w training run completed on cloud — artifacts are still on the machine. Evaluate results before destroying.
 
-## ACTIVE MACHINES (2026-03-30 ~04:00 UTC)
+## ACTIVE MACHINE
+- **Instance 33840373** — Vietnam, 1x RTX 3060 Ti, EPYC 7B12 64c, 516GB RAM, $0.402/hr
+- **SSH**: `ssh -p 10372 root@ssh9.vast.ai`
+- **Status**: 1w pipeline completed (8.4 min total). Artifacts on disk at /workspace/
+- **DOWNLOAD ARTIFACTS BEFORE DESTROYING** — model_1w.json, cpcv_oos_predictions_1w.pkl, sobol_configs_1w.json, lstm_1w.pt, 1w_training.log, ml_multi_tf_configs.json, validation_report_1w.json
 
-**NO ACTIVE MACHINES**
+## 1W TRAINING RESULTS (2026-03-30)
 
-**DESTROYED**: Norway, NJ, Belgium (m:33799816), Poland (m:33802014)
-**Total cost: $0/hr**
+### Model Performance
+- **CPCV OOS Average**: Acc=41.0%, PrecL=37.6%, PrecS=37.0%, mlogloss=1.10
+- **Final model accuracy**: 59.2% (retrained on all data)
+- **Active features**: 86 / 3552 (2.4% — NEEDS INVESTIGATION)
+- **LSTM**: test_acc=55.9%, 150 epochs, massive overfitting (train=100%, test=55.9%)
+- **PBO**: 0.200 (INVESTIGATE — borderline)
+- **Optimizer best**: Sortino +8.36, ROI +29.4%, DD 0.7%, 16 trades
 
-## TRAINING STATUS — ALL RESULTS SUSPECT/INVALID
+### CPCV Fold Variance (CONCERNING)
+| Path | Acc | PrecL | PrecS | Trees |
+|------|-----|-------|-------|-------|
+| 1 | 68.7% | 70.9% | 48.4% | 25 |
+| 2 | 34.5% | 66.7% | 28.7% | 22 |
+| 3 | 26.5% | 0.0% | 26.5% | 3 |
+| 4 | 26.6% | 0.0% | 26.6% | 10 |
+| 5 | 52.8% | 54.0% | 46.2% | 21 |
+| 6 | 35.6% | 0.0% | 35.6% | 1 |
+| 7 | 35.6% | 0.0% | 35.6% | 1 |
+| 8 | 46.9% | 89.3% | 43.0% | 22 |
+| 9 | 40.1% | 0.0% | 40.1% | 27 |
+| 10 | 42.6% | 94.7% | 39.4% | 118 |
 
-| TF | Status | Accuracy | Notes |
-|----|--------|----------|-------|
-| 1w | **NEEDS RETRAIN** | OLD: 57.9% CPCV (INVALID — purge=6 leak, whitelist filter, lambda=100 killing signals) | Now has 621+ features (whitelist removed), purge=50, all params fixed |
-| 1d | **NEEDS RETRAIN** | — | Artifacts ready (NPZ, parquet). Never successfully trained with correct params. |
-| 4h | **NEEDS RETRAIN** | — | Artifacts ready (NPZ 1.67GB, parquet). cuda_sparse .so loading needs fix for cloud. |
-| 1h | **NEEDS CROSS GEN + TRAIN** | — | Need machine with 128GB+ RAM for cross gen + training |
-| 15m | **NEEDS CROSS GEN + TRAIN** | — | Need machine with 128GB+ RAM. Cloud only (100GB training RAM). |
+5 of 10 paths have PrecL=0.0% (predicts only SHORT). Huge variance. Only 819 rows — expected to be noisy but this level of instability is concerning.
 
-## WHY ALL RESULTS ARE INVALID
+### Pipeline Timing (on 64c EPYC + RTX 3060 Ti)
+| Step | Time | Notes |
+|------|------|-------|
+| Validation | 8s | 106/106 passed |
+| Feature Build | ~20s | 3552 features (DENSE, no cross gen) |
+| Optuna Search | 7s | Skipped (used config defaults) |
+| CPCV Training | ~60s | 10 paths, sequential (dense forced) |
+| Final Retrain | ~20s | 59.2% accuracy |
+| Feature Importance | <1s | 86/3552 active features |
+| Optimizer | 247s | 131K Sobol + 200 Bayesian, GPU |
+| PBO | 1s | Score=0.200 (INVESTIGATE) |
+| Meta-labeling | 7s | OK |
+| LSTM | 104s | 150 epochs, GPU said cuda but 0% util |
+| Audit | 2s | FAILED (non-critical) |
+| **TOTAL** | **503s (8.4 min)** | |
 
-The 2026-03-30 audit session found **12+ mechanisms** that were silently killing rare esoteric signals:
+### Bottlenecks Found
+1. **LSTM runs on CPU despite claiming CUDA** — 0% GPU utilization, 115% single-core CPU
+2. **Sequential CPCV forced for dense data** — parallel workers crash on numpy arrays (no .nnz)
+3. **No Optuna search ran** — used config.py defaults (no optuna_configs_1w.json)
+4. **Only 2.4% of features active** — 86/3552 used by model. NEEDS INVESTIGATION.
 
-1. **CPCV purge=6** when max_hold_bars=50 → label leakage inflated all OOS scores
-2. **feature_fraction=0.05** in GPU fork → 95% of EFB bundles skipped per tree
-3. **min_data_in_leaf=30-50** → rare signals (10-20 fires) could NEVER form a leaf
-4. **lambda_l1 up to 100** → zeroed leaf weights for ANY signal firing ≤33 times
-5. **Class weight np.pad misalignment** → SHORT 3x upweighting on wrong rows
-6. **bagging_fraction=0.8** → 10-fire signals only in 11% of trees (P=0.8^10)
-7. **path_smooth=2.0** → dampened rare leaf magnitudes 21-35%
-8. **HMM global fit in parallel CPCV** → future data leaking into early folds
-9. **is_unbalance=True in Optuna** vs explicit 3x weights in final → gradient mismatch
-10. **TF_FEATURE_WHITELIST for 1w** → dropped DOY, gematria flags, _EXTREME bins (human override)
-11. **Live inference: regime=None** → tens of thousands of DOY crosses always zero
-12. **Live inference: HMM using sma_5** → wrong distribution vs training
+## BUGS FIXED THIS SESSION (9 total)
 
-**Combined effect**: The model was training fast because it was learning NOTHING from the matrix.
+### Pre-existing bugs found by 10-agent optimization company:
+1. `v2_cross_generator.py:1045,1326` — NameError: co_occur not in scope (CRITICAL)
+2. `leakage_check.py:194` — bagging_fraction=0.6 killing rare signals
+3. `v2_multi_asset_trainer.py:461,628` — missing feature_pre_filter=False in Dataset()
+4. `ml_multi_tf.py:2092` — missing min_data_in_bin=1 in parent Dataset fallback
+5. `feature_library.py:2332,2465,3249,6352` — fillna(0) on 4 feature columns
+6. `run_optuna_local.py:552` — min_data_in_leaf upper bound 15→10
+7. `astrology_engine.py` — 11 silent except blocks returning neutral instead of NaN
 
-## ALL FIXES APPLIED (3 commits on v3.3 branch)
+### Deployment bugs found during cloud run:
+8. `ml_multi_tf.py` — parallel CPCV crashes on dense data (no .nnz on numpy array). Fix: force sequential for dense.
+9. `cloud_run_tf.py` — numactl --interleave=all fails in containers without SYS_NICE. Fix: test before use.
+10. `ml_multi_tf.py` — worker count not capped by row count (10 workers × 24 threads on 443 rows). Fix: row-aware cap.
+11. `ml_multi_tf.py` — training failure swallowed, exits 0. Fix: sys.exit(1) on exception.
+12. `validate.py` — 1w row threshold 1000 but only 819 weekly candles exist. Fix: lowered to 500.
+13. 8 new validate.py checks added (bagging_fraction, lambda_l1/l2, bagging_freq, path_smooth, CPCV_PARALLEL_GPUS, file scans)
 
-### Commit 15bdb43 — Wave 1 (17 bugs)
-- CPCV purge = max_hold_bars per TF
-- Class weight alignment (fold-level, no np.pad)
-- Uniqueness +1 in run_optuna_local.py
-- feature_pre_filter=False on ALL lgb.Dataset() calls
-- feature_fraction=0.9 (config + GPU fork + all hardcoded instances)
-- min_data_in_leaf capped at 8-10 per TF
-- device='cpu' leak fixed in GPU path
-- is_enable_sparse=True always
-- model_to_string removed → best_iter tracking
-- n_jobs: cores//96 → cores//16 (6-30x Optuna speedup)
-- OMP/NUMBA threads for binarization
-- Astrology 11 bare excepts → NaN + logging
-- subsample=0.8 removed, colsample=0.01 → 0.9
-- Lambda L1 capped [1e-4, 4.0], L2 [1e-4, 10.0]
-- HMM per-fold fits in parallel CPCV
-- is_unbalance removed from Optuna (explicit weights)
-- validate.py expanded to 82 checks
+## NEW CODE ADDED THIS SESSION
+- **Fold-parallel GPU CPCV**: _detect_gpu_count(), _gpu_fold_worker(), run_cpcv_gpu_parallel() in ml_multi_tf.py
+- **CPCV_PARALLEL_GPUS** config in config.py (env var override, 0=auto)
+- **_detect_n_gpus()** in run_optuna_local.py
+- **9 expert reports** in v3.3/OPTIMIZATION_REPORTS/
+- **eta_calculator recommendations** in OPT_PER_TF_SPECIALIST.md and OPT_VASTAI_COST_PERF.md
 
-### Commit 1f039f8 — Wave 2+3
-- sparse-dot-mkl for cross gen matmul (20-50x multi-core)
-- Sparse CSR predict in live_trader (eliminated 2.9M for-loops)
-- Regime computed before crosses in inference
-- HMM uses actual prev_close not sma_5
-- Combo context formulas persisted for inference
-- NaN propagation in inference binarization
-- bagging_fraction raised to 0.95
-- path_smooth reduced to 0.5
-- TF_FEATURE_WHITELIST REMOVED (1w now gets all 621+ features)
-- force_col_wise removed for 15m (20-30% speed gain)
-- NPZ compressed=False
-- CPCV per-fold checkpoints (O(1) vs O(n²))
-- Numba thread formula fix for local
-- os.cpu_count → cgroup-aware
-- MKL thread cap lifted
-- numactl --interleave=all for 4+ NUMA
-- SharedMemory for CPCV IPC
-- All 7 streamers: WAL mode + DR/gematria enrichment
-- date_numerology in news_streamer
-- Space weather DR + flare gematria
-- v2_easy_streamers daemon loop
-- Macro sub-1.0 DR fix + ticker gematria
-- Tweet gematria: consistent (no ASCII strip)
-- docs/ folder created, BUG_REGISTRY.md, MODEL_STATUS.md
-- 73GB cleanup (deleted v3.0, v3.1, v3.2, v2, heartbeat_data, discord archives)
+## WHAT NEEDS TO BE DONE NEXT SESSION
 
-## SPECIALIST FINDINGS (Not Yet Implemented — Future Work)
+### Priority 1: Evaluate 1w model quality
+- Download artifacts from cloud machine (still running at $0.40/hr!)
+- Launch evaluation company: is 41% CPCV accuracy tradable? Is 86/3552 feature usage acceptable?
+- Compare with old v3.2 results (57.9% was INVALID due to signal-killing params)
+- Check if esoteric features are among the 86 active ones
+- Institutional standards assessment
 
-### CUDA GPU Kernel Optimizations (3-5x per-fold speedup available)
-- 63,000 H2D transfers/run → batch to 1,000 (per-leaf gradient upload)
-- 10-40% warp efficiency → warp-cooperative atomic kernel
-- Python for-loop launches 48 GPU kernels → vectorize to 2
-- CSR+CSR.T dual storage → CUSPARSE_OPERATION_TRANSPOSE for 15m
-- All matrix-safe. Proprietary fork changes needed.
+### Priority 2: Fix LSTM GPU utilization
+- LSTM claims CUDA but runs on CPU (0% GPU, 115% single-core)
+- Launch company to investigate pytorch CUDA path
 
-### LightGBM Internals Confirmed
-- EFB is SAFE — bin offsets preserve rare signal identity
-- Sparse histogram explicitly visits all non-zeros (O(2×NNZ))
-- 15-fire signal produces gain ≈ 20 (well above threshold 2.0)
-- With fixed params, rare signals CAN be learned
+### Priority 3: Run Optuna search
+- 1w ran with config.py defaults (no Optuna search)
+- Need to run `run_optuna_local.py --tf 1w` for proper HPO
 
-## PIPELINE TIMING ESTIMATES (Post-Fix, 8x RTX 5090 + EPYC 384c)
+### Priority 4: Investigate 2.4% feature utilization
+- Only 86/3552 features used by model
+- Is EFB bundling too aggressive? Are esoteric features in the active set?
+- Are cross features being generated for 1w? (currently DENSE, no cross gen)
 
-Pipeline execution order per TF:
-1. Data Load (parquet + NPZ)
-2. Cross Gen (if NPZ not cached — sparse-dot-mkl)
-3. EFB Dataset Construction
-4. Phase 1 Optuna Search (25-30 trials, 8 parallel GPU workers)
-5. Phase 2 Optuna Validation (top 3, 4-fold CPCV)
-6. Final Retrain (all data, 800 rounds)
-7. CPCV Full (15 folds, confidence calibration)
-8. Meta-labeling
-9. Exhaustive Optimizer (trade strategy params)
-10. PBO + Audit
+### Priority 5: Push fixes to git
+- 12 bug fixes not yet committed/pushed to TB-3.3
+- Need to commit all changes from this session
 
-| TF | Cross Gen | EFB Build | Optuna (P1+P2) | Final Retrain | CPCV Full | Optimizer | **TOTAL** |
-|----|-----------|-----------|---------------|---------------|-----------|-----------|-----------|
-| 1w | cached | 18s | 18min | 40min | 1.3hr | 30min | **~3hr** |
-| 1d | cached | 30s | 1hr | 2hr | 4.1hr | 1hr | **~8.5hr** |
-| 4h | cached | 4min | 2.6hr | 5.3hr | 10.7hr | 2hr | **~21hr** |
-| 1h | 15min | 9min | 3.7hr | 12.4hr | 24.9hr | 3hr | **~45hr** |
-| 15m | 15min | 31min | 6.4hr | 25hr | 50hr | 5hr | **~87hr** |
-| **ALL 5 sequential** | | | | | | | **~165hr (6.9 days)** |
+## GIT STATE
+- **Branch**: v3.3-clean (local), pushed to github.com/c19o/TB-3.3 (main)
+- **Uncommitted changes**: ml_multi_tf.py, cloud_run_tf.py, validate.py, feature_library.py, astrology_engine.py, run_optuna_local.py, leakage_check.py, v2_cross_generator.py, v2_multi_asset_trainer.py
+- **Remote**: TB-3.3 repo on GitHub (source code only, no artifacts)
 
-With CUDA kernel optimizations (not yet implemented): 15m drops to ~25-35hr.
-
-## LOCAL TRAINING (13900K + RTX 3090 + 64GB RAM)
-
-| TF | Can Train? | RAM | VRAM | Time |
-|----|-----------|-----|------|------|
-| 1w | YES | ~7.1GB | ~0.2GB | ~30-40min (Optuna) |
-| 1d | YES | ~1.6GB | ~0.85GB | ~8hr |
-| 4h | YES | ~10.8GB | ~4.5GB | ~21hr (GPU) |
-| 1h | YES (tight) | ~38GB | ~15.3GB | Very long (single GPU) |
-| 15m | NO | ~100GB | N/A | Cloud only |
-
-## GPU FORK STATUS
-- cuda_sparse fork BUILT locally (RTX 3090, sm_86)
-- .so tested on A40 (sm_89) and RTX 5090 (sm_120 via PTX)
-- **CLOUD LOADING BUG**: Belgium crashed because .so wasn't swapped into site-packages correctly
-- Fix needed: reliable .so loading mechanism for cloud deploys
-
-## NEXT STEPS (Priority Order)
-1. **Retrain 1w locally** — 30-40min, test the full fixed pipeline end-to-end
-2. **Compare results** — new 1w (621+ features, purge=50, all fixes) vs old (141 features, purge=6, signal-killing params)
-3. **If 1w looks good**: retrain 1d locally (~8hr)
-4. **Rent cloud machine** for 4h (needs GPU for reasonable speed)
-5. **Fix cuda_sparse .so loading** for cloud before deploying GPU training
-6. **Implement CUDA kernel optimizations** (3-5x speedup) for 1h/15m viability
-7. **1h + 15m on cloud** — need 128GB+ RAM machine
-
-## KEY FILES
-- `v3.3/MASTER_FIX_PLAN.md` — full fix plan with Perplexity validations
-- `docs/BUG_REGISTRY.md` — all 30+ bugs catalogued
-- `docs/ACTIVE/MODEL_STATUS.md` — per-TF status tracker
-- `docs/ACTIVE/DEPLOY_CHECKLIST.md` — cloud deployment protocol
-- `v3.3/validate.py` — 82 pre-flight checks (run before ANY training)
-- `v3.3/CLAUDE.md` — project rules + audit pipeline
+## BEHAVIORAL RULES (REINFORCED THIS SESSION)
+1. **NEVER solo debug** — every bug requires agent company with Perplexity + matrix thesis
+2. **No git worktrees for CEO agents** — each copies 10GB+, kills disk
+3. **CEO agents need non-bare mode** — bare mode strips auth, agents fail with "Not logged in"
+4. **All files live in v3.3/** — not project root
+5. **ALLOW_CPU=1** needed for feature builds without RAPIDS/cuDF

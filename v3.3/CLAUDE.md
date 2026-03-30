@@ -98,6 +98,11 @@ After ANY fix, BEFORE moving to next item:
 
 ## 6. CLOUD DEPLOYMENT PROTOCOL
 
+### GitHub Repository
+- **Source repo:** https://github.com/c19o/TB-3.3 (remote: `tb33`)
+- **Source-only** — no databases, artifacts, or binary files tracked
+- **Branch:** `v3.3-clean` is the active development branch
+
 ### Pip + SCP (ONLY METHOD)
 1. Rent machine (pytorch base image, pip cached)
 2. `pip install lightgbm scikit-learn scipy ephem astropy pytz joblib pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml sparse-dot-mkl`

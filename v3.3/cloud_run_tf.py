@@ -559,8 +559,13 @@ try:
         _numa_nodes = [l for l in _numa_out.stdout.splitlines() if l.startswith('node') and 'cpus:' in l]
         _n_numa_nodes = len(_numa_nodes)
         if _n_numa_nodes > 1:
-            log(f"NUMA: {_n_numa_nodes} nodes detected — using memory interleave across all nodes")
-            _NUMA_PREFIX = 'numactl --interleave=all '
+            # Test if numactl actually works (containers may lack SYS_NICE capability)
+            _numa_test = subprocess.run(['numactl', '--interleave=all', 'true'], capture_output=True, timeout=5)
+            if _numa_test.returncode == 0:
+                log(f"NUMA: {_n_numa_nodes} nodes detected — using memory interleave across all nodes")
+                _NUMA_PREFIX = 'numactl --interleave=all '
+            else:
+                log(f"NUMA: {_n_numa_nodes} nodes detected but numactl lacks permission (container?) — skipping")
             for _nl in _numa_nodes:
                 log(f"  {_nl.strip()}")
         else:
@@ -590,6 +595,13 @@ else:
 # STEP 4: Train — MUST produce SPARSE output
 # ============================================================
 
+# Clean stale CPCV checkpoint — prevents resuming from a previous run's completed folds
+# which would skip all training and produce results from old/different data
+_cpcv_ckpt = f'cpcv_checkpoint_{TF}.pkl'
+if os.path.exists(_cpcv_ckpt):
+    os.remove(_cpcv_ckpt)
+    log(f"  Removed stale CPCV checkpoint: {_cpcv_ckpt}")
+
 train_log = f'train_{TF}.log'
 run_tee(f'{_NUMA_PREFIX}python -X utf8 -u {_script("ml_multi_tf.py")} --tf {TF}',
         f'Train {TF}', train_log)
@@ -616,9 +628,19 @@ else:
     log("  Check cross_{TF}.log and train_{TF}.log")
     sys.exit(1)
 
+# CRITICAL: Verify model was actually saved (accuracy floor can silently skip save)
+_model_path = f'model_{TF}.json'
+if not os.path.exists(_model_path):
+    log(f"*** CRITICAL: model_{TF}.json NOT FOUND after training ***")
+    log(f"  Training exited OK but model was not saved.")
+    log(f"  Most likely cause: final accuracy < 0.40 (accuracy floor).")
+    log(f"  Check {train_log} for 'ACCURACY BELOW FLOOR' message.")
+    FAILURES.append(f'Model {TF} missing')
+    _print_summary()
+    sys.exit(1)
+
 # PROTECT Step 4 model from any downstream overwrite
 import shutil
-_model_path = f'model_{TF}.json'
 _backup_path = f'model_{TF}_cpcv_backup.json'
 if os.path.exists(_model_path):
     shutil.copy2(_model_path, _backup_path)
