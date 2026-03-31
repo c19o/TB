@@ -109,8 +109,11 @@ def preflight_training(X, y, tf, params, n_jobs=1):
     # ── Label checks ──
     nan_count = np.sum(np.isnan(y))
     nan_pct = nan_count / len(y) * 100 if len(y) > 0 else 0
-    if nan_pct > 5:
-        check("NaN labels < 5%",
+    # Binary mode drops FLAT→NaN (typically 3-5% of rows), so threshold is higher
+    # 1w has 819 rows — triple barrier tail NaN is ~5.3%, so 6% threshold for multiclass
+    _nan_threshold = 10 if params.get('objective') == 'binary' else 6
+    if nan_pct > _nan_threshold:
+        check(f"NaN labels < {_nan_threshold}%",
               False,
               f"{nan_count} NaN labels ({nan_pct:.1f}%) — too many. Check triple barrier config.")
     elif nan_count > 0:
@@ -428,10 +431,10 @@ def post_trial_check(trial_number, trial_value, trial_params, elapsed_seconds,
             log.warning(f"[TRIAL {trial_number}] Took {elapsed_seconds:.0f}s — {elapsed_seconds/median_time:.1f}x median ({median_time:.0f}s). "
                         f"Possible memory thrashing or EFB rebuild.")
 
-    # Accuracy check (multiclass: random baseline = 33%)
-    # mlogloss: random baseline for 3 classes = -ln(1/3) = 1.099
-    if trial_value > 1.05:
-        log.warning(f"[TRIAL {trial_number}] Loss={trial_value:.4f} > random baseline (1.099). "
+    # Accuracy check: binary baseline = -ln(1/2) = 0.693, multiclass = -ln(1/3) = 1.099
+    _random_baseline = 0.693 if params.get('objective') == 'binary' else 1.099
+    if trial_value > _random_baseline * 0.95:
+        log.warning(f"[TRIAL {trial_number}] Loss={trial_value:.4f} > random baseline ({_random_baseline:.3f}). "
                     f"Model learned nothing useful. Check feature loading.")
 
     # Feature importance: esoteric signals present?

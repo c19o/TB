@@ -609,60 +609,45 @@ def check_environment(tf=None, cloud=False):
     except Exception:
         pass
 
-    # -- GPU fork: cuda_sparse actually works (not silent CPU fallback) --
-    n_gpus = int(os.environ.get('LGBM_NUM_GPUS', '0'))
-    if n_gpus > 0:
-        try:
-            import lightgbm as lgb
-            import numpy as np
-            # Test that device_type=cuda_sparse actually uses GPU, not silent CPU fallback
-            test_X = np.random.rand(50, 100).astype(np.float32)
-            test_y = np.random.randint(0, 3, 50)
-            test_ds = lgb.Dataset(test_X, label=test_y, params={'feature_pre_filter': False})
-            test_params = {
-                'objective': 'multiclass', 'num_class': 3,
-                'device_type': 'cuda_sparse', 'gpu_device_id': 0,
-                'num_iterations': 1, 'verbose': -1,
-            }
-            try:
-                lgb.train(test_params, test_ds)
-                check("GPU cuda_sparse training works", True, "")
-            except Exception as e:
-                err_str = str(e)
-                if 'not enabled' in err_str.lower():
-                    check("GPU cuda_sparse enabled in LightGBM build", False,
-                          f"cuda_sparse not available: {err_str}. "
-                          f"FIX: rebuild LightGBM with -DUSE_CUDA_SPARSE=ON. "
-                          f"The standard pip LightGBM does NOT support cuda_sparse.")
-                else:
-                    check("GPU cuda_sparse training works", False,
-                          f"cuda_sparse failed: {err_str}")
-        except ImportError:
-            pass
+    # -- GPU device type: auto-detect if NVIDIA GPUs present --
+    # Always test when GPUs exist (don't rely on env var)
+    _has_gpu = False
+    try:
+        import subprocess as _sp_gpu
+        _nvsmi = _sp_gpu.run(['nvidia-smi', '-L'], capture_output=True, text=True, timeout=5)
+        _has_gpu = (_nvsmi.returncode == 0 and _nvsmi.stdout.strip())
+    except Exception:
+        pass
 
-        # Test standard CUDA sparse fallback warning
+    if _has_gpu:
         try:
             import lightgbm as lgb
-            import scipy.sparse as sp_sparse
             import numpy as np
-            test_X_sp = sp_sparse.random(50, 100, density=0.1, format='csr', dtype=np.float32)
-            test_y = np.random.randint(0, 3, 50)
-            test_ds = lgb.Dataset(test_X_sp, label=test_y, params={'feature_pre_filter': False})
-            test_params = {
-                'objective': 'multiclass', 'num_class': 3,
-                'device': 'cuda', 'gpu_device_id': 0,
-                'num_iterations': 1, 'verbose': 1,
-            }
-            import io, contextlib
-            buf = io.StringIO()
-            with contextlib.redirect_stderr(buf):
-                lgb.train(test_params, test_ds)
-            warn("standard CUDA does NOT silently fallback on sparse",
-                 'sparse features with CUDA is currently not supported' not in buf.getvalue(),
-                 "Standard LightGBM CUDA silently falls back to CPU for sparse input. "
-                 "Use cuda_sparse fork (device_type='cuda_sparse') instead of device='cuda'. "
-                 "FIX: build custom fork with -DUSE_CUDA_SPARSE=ON")
-        except Exception:
+            test_X = np.random.rand(20, 10).astype(np.float32)
+            test_y = np.random.randint(0, 2, 20)
+            test_ds = lgb.Dataset(test_X, label=test_y, params={'feature_pre_filter': False})
+
+            _gpu_device_found = None
+            for _dtype in ('cuda_sparse', 'gpu'):
+                try:
+                    lgb.train({
+                        'objective': 'binary', 'device_type': _dtype,
+                        'gpu_device_id': 0, 'num_iterations': 1, 'verbose': -1,
+                    }, test_ds)
+                    _gpu_device_found = _dtype
+                    break
+                except Exception:
+                    pass
+
+            check("LightGBM GPU device type available",
+                  _gpu_device_found is not None,
+                  f"NVIDIA GPUs detected but LightGBM has no working GPU device type "
+                  f"(tried cuda_sparse, gpu). "
+                  f"FIX: Install GPU fork (cmake -DUSE_CUDA_SPARSE=ON) or "
+                  f"pip install lightgbm --config-settings=cmake.define.USE_GPU=ON")
+            if _gpu_device_found:
+                check(f"LightGBM device_type='{_gpu_device_found}' works", True, "")
+        except ImportError:
             pass
 
 

@@ -104,6 +104,7 @@ from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 from multi_gpu_optuna import (
     get_multi_gpu_config, apply_gpu_params, create_gpu_safe_sampler,
     gpu_oom_handler, get_gpu_trial_summary, clear_gpu_trial_map, MultiGPUConfig,
+    _detect_lgbm_device_type,
 )
 
 # Suppress Optuna info spam — only show warnings and above
@@ -156,7 +157,12 @@ def _compute_sample_uniqueness(t0_arr, t1_arr, n_bars):
 
 
 def _detect_n_gpus():
-    """Detect GPU count for fold-parallel CPCV in Optuna."""
+    """Detect GPU count for fold-parallel CPCV in Optuna.
+    Returns 0 if MULTI_GPU=0 or LightGBM GPU fork not available."""
+    if os.environ.get('MULTI_GPU') == '0':
+        return 0
+    if not hasattr(lgb.Booster, 'set_external_csr'):
+        return 0  # standard LightGBM — no cuda_sparse support
     if CPCV_PARALLEL_GPUS > 0:
         return CPCV_PARALLEL_GPUS
     try:
@@ -285,6 +291,16 @@ def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
     return splits
 
 
+def _apply_binary_mode(params, tf_name):
+    """Apply binary mode overrides to LightGBM params if tf_name uses binary classification."""
+    from config import BINARY_TF_MODE
+    if BINARY_TF_MODE.get(tf_name, False):
+        params['objective'] = 'binary'
+        params['metric'] = 'binary_logloss'
+        params.pop('num_class', None)
+    return params
+
+
 # ============================================================
 # DATA LOADING
 # ============================================================
@@ -320,6 +336,18 @@ def load_tf_data(tf_name):
         y = pd.to_numeric(df['triple_barrier_label'], errors='coerce').values
     else:
         y = compute_triple_barrier_labels(df, tf_name)
+
+    # Binary mode: match ml_multi_tf.py — SHORT(0)→0, FLAT(1)→NaN(drop), LONG(2)→1
+    from config import BINARY_TF_MODE
+    if BINARY_TF_MODE.get(tf_name, False):
+        _flat_mask = (y == 1)
+        y[_flat_mask] = np.nan
+        _valid_binary = ~np.isnan(y)
+        y[_valid_binary] = (y[_valid_binary] == 2).astype(float)
+        n_up = int((y == 1).sum())
+        n_down = int((y == 0).sum())
+        n_dropped = int(_flat_mask.sum())
+        log.info(f"  BINARY MODE ({tf_name}): {n_up} UP + {n_down} DOWN = {n_up+n_down} rows (dropped {n_dropped} FLAT)")
 
     # Feature columns
     meta_cols = {'timestamp', 'date', 'open', 'high', 'low', 'close', 'volume',
@@ -468,7 +496,7 @@ class _RoundPruningCallback:
         if (env.iteration + 1) % self.interval != 0:
             return
         for entry in env.evaluation_result_list:
-            if entry[0] == 'val' and entry[1] == 'multi_logloss':
+            if entry[0] == 'val' and entry[1] in ('multi_logloss', 'binary_logloss'):
                 score = entry[2]
                 break
         else:
@@ -555,6 +583,25 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
     log.info(f"  Phase 1: pre-computed {len(fold_data)} CPCV folds (from {len(splits)} splits) [subset() pattern]")
 
     def objective(trial):
+        """Phase 1 objective — returns float score (lower=better) or raises TrialPruned.
+
+        CRITICAL: This function must ALWAYS return a valid float for completed trials.
+        Exceptions during scoring are caught and return float('inf') instead of
+        propagating (which would mark the trial as FAIL in the ask/tell handler).
+        Only optuna.TrialPruned is re-raised (marks trial as PRUNED, not FAIL).
+        """
+        try:
+            return _objective_inner(trial)
+        except optuna.TrialPruned:
+            raise
+        except Exception as _outer_err:
+            log.warning(f"  Trial {trial.number} OUTER error (returning inf): "
+                        f"{type(_outer_err).__name__}: {_outer_err}")
+            import traceback
+            log.warning(f"  Traceback: {traceback.format_exc()[-500:]}")
+            return float('inf')
+
+    def _objective_inner(trial):
         trial_start = time.time()
         _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
         _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
@@ -598,6 +645,10 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
             'learning_rate': trial_lr,
             'seed': OPTUNA_SEED,
         })
+        # Binary mode: override objective/metric to match ml_multi_tf.py
+        _apply_binary_mode(params, tf_name)
+        if params.get('objective') == 'binary' and not _lr_search_range:
+            params['learning_rate'] = 0.3  # binary uses higher LR
         # Wave 3: force_row_wise for 15m (high rows/bundles ratio)
         from config import TF_FORCE_ROW_WISE
         if tf_name in TF_FORCE_ROW_WISE:
@@ -611,7 +662,7 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         else:
             n_gpus = int(os.environ.get('LGBM_NUM_GPUS', '0'))
             if n_gpus > 0:
-                params['device_type'] = 'cuda_sparse'
+                params['device_type'] = _detect_lgbm_device_type()
                 params['gpu_device_id'] = trial.number % n_gpus
                 params['histogram_pool_size'] = 512
                 params.pop('force_col_wise', None)
@@ -625,102 +676,138 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         fold_scores = []
         fold_sortinos = []
 
-        for fold_i, fold in enumerate(fold_data):
-            X_test = fold['X_test']
-            y_test = fold['y_test']
+        try:
+            for fold_i, fold in enumerate(fold_data):
+                X_test = fold['X_test']
+                y_test = fold['y_test']
 
-            dtrain = parent_ds.subset(fold['train_indices'])
-            dval = parent_ds.subset(fold['val_indices'])
+                dtrain = parent_ds.subset(fold['train_indices'])
+                dval = parent_ds.subset(fold['val_indices'])
 
-            if (use_gpu or n_gpus > 0) and is_sparse:
-                # GPU cuda_sparse fork path — requires explicit CSR upload
-                _gpu_train_data = X_all[np.where(valid_mask)[0][fold['train_indices']]]
-                gpu_params = params.copy()
-                gpu_params['device_type'] = 'cuda_sparse'
-                gpu_params.pop('force_col_wise', None)
-                gpu_params.pop('force_row_wise', None)
-                gpu_params.pop('device', None)
-                gpu_params['histogram_pool_size'] = 512
-                if n_gpus > 0:
-                    gpu_params['gpu_device_id'] = trial.number % n_gpus
+                if (use_gpu or n_gpus > 0) and is_sparse and _HAS_GPU_FORK:
+                    # GPU fork path — cuda_sparse with set_external_csr
+                    _gpu_train_data = X_all[np.where(valid_mask)[0][fold['train_indices']]]
+                    gpu_params = params.copy()
+                    _dt = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else params.get('device_type', 'gpu')
+                    gpu_params['device_type'] = _dt
+                    gpu_params.pop('force_col_wise', None)
+                    gpu_params.pop('force_row_wise', None)
+                    gpu_params.pop('device', None)
+                    gpu_params['histogram_pool_size'] = 512
+                    if n_gpus > 0:
+                        gpu_params['gpu_device_id'] = trial.number % n_gpus
 
-                dtrain.construct()
-                dval.construct()
-                booster = lgb.Booster(gpu_params, dtrain)
-                booster.add_valid(dval, 'val')
-                booster.set_external_csr(_gpu_train_data)
+                    dtrain.construct()
+                    dval.construct()
+                    booster = lgb.Booster(gpu_params, dtrain)
+                    booster.add_valid(dval, 'val')
+                    booster.set_external_csr(_gpu_train_data)
 
-                best_score = float('inf')
-                best_iter = 0
-                no_improve = 0
-                for rnd in range(rounds):
-                    booster.update()
-                    val_result = booster.eval_valid()[0]
-                    val_score = val_result[2]
-                    if val_score < best_score:
-                        best_score = val_score
-                        best_iter = rnd + 1
-                        no_improve = 0
-                    else:
-                        no_improve += 1
-                    if no_improve >= es_patience:
-                        break
-                model = booster
-            else:
-                # CPU path — H13 FIX: Enable round-level pruning via _RoundPruningCallback.
-                # With 2-fold CPCV, fold-level reporting only gives 2 steps — WilcoxonPruner
-                # needs ≥2 steps before acting, making it a no-op. Round-level reporting
-                # gives up to (folds × rounds/interval) steps, enabling real pruning.
-                # Expected 30-50% Phase 1 speedup from early trial termination.
-                callbacks = [
-                    lgb.early_stopping(es_patience),
-                    lgb.log_evaluation(0),
-                    _RoundPruningCallback(trial, fold_i, rounds, interval=10),
-                ]
+                    best_score = float('inf')
+                    best_iter = 0
+                    no_improve = 0
+                    for rnd in range(rounds):
+                        booster.update()
+                        val_result = booster.eval_valid()[0]
+                        val_score = val_result[2]
+                        if val_score < best_score:
+                            best_score = val_score
+                            best_iter = rnd + 1
+                            no_improve = 0
+                        else:
+                            no_improve += 1
+                        if no_improve >= es_patience:
+                            break
+                    model = booster
+                elif (use_gpu or n_gpus > 0) and is_sparse:
+                    # Standard LightGBM GPU (OpenCL) — fork not available
+                    gpu_params = params.copy()
+                    _dt = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else params.get('device_type', 'gpu')
+                    gpu_params['device_type'] = _dt
+                    gpu_params.pop('force_col_wise', None)
+                    gpu_params.pop('force_row_wise', None)
+                    gpu_params.pop('device', None)
+                    gpu_params['histogram_pool_size'] = 512
+                    if n_gpus > 0:
+                        gpu_params['gpu_device_id'] = trial.number % n_gpus
 
-                model = lgb.train(
-                    params, dtrain,
-                    num_boost_round=rounds,
-                    valid_sets=[dval],
-                    valid_names=['val'],
-                    callbacks=callbacks,
-                )
+                    model = lgb.train(
+                        gpu_params, dtrain,
+                        num_boost_round=rounds,
+                        valid_sets=[dval],
+                        valid_names=['val'],
+                        callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
+                    )
+                else:
+                    # CPU path — no round-level pruning callback (it raises TrialPruned
+                    # inside lgb.train which aborts training and marks trial as PRUNED
+                    # in ask/tell, even when the model is learning well).
+                    # Inter-fold pruning at the end of each fold is sufficient.
+                    callbacks = [
+                        lgb.early_stopping(es_patience),
+                        lgb.log_evaluation(0),
+                    ]
 
-            # OOS predictions
-            if use_gpu and sp_sparse.issparse(X_all):
-                preds = model.predict(X_test, num_iteration=best_iter)
-            else:
-                preds = model.predict(X_test)
-            pred_labels = np.argmax(preds, axis=1)
-            mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
+                    model = lgb.train(
+                        params, dtrain,
+                        num_boost_round=rounds,
+                        valid_sets=[dval],
+                        valid_names=['val'],
+                        callbacks=callbacks,
+                    )
 
-            sim_ret = np.where(pred_labels == y_test, 1.0, -1.0)
-            downside = sim_ret[sim_ret < 0]
-            downside_std = np.std(downside, ddof=1) if len(downside) > 1 else 1.0
-            sortino = np.mean(sim_ret) / max(downside_std, 1e-10) * np.sqrt(252)
+                # OOS predictions — use best_iteration from lgb.train or manual loop
+                _best_it = getattr(model, 'best_iteration', None)
+                preds = model.predict(X_test, num_iteration=_best_it) if _best_it else model.predict(X_test)
+                # Binary mode: preds is 1D (P(class=1)), multiclass: 2D
+                _is_binary_obj = (params.get('objective') == 'binary')
+                if _is_binary_obj:
+                    preds_2d = np.column_stack([1 - preds, preds])
+                    pred_labels = (preds > 0.5).astype(int)
+                    mlogloss = log_loss(y_test, preds_2d, labels=[0, 1])
+                else:
+                    pred_labels = np.argmax(preds, axis=1)
+                    mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
 
-            fold_scores.append(mlogloss)
-            fold_sortinos.append(sortino)
+                sim_ret = np.where(pred_labels == y_test, 1.0, -1.0)
+                downside = sim_ret[sim_ret < 0]
+                downside_std = np.std(downside, ddof=1) if len(downside) > 1 else 1.0
+                sortino = np.mean(sim_ret) / max(downside_std, 1e-10) * np.sqrt(252)
 
-            # OPT-10: Inter-fold pruning via WilcoxonPruner
-            # Report fold mlogloss to Optuna (step=fold_idx for fold-level pruning)
-            trial.report(mlogloss, step=fold_i)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+                fold_scores.append(mlogloss)
+                fold_sortinos.append(sortino)
 
-            del model, dtrain, dval
-            import gc
-            gc.collect()
+                # OPT-10: Inter-fold pruning via WilcoxonPruner
+                # Report fold mlogloss to Optuna (step=fold_idx for fold-level pruning)
+                trial.report(mlogloss, step=fold_i)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+
+                del model, dtrain, dval
+                import gc
+                gc.collect()
+
+        except optuna.TrialPruned:
+            # Re-raise TrialPruned — ask/tell handler marks as PRUNED
+            raise
+        except Exception as _obj_err:
+            # CRITICAL FIX: Catch all non-pruning exceptions and return float('inf')
+            # instead of propagating. This prevents the ask/tell handler from marking
+            # the trial as FAIL (which means "no trials completed" if ALL trials fail).
+            # float('inf') = worst possible score, but trial is COMPLETE not FAIL.
+            log.warning(f"  Trial {trial.number} objective error (returning inf): "
+                        f"{type(_obj_err).__name__}: {_obj_err}")
+            return float('inf')
 
         if not fold_scores:
             return float('inf')
 
-        mean_mlogloss = np.mean(fold_scores)
-        mean_sortino = np.mean(fold_sortinos)
+        mean_mlogloss = float(np.mean(fold_scores))
+        mean_sortino = float(np.mean(fold_sortinos))
 
-        trial.set_user_attr('mean_sortino', float(mean_sortino))
+        trial.set_user_attr('mean_sortino', mean_sortino)
         trial.set_user_attr('n_folds', len(fold_scores))
-        trial.set_user_attr('mean_mlogloss', float(mean_mlogloss))
+        trial.set_user_attr('mean_mlogloss', mean_mlogloss)
 
         # Runtime post-trial check
         try:
@@ -765,6 +852,7 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
     )
 
     params = V3_LGBM_PARAMS.copy()
+    _apply_binary_mode(params, tf_name)
     params.update({
         'is_enable_sparse': True,  # always True — sparse CSR is always the data format
         'num_threads': max(1, (get_cpu_count() or 8) // max(1, n_val_workers)),  # FIX #18: cap to prevent oversubscription in parallel validation
@@ -808,10 +896,11 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
         X_test = X_all[abs_test]
         y_test = y[abs_test].astype(int)
 
-        if use_gpu and is_sparse:
+        if use_gpu and is_sparse and _HAS_GPU_FORK:
+            # GPU fork path — cuda_sparse with set_external_csr
             _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
             gpu_params = params.copy()
-            gpu_params['device_type'] = 'cuda_sparse'
+            gpu_params['device_type'] = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else _detect_lgbm_device_type()
             gpu_params.pop('force_col_wise', None)
             gpu_params.pop('force_row_wise', None)
             gpu_params.pop('device', None)
@@ -839,6 +928,22 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
                 if no_improve >= es_patience:
                     break
             model = booster
+        elif use_gpu and is_sparse:
+            # Standard LightGBM GPU (OpenCL) — fork not available
+            gpu_params = params.copy()
+            gpu_params['device_type'] = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else _detect_lgbm_device_type()
+            gpu_params.pop('force_col_wise', None)
+            gpu_params.pop('force_row_wise', None)
+            gpu_params.pop('device', None)
+            gpu_params['histogram_pool_size'] = 512
+
+            model = lgb.train(
+                gpu_params, dtrain,
+                num_boost_round=rounds,
+                valid_sets=[dval],
+                valid_names=['val'],
+                callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
+            )
         else:
             model = lgb.train(
                 params, dtrain,
@@ -848,11 +953,14 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
                 callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
             )
 
-        if use_gpu and sp_sparse.issparse(X_all):
-            preds = model.predict(X_test, num_iteration=best_iter)
+        _best_it = getattr(model, 'best_iteration', None)
+        preds = model.predict(X_test, num_iteration=_best_it) if _best_it else model.predict(X_test)
+        _is_binary_obj = (params.get('objective') == 'binary')
+        if _is_binary_obj:
+            preds_2d = np.column_stack([1 - preds, preds])
+            mlogloss = log_loss(y_test, preds_2d, labels=[0, 1])
         else:
-            preds = model.predict(X_test)
-        mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
+            mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
         fold_scores.append(mlogloss)
 
         _n_trees = getattr(model, 'best_iteration', None) or getattr(model, 'current_iteration', lambda: '?')()
@@ -994,10 +1102,11 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
         fold_params['num_threads'] = max(1, (get_cpu_count() or 8) // n_gpus)
     best_iter = None
 
-    if use_gpu and is_sparse:
+    if use_gpu and is_sparse and _HAS_GPU_FORK:
+        # GPU fork path — cuda_sparse with set_external_csr
         _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
         gpu_params = fold_params.copy()
-        gpu_params['device_type'] = 'cuda_sparse'
+        gpu_params['device_type'] = _detect_lgbm_device_type()
         gpu_params.pop('force_col_wise', None)
         gpu_params.pop('force_row_wise', None)
         gpu_params.pop('device', None)
@@ -1027,11 +1136,12 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
             if no_improve >= _es_patience_final:
                 break
         model = booster
-    elif n_gpus > 0 and is_sparse:
-        # Multi-GPU without fork — standard cuda device
+    elif (use_gpu or n_gpus > 0) and is_sparse:
+        # Standard LightGBM GPU (OpenCL) — fork not available or multi-GPU
         gpu_params = fold_params.copy()
-        gpu_params['device_type'] = 'cuda_sparse'
-        gpu_params['gpu_device_id'] = fold_i % n_gpus
+        gpu_params['device_type'] = _detect_lgbm_device_type()
+        if n_gpus > 0:
+            gpu_params['gpu_device_id'] = fold_i % n_gpus
         gpu_params['histogram_pool_size'] = 512
         gpu_params.pop('force_col_wise', None)
         gpu_params.pop('force_row_wise', None)
@@ -1053,13 +1163,16 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
             callbacks=[lgb.early_stopping(_es_patience_final), lgb.log_evaluation(0)],
         )
 
-    if use_gpu and sp_sparse.issparse(X_all) and best_iter is not None:
-        preds = model.predict(X_test, num_iteration=best_iter)
+    _best_it = best_iter if best_iter is not None else getattr(model, 'best_iteration', None)
+    preds = model.predict(X_test, num_iteration=_best_it) if _best_it else model.predict(X_test)
+    _is_binary = (params.get('objective') == 'binary')
+    if _is_binary:
+        pred_labels = (preds > 0.5).astype(int)
     else:
-        preds = model.predict(X_test)
-    pred_labels = np.argmax(preds, axis=1)
+        pred_labels = np.argmax(preds, axis=1)
     acc = accuracy_score(y_test, pred_labels)
-    prec_long = precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0)
+    _n_cls = 2 if _is_binary else 3
+    prec_long = precision_score(y_test, pred_labels, labels=[_n_cls - 1], average='macro', zero_division=0)
     prec_short = precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0)
 
     sim_ret = np.where(pred_labels == y_test, 1.0, -1.0)
@@ -1111,6 +1224,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
     )
 
     params = V3_LGBM_PARAMS.copy()
+    _apply_binary_mode(params, tf_name)
     params.update({
         'is_enable_sparse': True,  # always True — sparse CSR input regardless of cross load status
         'verbosity': -1,
@@ -1374,6 +1488,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         from runtime_checks import preflight_training, TrainingMonitor, post_trial_check
         _base_params = dict(V3_LGBM_PARAMS)
         _base_params['num_leaves'] = TF_NUM_LEAVES.get(tf_name, 63)
+        _apply_binary_mode(_base_params, tf_name)
         preflight_training(X_all, y, tf_name, _base_params, n_jobs)
         _rt_monitor = TrainingMonitor(interval=30)
         _rt_monitor.start()
@@ -1418,6 +1533,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
                 log.warning(f"  Could not remove stale {bin_path}: {_e}")
 
     # Try loading pre-built binary first (instant — skips EFB reconstruction)
+    _n_expected_features = X_all.shape[1]
     if os.path.exists(bin_path):
         log.info(f"  Loading parent Dataset from binary: {bin_path}")
         t0_ds = time.time()
@@ -1426,9 +1542,24 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
             'feature_pre_filter': False, 'is_enable_sparse': True,
         })
         _parent_ds.construct()
-        log.info(f"  Loaded in {time.time()-t0_ds:.1f}s: "
-                 f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features")
+        # Feature count mismatch check — binary was built with different features
+        if _parent_ds.num_feature() != _n_expected_features:
+            log.warning(f"  Binary feature count mismatch: binary={_parent_ds.num_feature()}, "
+                        f"current={_n_expected_features}. Invalidating stale binary.")
+            del _parent_ds
+            try:
+                os.remove(bin_path)
+            except OSError as _e:
+                log.warning(f"  Could not remove stale {bin_path}: {_e}")
+            # Fall through to rebuild below
+            _parent_ds = None
+        else:
+            log.info(f"  Loaded in {time.time()-t0_ds:.1f}s: "
+                     f"{_parent_ds.num_data()} rows, {_parent_ds.num_feature()} features")
     else:
+        _parent_ds = None
+
+    if _parent_ds is None:
         # First build — use parallel column-chunk construction for large feature sets
         log.info("  Building parent Dataset (parallel column-chunk for >100K features)...")
         t0_ds = time.time()
@@ -1579,23 +1710,49 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
                         trial = futures[fut]
                         try:
                             value = fut.result()
-                            study.tell(trial, value)
                         except optuna.TrialPruned:
                             study.tell(trial, state=optuna.trial.TrialState.PRUNED)
+                            continue
                         except Exception as e:
-                            log.warning(f"  Trial {trial.number} failed: {e}")
+                            log.warning(f"  Trial {trial.number} exception in objective "
+                                        f"({type(e).__name__}): {e}")
                             study.tell(trial, state=optuna.trial.TrialState.FAIL)
+                            continue
+                        # Tell value separately — if study.tell raises, don't double-tell as FAIL
+                        try:
+                            study.tell(trial, float(value))
+                        except Exception as e:
+                            log.error(f"  Trial {trial.number} study.tell() failed "
+                                      f"({type(e).__name__}): {e}  value={value!r}")
             else:
                 # Single trial — no thread overhead
                 trial = trials_batch[0]
                 try:
                     value = objective_p1(trial)
-                    study.tell(trial, value)
                 except optuna.TrialPruned:
                     study.tell(trial, state=optuna.trial.TrialState.PRUNED)
+                    completed += batch_size
+                    _n_complete = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+                    _n_pruned = len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])
+                    log.info(f"  Progress: {completed}/{phase1_trials} dispatched, "
+                             f"{_n_complete} complete, {_n_pruned} pruned")
+                    continue
                 except Exception as e:
-                    log.warning(f"  Trial {trial.number} failed: {e}")
+                    log.warning(f"  Trial {trial.number} exception in objective "
+                                f"({type(e).__name__}): {e}")
                     study.tell(trial, state=optuna.trial.TrialState.FAIL)
+                    completed += batch_size
+                    _n_complete = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+                    _n_pruned = len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])
+                    log.info(f"  Progress: {completed}/{phase1_trials} dispatched, "
+                             f"{_n_complete} complete, {_n_pruned} pruned")
+                    continue
+                # Tell value separately
+                try:
+                    study.tell(trial, float(value))
+                except Exception as e:
+                    log.error(f"  Trial {trial.number} study.tell() failed "
+                              f"({type(e).__name__}): {e}  value={value!r}")
 
             completed += batch_size
             _n_complete = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
@@ -1607,7 +1764,26 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         _gc.collect()
 
     phase1_elapsed = time.time() - phase1_start
-    best_p1 = study.best_trial
+
+    # Summarize trial states for debugging
+    _state_counts = {}
+    for _t in study.trials:
+        _sname = _t.state.name
+        _state_counts[_sname] = _state_counts.get(_sname, 0) + 1
+    log.info(f"  Phase 1 trial states: {_state_counts}")
+
+    try:
+        best_p1 = study.best_trial
+    except ValueError:
+        # "No trials are completed yet" — all trials were PRUNED or FAIL
+        log.error(f"  Phase 1 FAILED: no completed trials out of {len(study.trials)} "
+                  f"(states: {_state_counts}). Cannot proceed.")
+        # Log first few trial details for debugging
+        for _t in study.trials[:5]:
+            log.error(f"    Trial {_t.number}: state={_t.state.name}, "
+                      f"params={_t.params}, user_attrs={_t.user_attrs}")
+        return None
+
     log.info(f"  Phase 1 done in {phase1_elapsed:.0f}s: best mlogloss={best_p1.value:.4f}")
     log.info(f"  Best params: {best_p1.params}")
     if 'mean_sortino' in best_p1.user_attrs:

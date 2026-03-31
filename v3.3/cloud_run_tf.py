@@ -90,7 +90,7 @@ def run_tee(cmd, name, logfile, critical=True):
     t0 = time.time()
     log(f"=== {name} ===")
     Path(logfile).parent.mkdir(parents=True, exist_ok=True)
-    with open(logfile, 'ab', buffering=0) as logf:
+    with open(logfile, 'wb', buffering=0) as logf:
         proc = subprocess.Popen(
             ['bash', '-c', cmd],
             stdout=subprocess.PIPE,
@@ -168,6 +168,26 @@ except ImportError:
     except (ValueError, OSError):
         ram_gb = 0
     cpu_count = os.cpu_count() or 1
+# Cloud prerequisite: verify we get the bulk of host RAM (not a tiny cgroup slice)
+if os.path.exists('/proc/meminfo'):
+    try:
+        _host_ram_gb = 0
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
+                    _host_ram_gb = int(line.split()[1]) / (1024 * 1024)
+                    break
+        if _host_ram_gb > 0:
+            _ram_pct = (ram_gb / _host_ram_gb) * 100 if _host_ram_gb > 0 else 100
+            if ram_gb < _host_ram_gb * 0.75:
+                print(f"  FATAL: cgroup limits RAM to {ram_gb:.0f}GB ({_ram_pct:.0f}%) of {_host_ram_gb:.0f}GB host RAM!", flush=True)
+                print(f"  We need >= 75% of host RAM. This machine is over-shared. Destroy and rent dedicated.", flush=True)
+                sys.exit(1)
+            elif ram_gb < _host_ram_gb:
+                print(f"  RAM: {ram_gb:.0f}GB cgroup / {_host_ram_gb:.0f}GB host ({_ram_pct:.0f}%)", flush=True)
+                ram_gb = _host_ram_gb  # use host value for min-RAM checks
+    except Exception:
+        pass
 print(f"{'='*60}", flush=True)
 print(f"  CLOUD PIPELINE: {TF}", flush=True)
 print(f"  Cores: {cpu_count} (cgroup-aware)", flush=True)
@@ -184,7 +204,12 @@ else:
     print(f"  RAM check: {ram_gb:.0f} GB >= {TF_MIN_RAM.get(TF, 64)} GB required for {TF} — OK", flush=True)
 
 # ============================================================
-# PRE-FLIGHT: Deterministic validation (catches config bugs before $$ is spent)
+# PRE-FLIGHT 0: Deployment verification (catches stale files, wrong binaries, missing DBs)
+# ============================================================
+run(f'{sys.executable} deploy_verify.py --tf {TF}', 'Deployment verification')
+
+# ============================================================
+# PRE-FLIGHT 1: Deterministic validation (catches config bugs before $$ is spent)
 # ============================================================
 run(f'{sys.executable} validate.py --tf {TF} --cloud', 'Pre-flight validation')
 
@@ -198,7 +223,7 @@ time.sleep(1)
 
 # Install ALL dependencies — works on any base image (pytorch, ubuntu, etc.).
 run('pip install -q lightgbm scikit-learn scipy ephem astropy pytz joblib '
-    'pandas numpy pyarrow optuna hmmlearn numba tqdm pyyaml '
+    '"pandas<3.0" "numpy<2.3" pyarrow optuna hmmlearn numba tqdm pyyaml '
     'alembic cmaes colorlog sqlalchemy threadpoolctl sparse-dot-mkl 2>&1 | tail -5',
     'Install deps')
 

@@ -48,17 +48,18 @@ def _build_meta_features(y_pred_probs, indices, feature_data, feature_cols):
     to keep the meta-model simple and avoid overfitting.
     """
     n = len(y_pred_probs)
+    _is_binary = (y_pred_probs.ndim == 2 and y_pred_probs.shape[1] == 2)
     meta_X = np.zeros((n, 5), dtype=np.float32)
 
     # 1. Max probability (confidence)
     meta_X[:, 0] = np.max(y_pred_probs, axis=1)
-    # 2. prob_long (class 2)
-    meta_X[:, 1] = y_pred_probs[:, 2]
-    # 3. prob_short (class 0)
+    # 2. prob_long (class 2 for 3-class, class 1 for binary)
+    meta_X[:, 1] = y_pred_probs[:, 1] if _is_binary else y_pred_probs[:, 2]
+    # 3. prob_short/down (class 0)
     meta_X[:, 2] = y_pred_probs[:, 0]
     # 4. Probability margin (top - second best)
     sorted_probs = np.sort(y_pred_probs, axis=1)
-    meta_X[:, 3] = sorted_probs[:, 2] - sorted_probs[:, 1]
+    meta_X[:, 3] = sorted_probs[:, -1] - sorted_probs[:, -2]
     # 5. Entropy of prediction (low = confident, high = uncertain)
     probs_clipped = np.clip(y_pred_probs, 1e-10, 1.0)
     meta_X[:, 4] = -np.sum(probs_clipped * np.log(probs_clipped), axis=1)

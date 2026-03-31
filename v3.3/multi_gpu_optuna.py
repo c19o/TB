@@ -85,6 +85,37 @@ def detect_gpus():
     return 0, []
 
 
+def _detect_lgbm_device_type():
+    """Detect the best available LightGBM GPU device type.
+
+    Tests cuda_sparse first (our GPU fork), then gpu (OpenCL), then cpu.
+    Raises RuntimeError if no GPU device works — no silent CPU fallback.
+    """
+    import numpy as np
+    import lightgbm as lgb
+
+    test_X = np.random.rand(20, 10).astype(np.float32)
+    test_y = np.random.randint(0, 2, 20)
+    test_ds = lgb.Dataset(test_X, label=test_y, params={'feature_pre_filter': False})
+
+    for dtype in ('cuda_sparse', 'gpu'):
+        try:
+            lgb.train({
+                'objective': 'binary', 'device_type': dtype,
+                'gpu_device_id': 0, 'num_iterations': 1, 'verbose': -1,
+            }, test_ds)
+            log.info(f"  LightGBM device_type='{dtype}' verified working")
+            return dtype
+        except Exception as e:
+            log.info(f"  LightGBM device_type='{dtype}' not available: {e}")
+
+    raise RuntimeError(
+        "LightGBM has NO working GPU device type (tried cuda_sparse, gpu). "
+        "Install GPU fork (cmake -DUSE_CUDA_SPARSE=ON) or pip install lightgbm --config-settings=cmake.define.USE_GPU=ON. "
+        "CPU fallback is not allowed."
+    )
+
+
 def get_multi_gpu_config(total_cores=None):
     """Build multi-GPU configuration based on environment and hardware.
 
@@ -131,7 +162,8 @@ def get_multi_gpu_config(total_cores=None):
         enabled = num_gpus >= 2
 
     # Determine device type — cuda_sparse for sparse CSR data (our default)
-    device_type = 'cuda_sparse'
+    # Verify cuda_sparse is actually supported by this LightGBM build
+    device_type = _detect_lgbm_device_type()
 
     # Thread allocation: split CPU cores across GPU trials
     # Each trial gets a fair share of cores for data loading / preprocessing

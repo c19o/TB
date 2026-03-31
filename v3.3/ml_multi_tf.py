@@ -655,18 +655,20 @@ def _cpcv_split_worker(args_tuple):
         # OOS predictions — use best_iteration so GPU path (which no longer truncates via
         # model_to_string) evaluates only the first best_iter trees, identical to the
         # old model_to_string() restore but without 87MB × N serializations.
-        preds_3c = model.predict(X_test, num_iteration=model.best_iteration)
+        preds_3c = _fix_binary_preds(model.predict(X_test, num_iteration=model.best_iteration))
         pred_labels = np.argmax(preds_3c, axis=1)
+        _n_classes = preds_3c.shape[1] if preds_3c.ndim == 2 else 2
+        _eval_labels = list(range(_n_classes))
         acc = float(accuracy_score(y_test, pred_labels))
-        prec_long = float(precision_score(y_test, pred_labels, labels=[2], average='macro', zero_division=0))
+        prec_long = float(precision_score(y_test, pred_labels, labels=[_n_classes - 1], average='macro', zero_division=0))
         prec_short = float(precision_score(y_test, pred_labels, labels=[0], average='macro', zero_division=0))
-        mlogloss = float(log_loss(y_test, preds_3c, labels=[0, 1, 2]))
+        mlogloss = float(log_loss(y_test, preds_3c, labels=_eval_labels))
 
         # IS metrics for PBO
-        is_preds_3c = model.predict(X_train, num_iteration=model.best_iteration)
+        is_preds_3c = _fix_binary_preds(model.predict(X_train, num_iteration=model.best_iteration))
         is_pred_labels = np.argmax(is_preds_3c, axis=1)
         is_acc = float(accuracy_score(y_train, is_pred_labels))
-        is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=[0, 1, 2]))
+        is_mlogloss = float(log_loss(y_train, is_preds_3c, labels=_eval_labels))
         _is_sim_ret = np.where(is_pred_labels == y_train, 1.0, -1.0)
         _is_std = np.std(_is_sim_ret, ddof=1)
         is_sharpe = float(np.mean(_is_sim_ret) / max(_is_std, 1e-10) * np.sqrt(252))
@@ -2378,8 +2380,15 @@ if __name__ == '__main__':
                       log(f"  Loading parent Dataset from binary: {bin_path}")
                       _parent_ds = lgb.Dataset(bin_path, params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 7), 'min_data_in_bin': 1})
                       _parent_ds.construct()
-                      log(f"  Parent Dataset loaded from binary in {time.time() - _parent_t0:.1f}s "
-                          f"(EFB reconstruction skipped). Folds reuse via reference=.")
+                      # Validate binary matches current feature count
+                      _expected_ncol = X_all.shape[1] + (len(_hmm_overlay_names) if _hmm_overlay is not None else 0)
+                      if _parent_ds.num_feature() != _expected_ncol:
+                          log(f"  STALE binary: {_parent_ds.num_feature()} features vs {_expected_ncol} expected — rebuilding")
+                          os.remove(bin_path)
+                          _parent_ds = None
+                      else:
+                          log(f"  Parent Dataset loaded from binary in {time.time() - _parent_t0:.1f}s "
+                              f"(EFB reconstruction skipped). Folds reuse via reference=.")
                   else:
                       _parent_feature_cols = feature_cols + (_hmm_overlay_names if _hmm_overlay is not None else [])
                       # Build representative sample: valid rows only, with HMM overlay if present
@@ -2770,8 +2779,37 @@ if __name__ == '__main__':
           avg_mlogloss = np.mean([w['mlogloss'] for w in window_results])
           log(f"\n  {tf_name.upper()} CPCV AVG ({len(window_results)} paths): Acc={avg_acc:.3f} PrecL={avg_prec_l:.3f} PrecS={avg_prec_s:.3f} mlogloss={avg_mlogloss:.4f}")
 
+          # ── Per-path calibration diagnostics (identify overfit paths) ──
+          try:
+              from sklearn.metrics import brier_score_loss
+              log(f"\n  {elapsed()} Per-path calibration analysis...")
+              for _pi, _pp in enumerate(oos_predictions):
+                  _pp_probs = _pp['y_pred_probs']
+                  _pp_y = _pp['y_true']
+                  _pp_pred = np.argmax(_pp_probs, axis=1) if _pp_probs.ndim > 1 else (_pp_probs > 0.5).astype(int)
+                  _pp_max_conf = _pp_probs.max(axis=1) if _pp_probs.ndim > 1 else np.maximum(_pp_probs, 1 - _pp_probs)
+                  _pp_acc = float((_pp_pred == _pp_y).mean())
+                  _pp_mean_conf = float(_pp_max_conf.mean())
+                  _pp_overconf = _pp_mean_conf - _pp_acc  # positive = overconfident
+                  # Brier score for the predicted class probability
+                  _pp_correct_prob = np.array([_pp_probs[j, int(_pp_y[j])] if _pp_probs.ndim > 1 else
+                                                (_pp_probs[j] if _pp_y[j] == 1 else 1 - _pp_probs[j])
+                                                for j in range(len(_pp_y))])
+                  _pp_brier = float(np.mean((1 - _pp_correct_prob) ** 2))
+                  # Store reliability weight on the prediction dict for downstream use
+                  _pp['brier_score'] = _pp_brier
+                  _pp['overconfidence'] = _pp_overconf
+                  _pp['path_accuracy'] = _pp_acc
+                  if abs(_pp_overconf) > 0.10:  # flag paths with >10% miscalibration
+                      log(f"    Path {_pi}: acc={_pp_acc:.3f} mean_conf={_pp_mean_conf:.3f} "
+                          f"overconf={_pp_overconf:+.3f} brier={_pp_brier:.4f} n={len(_pp_y)} {'** OVERFIT **' if _pp_overconf > 0.10 else '** UNDERCONF **'}")
+              _all_briers = [p.get('brier_score', 0.5) for p in oos_predictions]
+              log(f"  Brier scores: min={min(_all_briers):.4f} max={max(_all_briers):.4f} mean={np.mean(_all_briers):.4f}")
+          except Exception as _cal_diag_err:
+              log(f"  Per-path calibration analysis failed: {_cal_diag_err}")
+
           # Clean up subprocess shared data if used
-          if _subprocess_folds and _shared_fold_dir and os.path.exists(_shared_fold_dir):
+          if locals().get('_subprocess_folds') and locals().get('_shared_fold_dir') and os.path.exists(_shared_fold_dir):
               import shutil
               shutil.rmtree(_shared_fold_dir, ignore_errors=True)
               log(f"  Subprocess shared data cleaned: {_shared_fold_dir}")
@@ -2941,6 +2979,12 @@ if __name__ == '__main__':
               if _ok in _base_lgb_params and _ok not in ('num_threads',):
                   final_params[_ok] = _base_lgb_params[_ok]
 
+          # Propagate binary mode from CPCV params to final model
+          if _BINARY_MODE:
+              final_params['objective'] = 'binary'
+              final_params.pop('num_class', None)
+              final_params['metric'] = 'binary_logloss'
+
           # Split into 85% train + 15% val for early stopping
           n_final = X_final_all.shape[0]
           val_sz = max(int(n_final * 0.15), 100)
@@ -3040,23 +3084,78 @@ if __name__ == '__main__':
               os.replace(_feat_tmp, _feat_path)
               log(f"  Model saved: {_model_path} (accuracy: {final_acc:.3f})")
 
-          log(f"\n  {elapsed()} Platt calibration (per-class)...")
+          # ============================================================
+          # CALIBRATION PIPELINE (Platt + per-sample averaging + diagnostics)
+          # ============================================================
+          # CPCV produces multiple predictions per sample (each sample appears in ~7 test folds
+          # for C(8,2)). Raw concatenation creates artificial confidence clustering because the
+          # same sample gets different probabilities from different path models.
+          # Fix: average per-sample probabilities across paths FIRST, then calibrate.
+          log(f"\n  {elapsed()} Platt calibration (per-class, with per-sample averaging)...")
           from sklearn.linear_model import LogisticRegression
 
           cal_raw_3c = np.concatenate([p['y_pred_probs'] for p in oos_predictions], axis=0)
           y_cal = np.concatenate([p['y_true'] for p in oos_predictions], axis=0)
 
+          # Per-sample averaged predictions for calibration diagnostics
+          _cal_idx_all = np.concatenate([p['test_indices'] for p in oos_predictions], axis=0)
+          _unique_idx = np.unique(_cal_idx_all)
+          _avg_probs = np.zeros((_unique_idx.shape[0], cal_raw_3c.shape[1] if cal_raw_3c.ndim > 1 else 2))
+          _avg_y = np.zeros(_unique_idx.shape[0])
+          _avg_counts = np.zeros(_unique_idx.shape[0])
+          _idx_map = {int(idx): i for i, idx in enumerate(_unique_idx)}
+          for _oi, _raw_idx in enumerate(_cal_idx_all):
+              _mi = _idx_map[int(_raw_idx)]
+              _avg_probs[_mi] += cal_raw_3c[_oi] if cal_raw_3c.ndim > 1 else np.array([1 - cal_raw_3c[_oi], cal_raw_3c[_oi]])
+              _avg_y[_mi] = y_cal[_oi]
+              _avg_counts[_mi] += 1
+          _avg_probs /= _avg_counts[:, None]
+
+          # Log confidence-accuracy diagnostic (per-sample averaged)
+          _avg_max_conf = _avg_probs.max(axis=1)
+          _avg_pred_cls = np.argmax(_avg_probs, axis=1)
+          _avg_correct = (_avg_pred_cls == _avg_y)
+          log(f"  Per-sample averaging: {len(_unique_idx)} unique samples from {len(cal_raw_3c)} raw predictions")
+          log(f"  Avg paths per sample: {_avg_counts.mean():.1f}")
+          _conf_bands = [(0.50, 0.55), (0.55, 0.60), (0.60, 0.65), (0.65, 0.70),
+                         (0.70, 0.75), (0.75, 0.80), (0.80, 0.85), (0.85, 0.90),
+                         (0.90, 0.95), (0.95, 1.01)]
+          log(f"  CONFIDENCE-ACCURACY TABLE (per-sample averaged):")
+          for _lo, _hi in _conf_bands:
+              _band_mask = (_avg_max_conf >= _lo) & (_avg_max_conf < _hi)
+              _n_band = _band_mask.sum()
+              if _n_band > 0:
+                  _band_acc = _avg_correct[_band_mask].mean()
+                  log(f"    {_lo*100:.0f}-{_hi*100:.0f}%: acc={_band_acc:.3f} n={_n_band}")
+
           if len(cal_raw_3c) > 50:
-              # Platt scaling on the 3-class softprob outputs
+              # Platt scaling: fit on per-sample averaged predictions (reduces noise from
+              # path-level variance and prevents overfit paths from dominating calibration)
               platt = LogisticRegression(max_iter=500)
-              platt.fit(cal_raw_3c, y_cal)
+              platt.fit(_avg_probs, _avg_y.astype(int))
               with open(f'{DB_DIR}/platt_{tf_name}.pkl', 'wb') as f:
                   pickle.dump(platt, f)
-              log(f"  Platt calibrator saved (platt_{tf_name}.pkl) -- multinomial 3-class")
+              _n_platt_classes = _avg_probs.shape[1]
+              log(f"  Platt calibrator saved (platt_{tf_name}.pkl) -- {_n_platt_classes}-class, "
+                  f"fitted on {len(_avg_y)} per-sample averaged predictions")
+
+              # Log calibrated confidence-accuracy for comparison
+              _cal_probs = platt.predict_proba(_avg_probs)
+              _cal_max_conf = _cal_probs.max(axis=1)
+              _cal_pred_cls = np.argmax(_cal_probs, axis=1)
+              _cal_correct = (_cal_pred_cls == _avg_y)
+              log(f"  CALIBRATED CONFIDENCE-ACCURACY TABLE (Platt):")
+              for _lo, _hi in _conf_bands:
+                  _band_mask = (_cal_max_conf >= _lo) & (_cal_max_conf < _hi)
+                  _n_band = _band_mask.sum()
+                  if _n_band > 0:
+                      _band_acc = _cal_correct[_band_mask].mean()
+                      log(f"    {_lo*100:.0f}-{_hi*100:.0f}%: acc={_band_acc:.3f} n={_n_band}")
           else:
               platt = None
 
           # ── Isotonic Calibrator (CalibratedClassifierCV with cv='prefit') ──
+          # Uses the per-sample averaged OOS predictions instead of the tiny val set
           log(f"\n  {elapsed()} Isotonic calibration (CalibratedClassifierCV)...")
           try:
               from sklearn.calibration import CalibratedClassifierCV
@@ -3077,7 +3176,7 @@ if __name__ == '__main__':
               if len(cal_raw_3c) > 50:
                   _n_cal_classes = int(y_cal.max()) + 1
                   _lgbm_wrapper = _LGBMPrefit(final_model, _n_cal_classes, final_model.best_iteration)
-                  # Fit isotonic calibration on OOS predictions (X_val_f held-out from final train)
+                  # Fit isotonic on held-out val set (isotonic needs raw model input, not OOS probs)
                   iso_cal = CalibratedClassifierCV(_lgbm_wrapper, cv='prefit', method='isotonic')
                   iso_cal.fit(X_val_f, y_val_f)
                   _iso_path = f'{DB_DIR}/calibrator_{tf_name}.pkl'
@@ -3094,13 +3193,20 @@ if __name__ == '__main__':
 
           # Confidence threshold validation (using held-out val set from final model)
           log(f"\n  {elapsed()} CONFIDENCE THRESHOLD VALIDATION (on val set)...")
-          outer_raw_3c = final_model.predict(X_val_f)  # shape (N, 3)
+          outer_raw_3c = final_model.predict(X_val_f)
+          # Binary LightGBM returns (N,) P(class=1); convert to (N, 2) for consistency
+          if _BINARY_MODE and outer_raw_3c.ndim == 1:
+              outer_raw_3c = np.column_stack([1.0 - outer_raw_3c, outer_raw_3c])
 
           if platt is not None:
               outer_cal_3c = platt.predict_proba(outer_raw_3c)
-              log(f"  Raw short_prob: [{outer_raw_3c[:, 0].min():.3f}, {outer_raw_3c[:, 0].max():.3f}] "
-                  f"flat_prob: [{outer_raw_3c[:, 1].min():.3f}, {outer_raw_3c[:, 1].max():.3f}] "
-                  f"long_prob: [{outer_raw_3c[:, 2].min():.3f}, {outer_raw_3c[:, 2].max():.3f}]")
+              if outer_raw_3c.shape[1] >= 3:
+                  log(f"  Raw short_prob: [{outer_raw_3c[:, 0].min():.3f}, {outer_raw_3c[:, 0].max():.3f}] "
+                      f"flat_prob: [{outer_raw_3c[:, 1].min():.3f}, {outer_raw_3c[:, 1].max():.3f}] "
+                      f"long_prob: [{outer_raw_3c[:, 2].min():.3f}, {outer_raw_3c[:, 2].max():.3f}]")
+              else:
+                  log(f"  Raw down_prob: [{outer_raw_3c[:, 0].min():.3f}, {outer_raw_3c[:, 0].max():.3f}] "
+                      f"up_prob: [{outer_raw_3c[:, 1].min():.3f}, {outer_raw_3c[:, 1].max():.3f}]")
           else:
               outer_cal_3c = outer_raw_3c
 

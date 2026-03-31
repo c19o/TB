@@ -87,6 +87,19 @@ def main():
         check("nvidia-smi", False, str(e))
 
     # ============================================================
+    # TEST 1b: LightGBM GPU Device Type
+    # ============================================================
+    print(f"\n== TEST 1b: LightGBM GPU Device Type ==")
+    try:
+        from multi_gpu_optuna import _detect_lgbm_device_type
+        dtype = _detect_lgbm_device_type()
+        check(f"LightGBM GPU device detected: {dtype}", dtype in ('cuda_sparse', 'gpu'))
+    except RuntimeError as e:
+        check("LightGBM GPU device type", False, str(e))
+    except Exception as e:
+        check("LightGBM GPU device detection", False, str(e))
+
+    # ============================================================
     # TEST 2: Cross Gen Multi-GPU Dispatch
     # ============================================================
     print(f"\n== TEST 2: Cross Gen Multi-GPU ({tf}) ==")
@@ -98,8 +111,8 @@ def main():
         check(f"MULTI_GPU_CROSS_GEN enabled: {_MULTI_GPU_CROSS_GEN}", True)
 
         if tf == '1w':
-            from config import SKIP_CROSSES_TFS
-            check("1w skips cross gen", '1w' in SKIP_CROSSES_TFS if hasattr(SKIP_CROSSES_TFS, '__contains__') else True,
+            from cloud_run_tf import SKIP_CROSSES_TFS
+            check("1w skips cross gen", '1w' in SKIP_CROSSES_TFS,
                   "1w should skip cross gen")
         else:
             # Verify _multi_gpu_cross_worker exists
@@ -187,7 +200,7 @@ def main():
         ds.save_binary(bin_path)
         check("save_binary works", os.path.exists(bin_path))
         # Load back
-        ds2 = lgb.Dataset(bin_path)
+        ds2 = lgb.Dataset(bin_path, params={'max_bin': 7, 'feature_pre_filter': False, 'min_data_in_bin': 1})
         ds2.construct()
         check("load from binary works", ds2.num_data() == 100)
         os.remove(bin_path)
@@ -204,16 +217,24 @@ def main():
         check("CalibratedClassifierCV importable", True)
 
         # Simulate calibration
-        class DummyModel(BaseEstimator, ClassifierMixin):
+        class DummyModel(ClassifierMixin, BaseEstimator):
             def __init__(self): self.classes_ = np.array([0, 1])
-            def fit(self, X, y): return self
+            def fit(self, X, y):
+                self.classes_ = np.array([0, 1])
+                return self
             def predict_proba(self, X): return np.column_stack([1-X[:, 0], X[:, 0]])
+            def predict(self, X): return (X[:, 0] > 0.5).astype(int)
 
-        model = DummyModel()
-        cal = CalibratedClassifierCV(model, method='isotonic', cv='prefit')
+        model = DummyModel().fit(None, None)  # pre-fit the dummy model
         X_cal = np.random.rand(200, 1).astype(np.float32)
         y_cal = (X_cal[:, 0] > 0.5).astype(int)
-        cal.fit(X_cal, y_cal)
+        # cv='prefit' requires sklearn >= 1.4; use cv=2 as fallback
+        try:
+            cal = CalibratedClassifierCV(model, method='isotonic', cv='prefit')
+            cal.fit(X_cal, y_cal)
+        except (TypeError, ValueError):
+            cal = CalibratedClassifierCV(model, method='isotonic', cv=2)
+            cal.fit(X_cal, y_cal)
         probs = cal.predict_proba(X_cal)
         check("Isotonic calibration works", probs.shape == (200, 2))
         check("Probabilities sum to 1", np.allclose(probs.sum(axis=1), 1.0, atol=0.01))
@@ -323,8 +344,9 @@ def main():
     # ============================================================
     print(f"\n== TEST 12: Config Integrity ==")
     try:
-        from config import (V3_LGBM_PARAMS, TRIPLE_BARRIER_CONFIG,
+        from config import (V3_LGBM_PARAMS,
                            TF_CPCV_GROUPS, TF_NUM_LEAVES, BINARY_TF_MODE)
+        from feature_library import TRIPLE_BARRIER_CONFIG
 
         check("max_bin == 7", V3_LGBM_PARAMS.get('max_bin') == 7)
         check("'deterministic' NOT in params", 'deterministic' not in V3_LGBM_PARAMS)

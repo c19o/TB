@@ -1181,6 +1181,18 @@ def run_trading_loop(mode='paper'):
                     # Legacy binary model fallback
                     probs_3c = np.array([1 - raw_pred[0], 0.0, raw_pred[0]])
 
+                # Apply Platt calibration to LightGBM raw probabilities (fixes non-monotonic
+                # confidence-accuracy relationship from uncalibrated leaf fractions)
+                if tf in platt_models:
+                    _raw_2d = probs_3c.reshape(1, -1)
+                    _cal_probs = platt_models[tf].predict_proba(_raw_2d)[0]
+                    # Platt output classes may differ from input shape; map back
+                    if len(_cal_probs) == len(probs_3c):
+                        probs_3c = _cal_probs
+                    elif len(_cal_probs) == 2 and len(probs_3c) == 3:
+                        # Binary Platt on 3-class input: map to [DOWN, 0, UP]
+                        probs_3c = np.array([_cal_probs[0], 0.0, _cal_probs[1]])
+
                 p_short, p_flat, p_long = float(probs_3c[0]), float(probs_3c[1]), float(probs_3c[2])
                 pred_class = int(np.argmax(probs_3c))
                 confidence = float(np.max(probs_3c))

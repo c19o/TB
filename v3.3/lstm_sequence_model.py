@@ -255,25 +255,17 @@ def prepare_data(tf_name):
     cfg = LSTM_CONFIG.get(tf_name, LSTM_CONFIG['1h'])
     window = cfg['window']
 
-    # Load feature DB
-    db_map = {
-        '15m': 'features_15m.db',
-        '1h': 'features_1h.db', '4h': 'features_4h.db',
-        '1d': 'features_1d.db', '1w': 'features_1w.db',
-    }
-    table_map = {
-        '15m': 'features_15m',
-        '1h': 'features_1h', '4h': 'features_4h',
-        '1d': 'features_1d', '1w': 'features_1w',
-    }
-    db_path = os.path.join(PROJECT_DIR, db_map[tf_name])
-    table = table_map[tf_name]
-    parquet_path = db_path.replace('.db', '.parquet')
+    # Load features — parquet-first (pipeline now outputs parquet)
+    parquet_path = os.path.join(PROJECT_DIR, f'features_{tf_name}.parquet')
+    db_path = os.path.join(PROJECT_DIR, f'features_{tf_name}.db')
+    table = f'features_{tf_name}'
+    data_source = None
 
     if os.path.exists(parquet_path):
         df = pd.read_parquet(parquet_path)
+        data_source = parquet_path
         log.info(f"Loaded {len(df)} rows from parquet: {parquet_path}")
-    else:
+    elif os.path.exists(db_path):
         conn = sqlite3.connect(db_path)
         ext_check = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -287,16 +279,20 @@ def prepare_data(tf_name):
         else:
             df = pd.read_sql(f"SELECT * FROM {table} ORDER BY rowid", conn)
         conn.close()
+        data_source = db_path
         log.info(f"Loaded {len(df)} rows from {db_path}")
+    else:
+        raise FileNotFoundError(f"No feature data found — checked {parquet_path} and {db_path}")
 
-    # Get target column
-    tf_label = {'15m': '15m', '1h': '1h', '4h': '4h', '1d': '1d', '1w': '1w'}
-    target_col = f'next_{tf_label[tf_name]}_direction'
+    # Get target column — triple_barrier_label is canonical for parquet pipeline
+    target_col = 'triple_barrier_label'
     if target_col not in df.columns:
-        # Try triple barrier
-        target_col = 'triple_barrier_label'
+        # Fallback to legacy direction column
+        target_col = f'next_{tf_name}_direction'
         if target_col not in df.columns:
-            raise ValueError(f"No target column found in {db_path}")
+            raise ValueError(f"No target column found in {data_source}. "
+                             f"Expected 'triple_barrier_label' or 'next_{tf_name}_direction'. "
+                             f"Available columns: {[c for c in df.columns if 'label' in c.lower() or 'target' in c.lower() or 'direction' in c.lower()]}")
 
     # Use ALL features from the DB — let the LSTM learn what matters
     # Exclude: raw OHLCV (already captured via returns), targets, metadata
@@ -768,35 +764,29 @@ def main():
         log.info(f"Testing LSTM feature extraction for {args.tf}")
         extractor = LSTMFeatureExtractor(args.tf)
 
-        # Load feature DB
-        db_map = {
-            '15m': 'features_15m.db',
-            '1h': 'features_1h.db', '4h': 'features_4h.db',
-            '1d': 'features_1d.db', '1w': 'features_1w.db',
-        }
-        table_map = {
-            '15m': 'features_15m',
-            '1h': 'features_1h', '4h': 'features_4h',
-            '1d': 'features_1d', '1w': 'features_1w',
-        }
-        _db_p = os.path.join(PROJECT_DIR, db_map[args.tf])
-        _pq_p = _db_p.replace('.db', '.parquet')
+        # Load features — parquet-first (pipeline now outputs parquet)
+        _pq_p = os.path.join(PROJECT_DIR, f'features_{args.tf}.parquet')
+        _db_p = os.path.join(PROJECT_DIR, f'features_{args.tf}.db')
+        _table = f'features_{args.tf}'
         if os.path.exists(_pq_p):
             df = pd.read_parquet(_pq_p)
-        else:
+        elif os.path.exists(_db_p):
             conn = sqlite3.connect(_db_p)
             _ext = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                (table_map[args.tf] + '_ext',)
+                (_table + '_ext',)
             ).fetchone()
             if _ext:
-                df_main = pd.read_sql(f"SELECT * FROM {table_map[args.tf]} ORDER BY rowid", conn)
-                df_ext = pd.read_sql(f"SELECT * FROM {table_map[args.tf]}_ext ORDER BY rowid", conn)
+                df_main = pd.read_sql(f"SELECT * FROM {_table} ORDER BY rowid", conn)
+                df_ext = pd.read_sql(f"SELECT * FROM {_table}_ext ORDER BY rowid", conn)
                 df_ext = df_ext.drop(columns=['timestamp'], errors='ignore')
                 df = pd.concat([df_main, df_ext], axis=1)
             else:
-                df = pd.read_sql(f"SELECT * FROM {table_map[args.tf]} ORDER BY rowid", conn)
+                df = pd.read_sql(f"SELECT * FROM {_table} ORDER BY rowid", conn)
             conn.close()
+        else:
+            log.error(f"No feature data found — checked {_pq_p} and {_db_p}")
+            sys.exit(1)
 
         # Extract features
         lstm_feats = extractor.extract(df.tail(500))

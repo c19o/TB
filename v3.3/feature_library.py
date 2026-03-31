@@ -1463,90 +1463,6 @@ def _nearest_fib_distance(values):
     return result
 
 
-def compute_sar_numerology_features(ta_result: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
-    """
-    SAR-Numerology hybrid features inspired by AlphaNumetrix indicator.
-    Combines Parabolic SAR and MA values with numerological digit analysis.
-
-    Args:
-        ta_result: DataFrame from compute_ta_features (contains sar_value, sma_200, etc.)
-        df: Original OHLCV DataFrame (for close prices).
-
-    Returns:
-        DataFrame with SAR-numerology hybrid feature columns.
-    """
-    idx = ta_result.index
-    out = {}
-
-    c_vals = _np(df['close']).astype(np.float64)
-    c_not_nan = ~np.isnan(c_vals)
-
-    sar_vals = ta_result['sar_value'].values.astype(np.float64)
-    sar_not_nan = ~np.isnan(sar_vals)
-    sar_int = np.where(sar_not_nan, np.floor(np.abs(sar_vals)).astype(np.int64), 0)
-    c_int = np.where(c_not_nan, np.floor(np.abs(c_vals)).astype(np.int64), 0)
-
-    # 1. sar_digit_sum — digital root of floor(SAR)
-    out['sar_digit_sum'] = np.where(sar_not_nan, digital_root_vec(sar_int), np.nan)
-
-    # 2. sar_price_digit_diff — digit_sum(close) - digit_sum(SAR)
-    c_dr = digital_root_vec(c_int)
-    sar_dr = digital_root_vec(sar_int)
-    both_valid = sar_not_nan & c_not_nan
-    out['sar_price_digit_diff'] = np.where(both_valid,
-                                           c_dr.astype(np.float64) - sar_dr.astype(np.float64),
-                                           np.nan)
-
-    # 3. sar_angel_pattern — SAR contains angel numbers (111, 222, ..., 999)
-    sar_str = pd.Series(np.where(sar_not_nan, sar_int, 0)).astype(str)
-    angel_match = np.zeros(len(idx), dtype=np.int32)
-    for pat in _ANGEL_PATTERNS:
-        angel_match |= sar_str.str.contains(pat, regex=False).values.astype(np.int32)
-    out['sar_angel_pattern'] = np.where(sar_not_nan, angel_match, np.nan)
-
-    # 4. sar_gematria_value — Hebrew gematria of SAR digits
-    out['sar_gematria_value'] = np.where(sar_not_nan,
-                                         _hebrew_gematria_of_digits(sar_int).astype(np.float64),
-                                         np.nan)
-
-    # 5. sar_fibonacci_proximity — distance to nearest Fibonacci number
-    out['sar_fibonacci_proximity'] = np.where(sar_not_nan,
-                                              _nearest_fib_distance(sar_vals),
-                                              np.nan)
-
-    # 6. sar_x_ma_digit — digit_sum(SAR) * is_above_SMA200
-    above_sma200 = ta_result['above_sma200'].values.astype(np.float64) if 'above_sma200' in ta_result.columns else np.ones(len(idx))
-    out['sar_x_ma_digit'] = np.where(sar_not_nan,
-                                     sar_dr.astype(np.float64) * above_sma200,
-                                     np.nan)
-
-    # 7. sma200_digit_sum — digital root of SMA(200)
-    if 'sma_200' in ta_result.columns:
-        sma200_vals = ta_result['sma_200'].values.astype(np.float64)
-        sma200_not_nan = ~np.isnan(sma200_vals)
-        sma200_int = np.where(sma200_not_nan, np.floor(np.abs(sma200_vals)).astype(np.int64), 0)
-        out['sma200_digit_sum'] = np.where(sma200_not_nan,
-                                           digital_root_vec(sma200_int),
-                                           np.nan)
-
-        # 9. ma_price_ratio_numerology — digit_sum(floor(close/SMA200 * 100))
-        ratio_valid = sma200_not_nan & c_not_nan & (sma200_vals > 0)
-        ratio = np.where(ratio_valid,
-                         np.floor(c_vals / np.where(sma200_vals > 0, sma200_vals, 1) * 100).astype(np.int64),
-                         0)
-        out['ma_price_ratio_numerology'] = np.where(ratio_valid,
-                                                    digital_root_vec(np.abs(ratio).astype(np.int64)),
-                                                    np.nan)
-
-    # 8. ema_cross_digit — digit_sum at EMA crossover moments
-    if 'macd_cross_up' in ta_result.columns and 'macd_cross_down' in ta_result.columns:
-        ema_cross = (ta_result['macd_cross_up'].values.astype(int) |
-                     ta_result['macd_cross_down'].values.astype(int))
-        out['ema_cross_digit'] = np.where(c_not_nan,
-                                          c_dr.astype(np.float64) * ema_cross.astype(np.float64),
-                                          np.nan)
-
-    return pd.DataFrame(out, index=idx)
 
 
 # ============================================================
@@ -2822,6 +2738,14 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                     _eng_int = np.where(_eng_vals > 0, np.abs(_eng_vals).astype(np.int64), 0)
                     tw[dr_col] = np.where(_eng_int > 0, digital_root_vec(_eng_int), 0)
 
+            # Engagement per tweet (for influence weighting)
+            for _ec in ['favorite_count', 'retweet_count', 'reply_count']:
+                if _ec in tw.columns:
+                    tw[_ec] = pd.to_numeric(tw[_ec], errors='coerce').fillna(0)
+            tw['_engagement'] = (tw.get('retweet_count', 0) + tw.get('favorite_count', 0)).clip(lower=1)
+            tw['_influence_bull'] = tw['tweet_is_bull'].astype(float) * tw['_engagement']
+            tw['_influence_bear'] = tw['tweet_is_bear'].astype(float) * tw['_engagement']
+
             # Build aggregation dict -- all 6 ciphers mean + DR modes
             agg_dict_tw = {
                 # 6 cipher means
@@ -2875,6 +2799,11 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             if 'likes_dr' in tw.columns:
                 agg_dict_tw['likes_dr_mode'] = ('likes_dr', _mode_or_nan)
 
+            # Engagement & influence aggregation
+            agg_dict_tw['tweet_engagement_sum'] = ('_engagement', 'sum')
+            agg_dict_tw['tweet_influence_bull'] = ('_influence_bull', 'sum')
+            agg_dict_tw['tweet_influence_bear'] = ('_influence_bear', 'sum')
+
             tw_agg = tw.groupby('bucket').agg(**agg_dict_tw).reset_index()
 
             bucket_map_tw = tw_agg.set_index('bucket')
@@ -2887,6 +2816,15 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             # Derived: divergence = bull_count - bear_count
             if 'tweet_bull_count' in out.columns and 'tweet_bear_count' in out.columns:
                 out['tweet_sentiment_divergence'] = out['tweet_bull_count'] - out['tweet_bear_count']
+
+            # Engagement spike: (today's engagement - 7d mean) / 7d std
+            if 'tweet_engagement_sum' in out.columns:
+                _eng = out['tweet_engagement_sum']
+                bars_per_7d_eng = max(1, 7 * 86400 // bucket_seconds)
+                _eng_min_p = min(2, bars_per_7d_eng)
+                _eng_mean = _eng.rolling(bars_per_7d_eng, min_periods=_eng_min_p).mean()
+                _eng_std = _eng.rolling(bars_per_7d_eng, min_periods=_eng_min_p).std().clip(lower=1.0)
+                out['engagement_spike'] = ((_eng - _eng_mean) / _eng_std).astype(np.float32)
         except Exception as _e:
             import logging; logging.getLogger('feature_library').warning(f"Tweet feature computation failed: {_e}")
 
@@ -3340,12 +3278,25 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             if oc_daily.index.tz is not None:
                 oc_daily.index = oc_daily.index.tz_localize(None)
 
-            for col in ['hash_rate', 'n_transactions', 'difficulty', 'mempool_size', 'miners_revenue']:
+            for col in ['hash_rate', 'n_transactions', 'difficulty', 'mempool_size', 'miners_revenue', 'market_cap']:
                 if col in oc_daily.columns:
                     vals = pd.to_numeric(oc_daily[col], errors='coerce').ffill()
                     mapped = vals.reindex(df_date_idx)
                     mapped.index = _cpu_idx
                     out[f'onchain_{col}'] = mapped.ffill()
+
+            # ── Market Cap Derived Features (NVT ratio, RoC, Z-score) ──
+            if 'onchain_market_cap' in out.columns and 'onchain_n_transactions' in out.columns:
+                mc = out['onchain_market_cap']
+                ntx = out['onchain_n_transactions'].clip(lower=1)
+                out['nvt_ratio'] = (mc / ntx).astype(np.float32)
+                bars_per_7d = max(1, 7 * 86400 // bucket_seconds)
+                out['market_cap_roc'] = mc.pct_change(bars_per_7d).astype(np.float32)
+                bars_per_30d = max(1, 30 * 86400 // bucket_seconds)
+                _mc_min_p = min(5, bars_per_30d)
+                _mc_mean = mc.rolling(bars_per_30d, min_periods=_mc_min_p).mean()
+                _mc_std = mc.rolling(bars_per_30d, min_periods=_mc_min_p).std().clip(lower=1e-10)
+                out['market_cap_zscore'] = ((mc - _mc_mean) / _mc_std).astype(np.float32)
 
             if 'onchain_hash_rate' in out.columns:
                 bars_per_week = max(1, 7 * 86400 // bucket_seconds)
@@ -3536,6 +3487,16 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             for lag in cfg['fg_lag_bars']:
                 out[f'fear_greed_lag{lag}'] = out['fear_greed'].shift(lag)
 
+        # Classification-based extreme flags (from API labels, different thresholds than numeric)
+        if 'classification' in fg_df.columns:
+            fg_cls = fg_df['classification'].astype(str)
+            fg_cls.index = fg_cls.index.normalize()
+            fg_cls_mapped = fg_cls.reindex(df_date_idx)
+            fg_cls_mapped.index = _cpu_idx
+            fg_cls_mapped = fg_cls_mapped.ffill()
+            out['fg_class_extreme_fear'] = (fg_cls_mapped == 'Extreme Fear').astype(np.float32)
+            out['fg_class_extreme_greed'] = (fg_cls_mapped == 'Extreme Greed').astype(np.float32)
+
     # ===========================================================
     # GOOGLE TRENDS
     # ===========================================================
@@ -3548,6 +3509,35 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
         gt_mapped = gt_mapped.ffill()
         out['gtrends_interest'] = gt_mapped
         out['gtrends_interest_high'] = (gt_mapped > 75).astype(int)
+        bars_per_7d_gt = max(1, 7 * 86400 // bucket_seconds)
+        out['gtrends_roc'] = gt_mapped.pct_change(bars_per_7d_gt).astype(np.float32)
+        bars_per_30d_gt = max(1, 30 * 86400 // bucket_seconds)
+        _gt_min_periods = min(5, bars_per_30d_gt)
+        _gt_mean = gt_mapped.rolling(bars_per_30d_gt, min_periods=_gt_min_periods).mean()
+        _gt_std = gt_mapped.rolling(bars_per_30d_gt, min_periods=_gt_min_periods).std().clip(lower=1e-10)
+        out['gtrends_zscore'] = ((gt_mapped - _gt_mean) / _gt_std).astype(np.float32)
+
+    # ===========================================================
+    # OPEN INTEREST (from open_interest.db via astro_cache)
+    # ===========================================================
+    oi_df = astro_cache.get('open_interest', pd.DataFrame()) if astro_cache else pd.DataFrame()
+    if len(oi_df) > 0:
+        oi_col = 'oi_usd' if 'oi_usd' in oi_df.columns else ('oi_contracts' if 'oi_contracts' in oi_df.columns else None)
+        if oi_col is not None:
+            oi_vals = pd.to_numeric(oi_df[oi_col], errors='coerce')
+            if hasattr(oi_df.index, 'normalize'):
+                oi_vals.index = oi_vals.index.normalize()
+            oi_mapped = oi_vals.reindex(df_date_idx)
+            oi_mapped.index = _cpu_idx
+            oi_mapped = oi_mapped.ffill()
+            out['oi_value'] = oi_mapped.astype(np.float32)
+            bars_per_7d_oi = max(1, 7 * 86400 // bucket_seconds)
+            out['oi_roc_7d'] = oi_mapped.pct_change(bars_per_7d_oi).astype(np.float32)
+            bars_per_30d_oi = max(1, 30 * 86400 // bucket_seconds)
+            _oi_min_p = min(5, bars_per_30d_oi)
+            _oi_mean = oi_mapped.rolling(bars_per_30d_oi, min_periods=_oi_min_p).mean()
+            _oi_std = oi_mapped.rolling(bars_per_30d_oi, min_periods=_oi_min_p).std().clip(lower=1e-10)
+            out['oi_zscore'] = ((oi_mapped - _oi_mean) / _oi_std).astype(np.float32)
 
     # ===========================================================
     # FUNDING RATES
@@ -6374,11 +6364,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         result['tx_knn_bear_x_bull'] = _knn_bear_sig * _b
         result['tx_knn_bear_x_bear'] = _knn_bear_sig * _br
 
-    # 13c. SAR-numerology hybrid features (AlphaNumetrix-inspired)
-    # Must run AFTER TA + numerology are in result (needs sar_value, rsi_14, ema_200)
-    t0 = time.time()
-    sar_num_feats = compute_sar_numerology_features(result)
-    result = pd.concat([result, sar_num_feats], axis=1)
+    # 13c. SAR-numerology — REMOVED: duplicate call, already done in Phase 1 (line 6276)
 
     # 13d. TA x TA and esoteric x TA crosses
     t0 = time.time()
@@ -6399,17 +6385,16 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         print(f"    Target features: {time.time()-t0:.1f}s ({len(target_feats.columns)} cols)")
         result = pd.concat([result, target_feats], axis=1)
 
-    # Clean up string columns
-    str_cols = [col for col in result.columns if result[col].dtype == 'object']
-    if str_cols:
-        result = result.drop(columns=str_cols, errors='ignore')
-
-    # Ensure all numeric
-    # Deduplicate columns (multiple compute functions may produce the same column name)
+    # Deduplicate columns first (multiple compute functions may produce the same column name)
     if result.columns.duplicated().any():
         n_dupes = result.columns.duplicated().sum()
         print(f"    Deduplicating {n_dupes} duplicate columns...", flush=True)
         result = result.loc[:, ~result.columns.duplicated()]
+
+    # Clean up string columns
+    str_cols = [col for col in result.columns if result[col].dtype == 'object']
+    if str_cols:
+        result = result.drop(columns=str_cols, errors='ignore')
 
     for col in result.columns:
         if result[col].dtype not in ['float64', 'int64', 'float32', 'int32', 'bool']:

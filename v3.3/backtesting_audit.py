@@ -152,8 +152,17 @@ def load_full_history(tf_name):
     features_all_path = os.path.join(DB_DIR, f'features_{tf_name}_all.json')
     features_pruned_path = os.path.join(DB_DIR, f'features_{tf_name}_pruned.json')
 
-    if not os.path.exists(db_path):
-        print(f"  SKIP {tf_name} -- {cfg['db']} not found", flush=True)
+    # Check for data sources: parquet first (cloud training output), then .db
+    parquet_path = db_path.replace('.db', '.parquet')
+    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
+    if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
+        parquet_path = v2_parquet
+    has_parquet = os.path.exists(parquet_path)
+    has_db = os.path.exists(db_path)
+
+    if not has_parquet and not has_db:
+        print(f"  SKIP {tf_name} -- no data source found "
+              f"(checked {cfg['db']}, features_BTC_{tf_name}.parquet)", flush=True)
         return None
     if not os.path.exists(model_path):
         print(f"  SKIP {tf_name} -- model_{tf_name}.json not found", flush=True)
@@ -170,16 +179,25 @@ def load_full_history(tf_name):
             saved_features = json.load(f)
         print(f"  Loaded {len(saved_features)} features from features_{tf_name}_pruned.json", flush=True)
 
-    # Load data -- try V2 parquet naming first, then V1, then SQLite
-    parquet_path = db_path.replace('.db', '.parquet')
-    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
-    if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
-        parquet_path = v2_parquet
-    if os.path.exists(parquet_path):
+    # Load data -- try parquet first (V2 naming from cloud), then V1, then SQLite
+    if has_parquet:
         df = pd.read_parquet(parquet_path)
         print(f"  Loaded from parquet: {parquet_path} ({len(df):,} rows)", flush=True)
     else:
         conn = sqlite3.connect(db_path)
+        # Verify the expected table exists in the DB
+        table_check = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (cfg['table'],)
+        ).fetchone()
+        if not table_check:
+            # List available tables for diagnostics
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            conn.close()
+            print(f"  SKIP {tf_name} -- table '{cfg['table']}' not found in {cfg['db']}. "
+                  f"Available tables: {tables}", flush=True)
+            return None
         ext_check = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
             (cfg['table'] + '_ext',)
@@ -193,6 +211,12 @@ def load_full_history(tf_name):
             df = pd.read_sql_query(f"SELECT * FROM {cfg['table']}", conn)
         conn.close()
         print(f"  Loaded from SQLite: {db_path} ({len(df):,} rows)", flush=True)
+
+    # Verify minimum required columns exist
+    if 'close' not in df.columns:
+        print(f"  SKIP {tf_name} -- 'close' column not found. "
+              f"Available columns: {list(df.columns[:20])}", flush=True)
+        return None
 
     # Timestamps — handle all common column names
     if 'timestamp' in df.columns:
@@ -305,6 +329,37 @@ def load_full_history(tf_name):
     # Load model and predict ALL bars
     model = lgb.Booster(model_file=model_path)
 
+    # Verify feature count matches what the model expects
+    model_n_features = model.num_feature()
+    data_n_features = X.shape[1] if not sp_sparse.issparse(X) else X.shape[1]
+    if data_n_features != model_n_features:
+        print(f"  WARNING: Feature count mismatch — model expects {model_n_features}, "
+              f"data has {data_n_features}.", flush=True)
+        if data_n_features < model_n_features:
+            # Pad with NaN columns (LightGBM treats NaN as missing)
+            n_pad = model_n_features - data_n_features
+            print(f"  Padding {n_pad} missing feature columns with NaN "
+                  f"(likely cross features not present for {tf_name})", flush=True)
+            if sp_sparse.issparse(X):
+                # Create sparse NaN padding — use lil for efficient construction
+                pad = sp_sparse.csr_matrix((X.shape[0], n_pad), dtype=np.float32)
+                # Fill with NaN: convert to lil, set, convert back
+                pad_dense = np.full((X.shape[0], n_pad), np.nan, dtype=np.float32)
+                pad = sp_sparse.csr_matrix(pad_dense)
+                del pad_dense
+                X = sp_sparse.hstack([X, pad], format='csr')
+            else:
+                pad = np.full((X.shape[0], n_pad), np.nan, dtype=np.float32)
+                X = np.hstack([X, pad])
+        else:
+            # More features than model expects — truncate (extra columns at end)
+            n_extra = data_n_features - model_n_features
+            print(f"  Truncating {n_extra} extra feature columns", flush=True)
+            if sp_sparse.issparse(X):
+                X = X[:, :model_n_features]
+            else:
+                X = X[:, :model_n_features]
+
     raw_preds = model.predict(X)
 
     if raw_preds.ndim == 2 and raw_preds.shape[1] == 3:
@@ -312,8 +367,18 @@ def load_full_history(tf_name):
         confidences = np.max(raw_preds, axis=1)
         directions = np.where(pred_class == 2, 1, np.where(pred_class == 0, -1, 0)).astype(np.int32)
         print(f"  3-class: LONG={np.sum(pred_class==2):,} FLAT={np.sum(pred_class==1):,} SHORT={np.sum(pred_class==0):,}", flush=True)
+    elif raw_preds.ndim == 1 or (raw_preds.ndim == 2 and raw_preds.shape[1] == 2):
+        # Binary mode: UP(1) / DOWN(0)
+        if raw_preds.ndim == 2:
+            prob_up = raw_preds[:, 1]
+        else:
+            prob_up = raw_preds
+        pred_class = (prob_up > 0.5).astype(int)
+        confidences = np.maximum(prob_up, 1 - prob_up)
+        directions = np.where(pred_class == 1, 1, -1).astype(np.int32)  # UP=1, DOWN=-1 (no FLAT)
+        print(f"  Binary: UP={np.sum(pred_class==1):,} DOWN={np.sum(pred_class==0):,}", flush=True)
     else:
-        raise ValueError(f"Model output is 1D ({raw_preds.shape}), expected 3-class multiclass. Retrain with objective=multiclass.")
+        raise ValueError(f"Model output unexpected shape ({raw_preds.shape})")
 
     n_bars = len(df)
     print(f"  Confidence range: [{confidences.min():.3f}, {confidences.max():.3f}]", flush=True)
@@ -359,9 +424,16 @@ def load_full_history(tf_name):
                     pc = np.argmax(probs, axis=1)
                     oos_directions[idxs] = np.where(pc == 2, 1, np.where(pc == 0, -1, 0)).astype(np.int32)
                     oos_confidences[idxs] = np.max(probs, axis=1)
+                elif probs.ndim == 2 and probs.shape[1] == 2:
+                    # Binary mode: 2-column [P(DOWN), P(UP)]
+                    prob_up = probs[:, 1]
+                    oos_directions[idxs] = np.where(prob_up > 0.5, 1, -1).astype(np.int32)
+                    oos_confidences[idxs] = np.maximum(prob_up, 1 - prob_up)
                 else:
-                    oos_directions[idxs] = np.where(probs.ravel() > 0.5, 1, -1).astype(np.int32)
-                    oos_confidences[idxs] = probs.ravel()
+                    # Binary mode: 1D P(UP)
+                    prob_up = probs.ravel()
+                    oos_directions[idxs] = np.where(prob_up > 0.5, 1, -1).astype(np.int32)
+                    oos_confidences[idxs] = np.maximum(prob_up, 1 - prob_up)
             else:
                 # Fallback: use model predictions but only for OOS indices
                 oos_directions[idxs] = directions[idxs]
