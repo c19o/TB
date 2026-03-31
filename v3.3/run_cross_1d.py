@@ -1,6 +1,6 @@
 import sys, os
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-os.environ['V2_RIGHT_CHUNK'] = '200'
+os.environ['V2_RIGHT_CHUNK'] = '500'
 
 class _F:
     def find_module(self, n, p=None):

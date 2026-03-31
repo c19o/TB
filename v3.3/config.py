@@ -354,7 +354,8 @@ SKIP_FEATURES_BY_TF = {
 # AlphaNumetrix proves: EMAs + RSI + SAR backbone + numerology interpretation = edge.
 # Result: ~200-300 features (from ~3500) — much better for 819 rows.
 LEAN_1W_MODE = True
-BINARY_1W_MODE = True  # Convert 3-class (SHORT/FLAT/LONG) to binary (DOWN/UP), drop FLAT rows
+BINARY_1W_MODE = True  # DEPRECATED — use BINARY_TF_MODE instead
+BINARY_TF_MODE = {'1w': True, '1d': True, '4h': False, '1h': False, '15m': False}  # Per-TF binary mode toggle
 
 # TA features to KEEP in lean 1w mode (everything else gets dropped).
 # These are the AlphaNumetrix backbone: SAR + EMAs + RSI + price-relative measures.

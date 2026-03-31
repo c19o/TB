@@ -853,7 +853,7 @@ TF_CONFIG = {
     },
     '1d': {
         'bucket_seconds': 86400,
-        'return_bars': [1, 3, 7, 14, 30],
+        'return_bars': [1, 3, 7, 14, 30, 60, 90],  # 60d+90d cover full 6-90 bar trade duration
         'lag_bars': [1, 3, 7, 14, 30],
         'vol_short': 5,
         'vol_long': 20,
@@ -1020,7 +1020,7 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['above_sma200'] = (c > out['sma_200']).astype(int)
 
     # --- RSI ---
-    for p in [7, 14, 21, 26]:
+    for p in [7, 14, 21, 26, 60, 90]:
         out[f'rsi_{p}'] = compute_rsi(c, p)
     out['rsi_14_ob'] = (out['rsi_14'] > 70).astype(int)
     out['rsi_14_os'] = (out['rsi_14'] < 30).astype(int)
@@ -1028,6 +1028,10 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     # --- 52-week features ---
     out['price_vs_52w_high'] = (c / c.rolling(52).max()).astype(np.float32)
     out['price_vs_52w_low'] = (c / c.rolling(52).min()).astype(np.float32)
+
+    # --- 365-day features (yearly high/low distance — medium-term regime context) ---
+    out['price_vs_365d_high'] = (c / c.rolling(365).max()).astype(np.float32)
+    out['price_vs_365d_low'] = (c / c.rolling(365).min()).astype(np.float32)
 
     # --- Bollinger Bands ---
     mid = c.rolling(20).mean()
