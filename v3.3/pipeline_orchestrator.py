@@ -17,7 +17,8 @@ Usage:
 Checkpoint file: pipeline_manifest.json
 """
 
-import os, sys, json, time, hashlib, subprocess, argparse, traceback
+import os, sys, json, time, hashlib, subprocess, argparse, traceback, threading
+from concurrent.futures import ThreadPoolExecutor, Future
 from datetime import datetime, timezone
 
 # Ensure unbuffered output
@@ -504,6 +505,197 @@ def run_pipeline(phase_filter=None, tf_filter=None, asset_filter=None):
 
 
 # ══════════════════════════════════════════════════════════════
+# ASSEMBLY-LINE: CPU+GPU phase overlap
+# When training TF N on GPU, start feature build for TF N+1 on CPU.
+# ThreadPoolExecutor(2) + semaphore ensures at most 1 GPU task + 1 CPU task.
+# ══════════════════════════════════════════════════════════════
+
+def run_assembly_line(tf_filter=None, asset_filter=None):
+    """
+    Assembly-line pipeline: overlap CPU feature builds with GPU training.
+
+    For TF list [1w, 1d, 4h, 1h, 15m]:
+      1. Build features for 1w (CPU)
+      2. Train 1w (GPU) + simultaneously build features for 1d (CPU)
+      3. Train 1d (GPU) + simultaneously build features for 4h (CPU)
+      ...and so on. Post-training phases (optuna, meta, lstm, pbo, audit) run
+      sequentially after training completes for each TF.
+    """
+    manifest = load_manifest()
+
+    if manifest['started'] is None:
+        manifest['started'] = datetime.now(timezone.utc).isoformat()
+        save_manifest(manifest)
+
+    tfs_to_run = [tf_filter] if tf_filter else ALL_TFS
+
+    log("=" * 70)
+    log("  SAVAGE22 v3.1 — ASSEMBLY-LINE PIPELINE (CPU+GPU overlap)")
+    log(f"  Started: {datetime.now(timezone.utc).isoformat()}")
+    log(f"  TFs: {tfs_to_run}")
+    log("=" * 70)
+
+    if not check_disk_space(min_gb=15):
+        log("ABORT: Insufficient disk space. Free up space and retry.")
+        return False
+
+    # Semaphore: max 1 GPU job (training) + 1 CPU job (features) at a time
+    gpu_sem = threading.Semaphore(1)
+    cpu_sem = threading.Semaphore(1)
+    manifest_lock = threading.Lock()
+
+    total_steps = 0
+    done_steps = 0
+    failed_steps = 0
+
+    def _run_features_safe(tf, asset):
+        """CPU-bound feature build with semaphore."""
+        with cpu_sem:
+            nonlocal total_steps, done_steps, failed_steps
+            if is_done(manifest, 'features', tf, asset):
+                log(f"  [CPU] SKIP features {asset} {tf} — already done")
+                with manifest_lock:
+                    done_steps += 1
+                return True
+            log(f"  [CPU] Building features: {asset} {tf}")
+            ok = run_features(tf, asset, manifest)
+            with manifest_lock:
+                total_steps += 1
+                if ok:
+                    done_steps += 1
+                else:
+                    failed_steps += 1
+            return ok
+
+    def _run_train_safe(tf, asset):
+        """GPU-bound training with semaphore."""
+        with gpu_sem:
+            nonlocal total_steps, done_steps, failed_steps
+            # Check prerequisite
+            if not is_done(manifest, 'features', tf, asset):
+                if check_features_exist(tf, asset):
+                    with manifest_lock:
+                        mark_done(manifest, 'features', tf, asset, {'source': 'pre-existing'})
+                else:
+                    log(f"  [GPU] SKIP train {tf} — features not ready")
+                    return False
+
+            if is_done(manifest, 'train', tf, asset):
+                log(f"  [GPU] SKIP train {asset} {tf} — already done")
+                with manifest_lock:
+                    done_steps += 1
+                return True
+            log(f"  [GPU] Training: {asset} {tf}")
+            ok = run_train(tf, asset, manifest)
+            with manifest_lock:
+                total_steps += 1
+                if ok:
+                    done_steps += 1
+                else:
+                    failed_steps += 1
+            return ok
+
+    # Post-training phases run sequentially per TF (they're fast)
+    POST_TRAIN_PHASES = ['optuna', 'meta', 'lstm', 'pbo', 'audit']
+
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix='assembly') as pool:
+        prefetch_future = None  # Future for next TF's feature build
+
+        for i, tf in enumerate(tfs_to_run):
+            assets = get_assets_for_tf(tf)
+            if asset_filter:
+                assets = [a for a in assets if a == asset_filter]
+
+            for asset in assets:
+                # Step 1: Ensure features are ready for THIS TF
+                # (may already be prefetched from previous iteration)
+                if prefetch_future is not None:
+                    try:
+                        prefetch_future.result()  # wait for prefetch to complete
+                    except Exception as e:
+                        log(f"  [CPU] Prefetch failed: {e}")
+                    prefetch_future = None
+
+                if not is_done(manifest, 'features', tf, asset):
+                    if not check_features_exist(tf, asset):
+                        _run_features_safe(tf, asset)
+
+                # Step 2: Start training on GPU + prefetch next TF's features on CPU
+                next_tf = tfs_to_run[i + 1] if i + 1 < len(tfs_to_run) else None
+
+                if next_tf:
+                    next_assets = get_assets_for_tf(next_tf)
+                    if asset_filter:
+                        next_assets = [a for a in next_assets if a == asset_filter]
+                    if next_assets:
+                        next_asset = next_assets[0]
+                        # Only prefetch if not already done
+                        if not is_done(manifest, 'features', next_tf, next_asset) and \
+                           not check_features_exist(next_tf, next_asset):
+                            log(f"  [OVERLAP] Prefetching features for {next_tf} while training {tf}")
+                            prefetch_future = pool.submit(_run_features_safe, next_tf, next_asset)
+
+                # Train this TF (blocks on GPU semaphore)
+                _run_train_safe(tf, asset)
+
+                # Step 3: Run post-training phases sequentially
+                for phase in POST_TRAIN_PHASES:
+                    runner = PHASE_RUNNERS.get(phase)
+                    if not runner:
+                        continue
+
+                    total_steps += 1
+                    if is_done(manifest, phase, tf, asset):
+                        log(f"  SKIP {asset} {tf} {phase} — already done")
+                        done_steps += 1
+                        continue
+
+                    # Check train prerequisite
+                    if not is_done(manifest, 'train', tf, asset):
+                        if check_model_exists(tf, asset):
+                            mark_done(manifest, 'train', tf, asset, {'source': 'pre-existing'})
+                        else:
+                            log(f"  SKIP {asset} {tf} {phase} — model not trained")
+                            continue
+
+                    log(f"  >>> {asset} {tf} {phase}")
+                    try:
+                        ok = runner(tf, asset, manifest)
+                        if ok:
+                            done_steps += 1
+                        else:
+                            failed_steps += 1
+                            log(f"  FAILED: {asset} {tf} {phase}")
+                    except KeyboardInterrupt:
+                        log(f"\n  INTERRUPTED at {asset} {tf} {phase}")
+                        save_manifest(manifest)
+                        return False
+                    except Exception as e:
+                        failed_steps += 1
+                        mark_failed(manifest, phase, tf, asset, str(e))
+                        log(f"  ERROR: {asset} {tf} {phase}: {e}")
+                        traceback.print_exc()
+
+        # Wait for any remaining prefetch
+        if prefetch_future is not None:
+            try:
+                prefetch_future.result()
+            except Exception:
+                pass
+
+    # Summary
+    log(f"\n{'='*70}")
+    log(f"  ASSEMBLY-LINE COMPLETE")
+    log(f"  Total: {total_steps} | Done: {done_steps} | Failed: {failed_steps}")
+    log(f"  Elapsed: {time.time() - _START:.0f}s ({(time.time() - _START)/60:.1f} min)")
+    log(f"{'='*70}")
+
+    manifest['completed'] = datetime.now(timezone.utc).isoformat()
+    save_manifest(manifest)
+    return failed_steps == 0
+
+
+# ══════════════════════════════════════════════════════════════
 # CLI
 # ══════════════════════════════════════════════════════════════
 
@@ -517,6 +709,8 @@ if __name__ == '__main__':
                         help='Reset a specific step (e.g. --reset train 1d)')
     parser.add_argument('--reset-phase', help='Reset all steps for a phase')
     parser.add_argument('--reset-all', action='store_true', help='Reset entire manifest')
+    parser.add_argument('--assembly-line', action='store_true',
+                        help='Use assembly-line mode: overlap CPU feature builds with GPU training')
     args = parser.parse_args()
 
     manifest = load_manifest()
@@ -546,5 +740,10 @@ if __name__ == '__main__':
         log(f"  Reset {len(keys_to_del)} steps for phase '{phase}'")
         sys.exit(0)
 
-    ok = run_pipeline(args.phase, args.tf, args.asset)
+    if args.assembly_line:
+        ok = run_assembly_line(args.tf, args.asset)
+    elif args.phase:
+        ok = run_pipeline(args.phase, args.tf, args.asset)
+    else:
+        ok = run_pipeline(args.phase, args.tf, args.asset)
     sys.exit(0 if ok else 1)

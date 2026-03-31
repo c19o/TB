@@ -465,6 +465,34 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
     return booster
 
 
+def _cpcv_worker_initializer(_nth_str):
+    """Pre-load heavy modules once per spawn'd worker process.
+    Called by ProcessPoolExecutor(initializer=...) — runs exactly once per worker,
+    before any _cpcv_split_worker calls. This avoids re-importing numpy/scipy/lightgbm/
+    sklearn on every fold, saving ~2-4s per worker startup."""
+    import os
+    os.environ['OMP_NUM_THREADS'] = _nth_str
+    os.environ['MKL_NUM_THREADS'] = _nth_str
+    os.environ['OPENBLAS_NUM_THREADS'] = _nth_str
+    os.environ['NUMEXPR_NUM_THREADS'] = _nth_str
+    os.environ['_CPCV_WORKER'] = '1'
+
+    # Pre-import all heavy libraries into this worker's module cache
+    import numpy          # noqa: F401
+    from scipy import sparse  # noqa: F401
+    import lightgbm       # noqa: F401
+    from sklearn.metrics import accuracy_score, precision_score, log_loss  # noqa: F401
+    try:
+        from threadpoolctl import threadpool_limits
+        threadpool_limits(limits=int(_nth_str), user_api='blas')
+    except ImportError:
+        pass
+    try:
+        from multiprocessing.shared_memory import SharedMemory  # noqa: F401
+    except ImportError:
+        pass
+
+
 def _cpcv_split_worker(args_tuple):
     """Train a single LightGBM CPCV split.
     Runs in a subprocess for parallel CPU training.
@@ -491,6 +519,7 @@ def _cpcv_split_worker(args_tuple):
     os.environ['NUMEXPR_NUM_THREADS'] = _nth
     os.environ['_CPCV_WORKER'] = '1'  # tells module-level code to skip threadpool_limits(128)
 
+    # These imports are near-instant if _cpcv_worker_initializer already loaded them
     import numpy as np
     from scipy import sparse
     import lightgbm as lgb
@@ -2094,7 +2123,11 @@ if __name__ == '__main__':
 
               _n_failed_folds = 0
               try:
-                  with ProcessPoolExecutor(max_workers=_n_workers, mp_context=_spawn_ctx) as executor:
+                  with ProcessPoolExecutor(
+                      max_workers=_n_workers, mp_context=_spawn_ctx,
+                      initializer=_cpcv_worker_initializer,
+                      initargs=(str(_threads_per_worker),),
+                  ) as executor:
                       for result in executor.map(_cpcv_split_worker, worker_args):
                           (wi, acc, prec_long, prec_short, mlogloss_val, best_iter,
                            model_bytes, preds_3c, y_test, test_idx_valid,
