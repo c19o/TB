@@ -211,12 +211,25 @@ def apply_gpu_params(params, trial_number, gpu_cfg):
 
     params['device_type'] = gpu_cfg.device_type
     params['gpu_device_id'] = gpu_id
-    params['histogram_pool_size'] = 512  # MB — GPU histogram memory
+    params['gpu_use_dp'] = False  # FP32 histograms: 15-20x faster on consumer GPUs (1/32 FP64:FP32)
+    params['histogram_pool_size'] = 1024  # MB — GPU histogram memory
 
     # GPU mode is incompatible with force_col_wise/force_row_wise
     params.pop('force_col_wise', None)
     params.pop('force_row_wise', None)
     params.pop('device', None)  # remove legacy 'device' key
+
+    # Voting tree learner for multi-GPU: reduces inter-GPU communication from
+    # O(features) to O(top_k) per split. All features still get histogram'd
+    # locally on each GPU — top_k only controls the voting/communication phase.
+    # Single GPU stays on 'serial' (no communication overhead).
+    if gpu_cfg.num_gpus > 1:
+        params['tree_learner'] = 'voting'
+        params['top_k'] = 50
+        log.info(f"  Multi-GPU: tree_learner='voting', top_k=50 "
+                 f"(comms O(50) vs O(features))")
+    else:
+        params['tree_learner'] = 'serial'
 
     # Thread count: fair share of CPU cores
     params['num_threads'] = gpu_cfg.threads_per_trial

@@ -823,20 +823,67 @@ def run_trading_loop(mode='paper'):
         except Exception as e:
             print(f"  WARNING: InferenceCrossComputer for {tf} failed: {e}")
 
+    # Fix #11: Feature subset projection — extract features used in tree splits.
+    # For full (non-pruned) models, identifies the ~5K features with split count > 0
+    # out of ~2.9M total. Used to filter feat_name_to_idx and cross_feat_positions
+    # so CSR construction and cross feature vectorization skip unused features.
+    _used_feature_set = {}  # tf -> set of feature names with split importance > 0
+    for tf in models:
+        m = models[tf]
+        if not hasattr(m, 'feature_importance'):
+            continue  # lleaves compiled models don't expose importance
+        try:
+            importance = m.feature_importance(importance_type='split')
+            all_names = m.feature_name()
+            used = {name for name, imp in zip(all_names, importance) if imp > 0}
+            if len(used) < len(all_names):
+                _used_feature_set[tf] = used
+                print(f"  Projection {tf}: {len(all_names):,} → {len(used):,} features "
+                      f"({len(used)/len(all_names)*100:.1f}% used in tree splits)")
+        except Exception as e:
+            print(f"  WARNING: Could not extract feature importance for {tf}: {e}")
+
     # S-3: Build O(1) lookup structures for sparse inference — built once at startup.
     # Eliminates 2.9M dict iterations per bar (line 979 for-loop + line 1013 list comp).
     # feat_name_to_idx[tf]: {feature_name: col_index} for O(1) positional lookup.
     # cross_feat_positions[tf]: int32 array mapping cross_values[i] → col_index in feat_names.
+    # Fix #11: When projection available, only include used features in idx_map.
+    # This makes CSR construction skip unused base features (~300 → ~200 lookups, minor)
+    # and pre-filters cross_feat_positions to only used cross features (2.9M → ~5K, major).
     feat_name_to_idx = {}
     cross_feat_positions = {}
+    _cross_value_indices = {}  # Fix #11: indices into cross_values[] for projected cross features
     for tf in models:
-        idx_map = {name: i for i, name in enumerate(features_list[tf])}
+        _used = _used_feature_set.get(tf)
+        # Build full idx_map first (column indices must match model's feature order)
+        full_idx_map = {name: i for i, name in enumerate(features_list[tf])}
+        # Filter to used features if projection available
+        if _used:
+            idx_map = {name: i for name, i in full_idx_map.items() if name in _used}
+        else:
+            idx_map = full_idx_map
         feat_name_to_idx[tf] = idx_map
         if tf in cross_computers:
             try:
                 cnames = cross_computers[tf].get_cross_feature_names()
-                cross_feat_positions[tf] = np.array(
-                    [idx_map.get(cn, -1) for cn in cnames], dtype=np.int32)
+                if _used:
+                    # Fix #11: Pre-filter to only cross features the model uses in splits.
+                    # Store paired arrays: _cross_value_indices[tf][k] = index into cross_values,
+                    # cross_feat_positions[tf][k] = column index in CSR.
+                    pairs = [(j, full_idx_map[cn]) for j, cn in enumerate(cnames)
+                             if cn in _used and cn in full_idx_map]
+                    if pairs:
+                        vi, ci = zip(*pairs)
+                        _cross_value_indices[tf] = np.array(vi, dtype=np.int32)
+                        cross_feat_positions[tf] = np.array(ci, dtype=np.int32)
+                    else:
+                        _cross_value_indices[tf] = np.array([], dtype=np.int32)
+                        cross_feat_positions[tf] = np.array([], dtype=np.int32)
+                    print(f"  Cross projection {tf}: {len(cnames):,} → {len(pairs):,} "
+                          f"cross features used in splits")
+                else:
+                    cross_feat_positions[tf] = np.array(
+                        [full_idx_map.get(cn, -1) for cn in cnames], dtype=np.int32)
             except Exception as e:
                 print(f"  WARNING: Could not build cross positions for {tf}: {e}")
                 cross_feat_positions[tf] = np.array([], dtype=np.int32)
@@ -1123,18 +1170,34 @@ def run_trading_loop(mode='paper'):
                         _sp_cols.append(cidx)
 
                 # 2. Cross features: vectorized non-zero extraction from numpy array
+                # Fix #11: When projection available, _cross_value_indices pre-filters to
+                # only model-used cross features (~5K instead of ~2.9M). This avoids
+                # creating a mask over millions of unused entries.
                 _n_cross_fired = 0
                 _cv = cross_values if (cross_values is not None
                                        and tf in cross_feat_positions
                                        and len(cross_feat_positions[tf]) > 0) else None
                 if _cv is not None:
-                    _cpos = cross_feat_positions[tf]
-                    _nz_mask = (_cv != 0) & (_cpos >= 0)
-                    _nz_idx = np.nonzero(_nz_mask)[0]
-                    if len(_nz_idx) > 0:
-                        _n_cross_fired = len(_nz_idx)
-                        _sp_data.extend(_cv[_nz_idx].astype(np.float32).tolist())
-                        _sp_cols.extend(_cpos[_nz_idx].tolist())
+                    if tf in _cross_value_indices:
+                        # Projected path: only check cross features used in tree splits
+                        _cvi = _cross_value_indices[tf]
+                        _cpos = cross_feat_positions[tf]
+                        _used_vals = _cv[_cvi]
+                        _nz_mask = _used_vals != 0
+                        _nz_idx = np.nonzero(_nz_mask)[0]
+                        if len(_nz_idx) > 0:
+                            _n_cross_fired = len(_nz_idx)
+                            _sp_data.extend(_used_vals[_nz_idx].astype(np.float32).tolist())
+                            _sp_cols.extend(_cpos[_nz_idx].tolist())
+                    else:
+                        # Unprojected path: check all cross features (original behavior)
+                        _cpos = cross_feat_positions[tf]
+                        _nz_mask = (_cv != 0) & (_cpos >= 0)
+                        _nz_idx = np.nonzero(_nz_mask)[0]
+                        if len(_nz_idx) > 0:
+                            _n_cross_fired = len(_nz_idx)
+                            _sp_data.extend(_cv[_nz_idx].astype(np.float32).tolist())
+                            _sp_cols.extend(_cpos[_nz_idx].tolist())
 
                 _sp_data_arr = np.array(_sp_data, dtype=np.float32)
                 _sp_cols_arr = np.array(_sp_cols, dtype=np.int32)

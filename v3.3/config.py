@@ -560,7 +560,7 @@ EFB_PREBUNDLE_ENABLED = {
 # LightGBM: applied via is_unbalance=True or class_weight param
 # 1w: explicit SHORT upweight (3x) because model never predicts SHORT without it
 TF_CLASS_WEIGHT = {
-    '1d': {0: 1.5, 1: 1.0},           # Binary: DOWN=1.5x mild upweight (was 3-class {0:3,1:1,2:1})
+    '1d': {0: 3.0, 1: 1.0},           # Binary: DOWN=3x upweight (validate.py requires >= 3.0)
     '1w': {0: 2.0, 1: 1.0, 2: 1.0},  # SHORT=2x — reduced from 3x (model was ONLY predicting SHORT)
     '4h': {0: 2.0, 1: 1.0, 2: 1.0},  # SHORT=2x — insurance (v3.2 4h had SHORT accuracy issues)
 }
@@ -587,7 +587,7 @@ CPCV_SAMPLE_SEED = 42             # deterministic sampling for reproducibility
 # Per-TF num_leaves caps (scaled with data size — larger TFs support deeper trees)
 TF_NUM_LEAVES = {
     '1w': 15,    # 819 rows — raised from 7. Perplexity: 15-31 optimal for tiny data. 15 = conservative start.
-    '1d': 31,    # 5.7K rows — 7x more data than 1w, Optuna needs room to search
+    '1d': 15,    # 5.7K rows — validate.py cap 15 (conservative for small data)
     '4h': 31,    # 23K rows — standard (EFB ratio 0.92:1)
     '1h': 63,    # 75K rows — can handle complexity (EFB ratio 3.8:1)
     '15m': 127,  # 294K rows — deep trees viable (EFB ratio 6.9:1)
@@ -622,6 +622,11 @@ SHAP_TOP_N = 1000             # Top N features by |SHAP| to report
 SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_', 'vx_', 'asp_', 'mn_', 'pn_')
 
 # ── Optuna v2: Phase 1 (rapid search) + Validation Gate ──
+# ── Cost-Sensitive Custom Objective (opt-in) ──
+# When True, Optuna trials use cost_sensitive_obj.py (asymmetric loss: wrong-direction=3x).
+# Default OFF — standard multiclass log-loss. Flip to True to experiment.
+COST_SENSITIVE_OBJ = os.environ.get('COST_SENSITIVE_OBJ', '0') == '1'
+
 # Phase 1: 2 seeded + 8 random + 15 TPE = 25 trials, 2-fold CPCV, fast LR
 # Validation Gate: top-3 re-evaluated with 4-fold CPCV, longer rounds
 # Final retrain: unchanged (full CPCV K=2, 800 rounds, LR=0.03)

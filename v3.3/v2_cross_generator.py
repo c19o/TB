@@ -28,6 +28,7 @@ Usage:
 
 import os, time, argparse, warnings, gc, glob, tempfile, queue, threading
 import ctypes
+from gpu_worker_estimator import preflight_check as _preflight_check
 try:
     _libc = ctypes.cdll.LoadLibrary("libc.so.6")
     def _malloc_trim():
@@ -1039,6 +1040,307 @@ class _AsyncNpzWriter:
 
 
 # ============================================================
+# CUDA SPARSE AND KERNEL — O(nnz) memory cross generation
+# ============================================================
+# Two-pointer sorted merge on CSC column indices. Memory is O(nnz) not O(rows),
+# which prevents OOM on 1d/4h/1h/15m timeframes. Perplexity-validated approach.
+
+_SPARSE_AND_KERNEL = None
+
+
+def _get_sparse_and_kernel():
+    """Lazy-init the CUDA RawKernel for sparse AND (sorted intersection)."""
+    global _SPARSE_AND_KERNEL
+    if _SPARSE_AND_KERNEL is not None:
+        return _SPARSE_AND_KERNEL
+    if cp is None:
+        return None
+    _SPARSE_AND_KERNEL = cp.RawKernel(r"""
+    extern "C" __global__
+    void sparse_and_batch(
+        const int* __restrict__ indptr,
+        const int* __restrict__ indices,
+        const int* __restrict__ col_pairs,
+        int*       result_indices,
+        int*       result_counts,
+        const int  max_out_per_pair
+    ) {
+        int pair = blockIdx.x;
+        int col_a = col_pairs[pair * 2];
+        int col_b = col_pairs[pair * 2 + 1];
+        int a = indptr[col_a], a_end = indptr[col_a + 1];
+        int b = indptr[col_b], b_end = indptr[col_b + 1];
+        int* out = result_indices + pair * max_out_per_pair;
+        int cnt = 0;
+        while (a < a_end && b < b_end && cnt < max_out_per_pair) {
+            int ra = indices[a], rb = indices[b];
+            if (ra == rb) { out[cnt++] = ra; a++; b++; }
+            else if (ra < rb) { a++; }
+            else { b++; }
+        }
+        result_counts[pair] = cnt;
+    }
+    """, "sparse_and_batch")
+    return _SPARSE_AND_KERNEL
+
+
+def _sparse_gpu_cross_batch(left_csc, right_csc, valid_pairs, all_names,
+                            N, prefix, gpu_id, max_features, feats_so_far):
+    """
+    GPU sparse cross generation using CUDA RawKernel two-pointer intersection.
+
+    Instead of dense element-wise multiply (O(N×BATCH) VRAM), this operates on
+    CSC indices directly: O(nnz) memory. Works for all timeframes including 15m (228K rows).
+
+    Args:
+        left_csc:  scipy.sparse.csc_matrix — left feature matrix
+        right_csc: scipy.sparse.csc_matrix — right feature matrix
+        valid_pairs: np.ndarray (n_pairs, 2) — column index pairs to cross
+        all_names: list[str] — pre-built feature names
+        N: int — number of rows
+        prefix: str — cross type prefix
+        gpu_id: int — GPU device ID
+        max_features: int or None — cap
+        feats_so_far: int — features already generated
+
+    Returns: same format as _gpu_cross_chunk single-GPU path:
+        (names, disk_files_or_csr, 'disk' or None, tmp_dir or None, n_cols)
+    """
+    kernel = _get_sparse_and_kernel()
+    if kernel is None:
+        return None  # fallback to dense path
+
+    _dev = 0 if os.environ.get('CUDA_VISIBLE_DEVICES') else gpu_id
+    cp.cuda.Device(_dev).use()
+    cp.cuda.set_pinned_memory_allocator(None)
+
+    n_left_cols = left_csc.shape[1]
+    n_right_cols = right_csc.shape[1]
+    n_valid = len(valid_pairs)
+
+    # Build unified CSC: stack [left | right] so one indptr/indices array on GPU.
+    # Right columns are offset by n_left_cols in the unified matrix.
+    combined_csc = sparse.hstack([left_csc, right_csc], format='csc')
+
+    # Upload CSC structure to GPU (just indptr + indices, NOT data — binary AND)
+    indptr_gpu = cp.asarray(combined_csc.indptr.astype(np.int32))
+    indices_gpu = cp.asarray(combined_csc.indices.astype(np.int32))
+    del combined_csc
+
+    # Remap pairs: left col_a stays as-is, right col_b += n_left_cols
+    remapped_pairs = valid_pairs.copy()
+    remapped_pairs[:, 1] += n_left_cols
+
+    # Estimate max output per pair from co-occurrence counts (upper bound)
+    # Use min(nnz(col_a), nnz(col_b)) as upper bound for intersection size
+    indptr_cpu = cp.asnumpy(indptr_gpu)
+    left_nnz = indptr_cpu[remapped_pairs[:, 0] + 1] - indptr_cpu[remapped_pairs[:, 0]]
+    right_nnz = indptr_cpu[remapped_pairs[:, 1] + 1] - indptr_cpu[remapped_pairs[:, 1]]
+    pair_max_nnz = np.minimum(left_nnz, right_nnz)
+
+    # Batch processing parameters
+    PAIRS_PER_BATCH = 25000  # 25K pairs per kernel launch
+    gpu_vram_gb = _get_gpu_vram_gb(gpu_id=_dev)
+
+    # Accumulate results
+    names_out = []
+    csr_chunks = []
+    _disk_csr_files = []
+    col_idx = 0
+
+    _ram_gb = _get_available_ram_gb()
+    FLUSH_FEATS = max(5000, min(50000, int(_ram_gb * 50)))
+    MAX_CSR_IN_RAM = max(2, min(5, int(_ram_gb / 300)))
+    _gpu_tmp_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
+                                f'_gpu_csr_{prefix}_{os.getpid()}')
+
+    _gpu_writer = _AsyncNpzWriter()
+
+    _coo_names = []
+    _coo_rows = []
+    _coo_data = []
+    _coo_col_local = 0
+
+    def _flush_csr_to_disk():
+        if not csr_chunks:
+            return
+        os.makedirs(_gpu_tmp_dir, exist_ok=True)
+        if len(csr_chunks) == 1:
+            _merged = csr_chunks[0]
+        else:
+            _merged = sparse.hstack(csr_chunks, format='csr')
+        _path = os.path.join(_gpu_tmp_dir, f'gpu_csr_{len(_disk_csr_files):04d}.npz')
+        _disk_csr_files.append(_path)
+        csr_chunks.clear()
+        _gpu_writer.enqueue(_path, _merged)
+        gc.collect()
+        _malloc_trim()
+        log(f"      Sparse CSR disk flush #{len(_disk_csr_files)}: {col_idx:,} feats total")
+
+    def _flush_coo_to_csr():
+        nonlocal _coo_col_local
+        if not _coo_rows:
+            return
+        _r_all = np.concatenate(_coo_rows)
+        _c_parts = []
+        for _ci, _r in enumerate(_coo_rows):
+            _c_parts.append(np.full(len(_r), _ci, dtype=np.int32))
+        _c_all = np.concatenate(_c_parts)
+        _d_all = np.concatenate(_coo_data)
+        _csr = sparse.coo_matrix((_d_all, (_r_all, _c_all)),
+                                  shape=(N, _coo_col_local)).tocsr()
+        csr_chunks.append(_csr)
+        names_out.extend(_coo_names)
+        _coo_names.clear()
+        _coo_rows.clear()
+        _coo_data.clear()
+        _coo_col_local = 0
+        del _r_all, _c_all, _d_all, _csr, _c_parts
+        gc.collect()
+        if len(csr_chunks) >= MAX_CSR_IN_RAM:
+            _flush_csr_to_disk()
+
+    log(f"  SPARSE KERNEL: {n_valid:,} pairs, batch={PAIRS_PER_BATCH}, "
+        f"GPU={gpu_vram_gb:.1f}GB VRAM")
+
+    # FIX #9: CUDA multi-stream — overlap kernel execution with D2H transfer.
+    # stream1 runs the kernel for the current sub-batch while stream2 transfers
+    # the previous sub-batch's results back to host concurrently.
+    stream1 = cp.cuda.Stream(non_blocking=True)  # kernel execution
+    stream2 = cp.cuda.Stream(non_blocking=True)  # D2H result transfer
+    _prev_result_idx_gpu = None
+    _prev_result_cnt_gpu = None
+    _prev_pairs_gpu = None
+    _prev_sb_max_out = 0
+    _prev_n_sb = 0
+    _prev_b_start = 0
+    _prev_sb_start = 0
+
+    def _drain_prev_results():
+        """Transfer and process results from previous sub-batch via stream2."""
+        nonlocal _prev_result_idx_gpu, _prev_result_cnt_gpu, _prev_pairs_gpu
+        nonlocal _prev_sb_max_out, _prev_n_sb, _prev_b_start, _prev_sb_start
+        nonlocal col_idx, _coo_col_local
+        if _prev_result_idx_gpu is None:
+            return
+        # D2H transfer on stream2
+        with stream2:
+            result_counts = cp.asnumpy(_prev_result_cnt_gpu)
+            result_indices_flat = cp.asnumpy(_prev_result_idx_gpu)
+        stream2.synchronize()
+
+        for k in range(_prev_n_sb):
+            cnt = int(result_counts[k])
+            if cnt == 0:
+                continue
+            global_pair_idx = _prev_b_start + _prev_sb_start + k
+            nz_rows = result_indices_flat[k * _prev_sb_max_out: k * _prev_sb_max_out + cnt]
+            _coo_names.append(all_names[global_pair_idx])
+            _coo_rows.append(nz_rows.copy())
+            _coo_data.append(np.ones(cnt, dtype=np.float32))
+            _coo_col_local += 1
+            col_idx += 1
+
+        del result_counts, result_indices_flat
+        del _prev_result_idx_gpu, _prev_result_cnt_gpu, _prev_pairs_gpu
+        _prev_result_idx_gpu = None
+        _prev_result_cnt_gpu = None
+        _prev_pairs_gpu = None
+        cp.get_default_memory_pool().free_all_blocks()
+
+    for b_start in range(0, n_valid, PAIRS_PER_BATCH):
+        b_end = min(b_start + PAIRS_PER_BATCH, n_valid)
+        batch_pairs = remapped_pairs[b_start:b_end]
+        batch_max_nnz = pair_max_nnz[b_start:b_end]
+        n_batch = b_end - b_start
+
+        max_out = int(batch_max_nnz.max()) if len(batch_max_nnz) > 0 else 0
+        if max_out == 0:
+            continue
+        max_out = min(max_out, N)
+
+        # Account for double-buffering: previous sub-batch results may still be on GPU
+        result_bytes = n_batch * max_out * 4
+        mem_free = cp.cuda.Device(_dev).mem_info[0]
+        _vram_factor = 0.35 if _prev_result_idx_gpu is not None else 0.7
+        if result_bytes > mem_free * _vram_factor:
+            sub_batch_size = max(100, int(n_batch * (mem_free * (_vram_factor * 0.7)) / result_bytes))
+            log(f"    VRAM limit: sub-batching {n_batch} -> {sub_batch_size} pairs "
+                f"(result buf would be {result_bytes/1e9:.1f}GB, free={mem_free/1e9:.1f}GB)")
+        else:
+            sub_batch_size = n_batch
+
+        for sb_start in range(0, n_batch, sub_batch_size):
+            sb_end = min(sb_start + sub_batch_size, n_batch)
+            sb_pairs = batch_pairs[sb_start:sb_end]
+            sb_max_nnz = batch_max_nnz[sb_start:sb_end]
+            n_sb = sb_end - sb_start
+
+            sb_max_out = int(sb_max_nnz.max()) if len(sb_max_nnz) > 0 else 0
+            if sb_max_out == 0:
+                continue
+            sb_max_out = min(sb_max_out, N)
+
+            # Upload batch pairs and launch kernel on stream1
+            with stream1:
+                pairs_gpu = cp.asarray(sb_pairs.astype(np.int32).ravel())
+                result_idx_gpu = cp.zeros(n_sb * sb_max_out, dtype=cp.int32)
+                result_cnt_gpu = cp.zeros(n_sb, dtype=cp.int32)
+
+                kernel((n_sb,), (1,),
+                       (indptr_gpu, indices_gpu, pairs_gpu,
+                        result_idx_gpu, result_cnt_gpu, np.int32(sb_max_out)))
+
+            # While stream1 kernel runs, drain previous sub-batch results on stream2
+            _drain_prev_results()
+
+            # Wait for current kernel to finish
+            stream1.synchronize()
+
+            # Stash current results for next iteration's overlapped D2H transfer
+            _prev_result_idx_gpu = result_idx_gpu
+            _prev_result_cnt_gpu = result_cnt_gpu
+            _prev_pairs_gpu = pairs_gpu
+            _prev_sb_max_out = sb_max_out
+            _prev_n_sb = n_sb
+            _prev_b_start = b_start
+            _prev_sb_start = sb_start
+
+        # Periodic flush
+        if _coo_col_local >= FLUSH_FEATS:
+            _drain_prev_results()
+            _flush_coo_to_csr()
+            log(f"    Sparse batch flush: {len(csr_chunks)} CSR chunks, "
+                f"{col_idx:,}/{n_valid:,} features")
+
+        if max_features and (feats_so_far + col_idx) >= max_features:
+            break
+
+    # Drain final pending results and cleanup streams
+    _drain_prev_results()
+    del stream1, stream2
+
+    # Final flush
+    _flush_coo_to_csr()
+    if csr_chunks:
+        _flush_csr_to_disk()
+
+    _gpu_writer.drain()
+    _gpu_writer.stop()
+
+    del indptr_gpu, indices_gpu
+    cp.get_default_memory_pool().free_all_blocks()
+
+    log(f"  SPARSE KERNEL done: {col_idx:,} features generated")
+
+    if _disk_csr_files:
+        return names_out, _disk_csr_files, 'disk', _gpu_tmp_dir, col_idx
+    if csr_chunks:
+        return names_out, csr_chunks, None, None, col_idx
+    return names_out, [], [], [], col_idx
+
+
+# ============================================================
 # BATCH GPU CROSS MULTIPLICATION (CHUNKED RIGHT-SIDE)
 # ============================================================
 
@@ -1315,6 +1617,18 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
         log(f"  MULTI-GPU: sharding {n_valid:,} pairs across {n_gpus} GPUs ({available_gpus})")
 
         N = left_mat.shape[0]
+        # ── Preflight memory estimate — throttle BEFORE launching ──
+        _density = np.count_nonzero(right_mat) / max(right_mat.size, 1)
+        _max_conc = _preflight_check(
+            tf_name=prefix, n_rows=N,
+            n_cols_left=left_mat.shape[1], n_cols_right=right_mat.shape[1],
+            density=_density, n_valid_pairs=n_valid,
+            n_gpus=n_gpus, gpu_vram_gb=gpu_vram_gb,
+        )
+        if _max_conc < n_gpus:
+            log(f"  PREFLIGHT THROTTLE: capping workers {n_gpus} → {_max_conc}")
+            n_gpus = _max_conc
+            available_gpus = available_gpus[:n_gpus]
         _mgpu_tmp = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
                                  f'_mgpu_{prefix}_{os.getpid()}')
         os.makedirs(_mgpu_tmp, exist_ok=True)
@@ -1338,30 +1652,122 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             if s < e:
                 slices.append((available_gpus[i], s, e))
 
-        # Launch workers with spawn context
+        # Adaptive RAM-gated worker pool — NO hardcoded limits
+        # Watches psutil.virtual_memory().available in real-time.
+        # Launches workers ONLY when RAM is stable above headroom threshold.
+        # Works on ANY machine (500GB, 774GB, 2TB) with ANY per-worker footprint.
+        import psutil
+        from collections import deque
         ctx = _mp.get_context('spawn')
-        workers = []
-        for g_id, p_start, p_end in slices:
+
+        _total_ram = psutil.virtual_memory().total
+        _headroom = int(_total_ram * 0.05)  # 5% headroom (38GB on 774GB)
+        _headroom = max(_headroom, 20 * 1024**3)  # minimum 20GB
+        _stability_window = 4.0  # seconds of stable RAM required before launch
+        _poll_interval = 0.25  # RAM sampling at 4Hz
+        _drop_tolerance = 0.02  # 2% of total RAM allowed variance
+
+        # Background RAM monitor thread
+        _ram_buf = deque(maxlen=int(120 / _poll_interval))
+        _ram_buf.append((time.time(), psutil.virtual_memory().available))
+        _ram_lock = threading.Lock()
+        _monitor_running = True
+
+        def _ram_monitor():
+            while _monitor_running:
+                avail = psutil.virtual_memory().available
+                with _ram_lock:
+                    _ram_buf.append((time.time(), avail))
+                time.sleep(_poll_interval)
+
+        _mon_thread = threading.Thread(target=_ram_monitor, daemon=True)
+        _mon_thread.start()
+
+        def _ram_stable_above():
+            """True if RAM has been stable above headroom for the full window."""
+            now = time.time()
+            with _ram_lock:
+                recent = [(t, v) for t, v in _ram_buf if t >= now - _stability_window]
+            if len(recent) < 3:
+                return False
+            if recent[-1][0] - recent[0][0] < _stability_window * 0.75:
+                return False
+            # Floor check: every sample above headroom
+            if any(v < _headroom for _, v in recent):
+                return False
+            # Slope check: RAM not actively dropping (worker mid-allocation)
+            net_drop = recent[0][1] - recent[-1][1]
+            if net_drop > _total_ram * _drop_tolerance:
+                return False
+            return True
+
+        log(f"  RAM-gated pool: {_total_ram/1e9:.0f}GB total, "
+            f"{_headroom/1e9:.0f}GB headroom, {_stability_window}s window, "
+            f"{len(slices)} workers queued")
+
+        active = []  # (gpu_id, process) pairs
+        completed_gpus = []
+        failed = False
+        task_idx = 0
+
+        while task_idx < len(slices) or active:
+            # Reap finished workers
+            still_alive = []
+            for gid, proc in active:
+                if proc.is_alive():
+                    still_alive.append((gid, proc))
+                else:
+                    proc.join(timeout=10)
+                    if proc.exitcode != 0:
+                        log(f"  WARNING: GPU-{gid} worker exited with code {proc.exitcode}")
+                        failed = True
+                    else:
+                        completed_gpus.append(gid)
+                        _avail_gb = psutil.virtual_memory().available / 1e9
+                        log(f"  GPU-{gid} done | {len(completed_gpus)}/{len(slices)} "
+                            f"| avail={_avail_gb:.0f}GB")
+            active = still_alive
+
+            if failed:
+                break
+
+            # Nothing left to launch — wait for stragglers
+            if task_idx >= len(slices):
+                time.sleep(0.5)
+                continue
+
+            # RAM stability gate — THE critical check
+            if not _ram_stable_above():
+                time.sleep(0.5)
+                continue
+
+            # Launch next worker
+            g_id, p_start, p_end = slices[task_idx]
             p = ctx.Process(
                 target=_multi_gpu_cross_worker,
                 args=(g_id, _left_path, _right_path, _pairs_path, _names_path,
-                      p_start, p_end, N, _mgpu_tmp)
+                      p_start, p_end, N, _mgpu_tmp),
+                daemon=False,
             )
             p.start()
-            workers.append((g_id, p))
-            if len(workers) < len(slices):
-                time.sleep(2)  # stagger to avoid simultaneous cudaMallocHost storms
+            active.append((g_id, p))
+            task_idx += 1
+            _avail_gb = psutil.virtual_memory().available / 1e9
+            log(f"  Launched GPU-{g_id} ({task_idx}/{len(slices)}) "
+                f"| active={len(active)} | avail={_avail_gb:.0f}GB")
 
-        # Wait for all workers — crash if any fail
-        for g_id, p in workers:
-            p.join()
-            if p.exitcode != 0:
-                # Clean up temp files before crash
-                import shutil
-                shutil.rmtree(_mgpu_tmp, ignore_errors=True)
-                raise RuntimeError(
-                    f"Multi-GPU worker GPU-{g_id} failed (exit code {p.exitcode}). "
-                    f"Checkpoint any prior NPZ and investigate.")
+            # Sleep > stability_window to flush pre-launch samples
+            # This prevents race: next window is entirely post-launch
+            time.sleep(_stability_window + _poll_interval * 2)
+
+        _monitor_running = False
+
+        if failed:
+            import shutil
+            shutil.rmtree(_mgpu_tmp, ignore_errors=True)
+            raise RuntimeError(
+                f"Multi-GPU cross gen failed. {len(completed_gpus)}/{len(slices)} workers succeeded. "
+                f"Completed GPUs: {completed_gpus}")
 
         # Merge results in GPU-ID order (preserves pair ordering)
         merged_names = []
@@ -1400,7 +1806,23 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             return merged_names, [out_path], 'disk', _mgpu_out_dir, total_cols
         return merged_names, [], [], [], total_cols
 
-    # ── Step 2: Vectorized GPU batch multiply (single-GPU path) ──
+    # ── Step 2a: CUDA sparse kernel path (O(nnz) memory — preferred) ──
+    # Uses two-pointer sorted merge on CSC indices instead of dense multiply.
+    # Memory is O(nnz) not O(rows×batch), preventing OOM on 1h/15m timeframes.
+    if cp is not None and _get_sparse_and_kernel() is not None:
+        try:
+            left_csc = sparse.csc_matrix(left_mat.astype(np.float32))
+            right_csc = sparse.csc_matrix(right_mat.astype(np.float32))
+            result = _sparse_gpu_cross_batch(
+                left_csc, right_csc, valid_pairs, all_names,
+                left_mat.shape[0], prefix, gpu_id, max_features, feats_so_far)
+            if result is not None:
+                return result
+            log("  Sparse kernel returned None — falling back to dense GPU path")
+        except Exception as _sparse_err:
+            log(f"  Sparse kernel failed ({_sparse_err}) — falling back to dense GPU path")
+
+    # ── Step 2b: Dense GPU batch multiply (fallback single-GPU path) ──
     # Flush COO→CSR every FLUSH_INTERVAL batches to prevent unbounded RAM growth.
     # Without this, 1.38M features accumulate ~16GB+ of COO arrays before returning.
     _dev = 0 if os.environ.get('CUDA_VISIBLE_DEVICES') else gpu_id
@@ -2533,60 +2955,86 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         return step['prefix'], step['label'], names, r, c, d, nc, combo_formulas
 
     # ── Execute cross steps: parallel or sequential ──
-    if PARALLEL_CROSS_STEPS and len(_cross_steps) > 1:
-        # BUG-H1: GPU contention — multiple threads calling gpu_batch_cross
-        # concurrently causes VRAM OOM. Force sequential with warning.
-        if cp is not None:
-            log(f"  WARNING: PARALLEL_CROSS_STEPS=1 with GPU enabled — forcing SEQUENTIAL to avoid VRAM contention")
-            log(f"  Set PARALLEL_CROSS_STEPS=0 or use CPU mode for parallel execution")
-            # Fall through to sequential mode below
-            PARALLEL_CROSS_STEPS = False
+    # Parallel mode uses a GPU lock so only 1 step touches GPU at a time,
+    # but CPU-bound work (COO→CSR assembly, disk flush) overlaps between steps.
+    # Steps split into "small" (can overlap) and "large" (run alone).
+    _LARGE_STEP_RAM_GB = float(os.environ.get('V2_LARGE_STEP_RAM_GB', '2.0'))
+    _LARGE_STEP_PAIRS = int(os.environ.get('V2_LARGE_STEP_PAIRS', '50000'))
+
+    def _classify_steps(steps):
+        """Split steps into small (parallelizable) and large (sequential)."""
+        small, large = [], []
+        for s in steps:
+            n_left = len(s.get('left_n') or [])
+            n_right = len(s.get('right_n') or [])
+            n_pairs = n_left * n_right
+            if s['est_ram'] > _LARGE_STEP_RAM_GB or n_pairs > _LARGE_STEP_PAIRS:
+                large.append(s)
+            else:
+                small.append(s)
+        return small, large
 
     if PARALLEL_CROSS_STEPS and len(_cross_steps) > 1:
-        log(f"  PARALLEL MODE: {len(_cross_steps)} steps, RAM ceiling={_RAM_CEILING_PCT}%")
-        # Sort by estimated RAM (ascending) — launch small steps first
-        _cross_steps.sort(key=lambda s: s['est_ram'])
-
         import threading
-        _step_results = []  # list of (prefix, label, names, r, c, d, nc, combo_formulas)
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        import concurrent.futures as _cf
 
-        def _mem_aware_submit(executor, steps):
-            """Submit steps to executor with memory-aware scheduling.
-            Waits until RAM is below ceiling before submitting next step."""
-            futures = {}
-            pending = list(steps)
-            completed = []
+        _small_steps, _large_steps = _classify_steps(_cross_steps)
+        log(f"  PARALLEL MODE: {len(_cross_steps)} steps "
+            f"({len(_small_steps)} small parallel, {len(_large_steps)} large sequential), "
+            f"RAM ceiling={_RAM_CEILING_PCT}%")
+        for s in _small_steps:
+            log(f"    small: Cross {s['num']} ({s['prefix']}, ~{s['est_ram']:.1f}GB)")
+        for s in _large_steps:
+            log(f"    large: Cross {s['num']} ({s['prefix']}, ~{s['est_ram']:.1f}GB)")
 
-            while pending or futures:
-                # Submit steps while RAM is below ceiling
-                while pending and _get_mem_percent() < _RAM_CEILING_PCT:
-                    step = pending.pop(0)
-                    log(f"    Submitting Cross {step['num']} ({step['prefix']}, ~{step['est_ram']:.1f}GB est)")
-                    fut = executor.submit(_execute_one_step, step)
-                    futures[fut] = step
-                    # Brief pause to let RAM measurement update
-                    if pending:
-                        time.sleep(0.5)
+        # GPU lock: only 1 thread can use GPU at a time.
+        # gpu_batch_cross does chunk loops with GPU compute + CPU assembly.
+        # Between chunks one thread does CPU work while another can use GPU.
+        _gpu_lock = threading.Lock()
 
-                # Wait for at least one to complete
-                if futures:
-                    done_futures = []
-                    for fut in list(futures.keys()):
-                        if fut.done():
-                            done_futures.append(fut)
-                    if not done_futures and (pending or futures):
-                        # Wait for any one future to complete
-                        import concurrent.futures
-                        done_set, _ = concurrent.futures.wait(
-                            futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED
-                        )
-                        done_futures = list(done_set)
+        def _execute_one_step_locked(step):
+            """Execute a cross step with GPU lock to prevent VRAM contention."""
+            with _gpu_lock:
+                return _execute_one_step(step)
 
-                    for fut in done_futures:
+        def _parallel_execute(steps_to_run):
+            """Run steps in ThreadPoolExecutor with memory-aware backpressure."""
+            results = []
+            if not steps_to_run:
+                return results
+            steps_to_run.sort(key=lambda s: s['est_ram'])
+
+            # GPU present: 2 workers (1 on GPU, 1 doing CPU assembly)
+            # CPU-only: up to 4 workers bounded by available RAM
+            if cp is not None:
+                _max_w = 2
+            else:
+                _avail_gb = _get_available_ram_gb()
+                _max_w = max(1, min(4, int(_avail_gb / max(0.1, _LARGE_STEP_RAM_GB))))
+            log(f"    ThreadPool: {_max_w} workers (GPU={'yes' if cp is not None else 'no'})")
+
+            with _TPE(max_workers=_max_w) as pool:
+                futures = {}
+                pending = list(steps_to_run)
+
+                while pending or futures:
+                    while pending and _get_mem_percent() < _RAM_CEILING_PCT and len(futures) < _max_w:
+                        step = pending.pop(0)
+                        log(f"    Submitting Cross {step['num']} ({step['prefix']}, "
+                            f"~{step['est_ram']:.1f}GB est)")
+                        fut = pool.submit(_execute_one_step_locked, step)
+                        futures[fut] = step
+
+                    if not futures:
+                        break
+
+                    done_set, _ = _cf.wait(futures.keys(), return_when=_cf.FIRST_COMPLETED)
+                    for fut in done_set:
                         step = futures.pop(fut)
                         try:
                             result = fut.result()
-                            completed.append(result)
+                            results.append(result)
                             log(f"    Completed Cross {step['num']} ({step['prefix']})")
                         except Exception as e:
                             log(f"    FAILED Cross {step['num']} ({step['prefix']}): {e}")
@@ -2595,18 +3043,28 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                             raise RuntimeError(
                                 f"Cross step {step['num']} ({step['prefix']}) failed: {e}"
                             ) from e
+            return results
 
-            return completed
+        # Phase 1: Run small steps in parallel (GPU-locked, overlap CPU work)
+        _all_results = []
+        if _small_steps:
+            log(f"  Phase 1: {len(_small_steps)} small steps in parallel")
+            _all_results.extend(_parallel_execute(_small_steps))
 
-        # Use ThreadPoolExecutor — Numba releases GIL, so threading works
-        # Limit concurrency: at most half the steps at once to control memory
-        _max_workers = max(2, min(len(_cross_steps), 6))
-        with ThreadPoolExecutor(max_workers=_max_workers) as executor:
-            _step_results = _mem_aware_submit(executor, _cross_steps)
+        # Phase 2: Run large steps sequentially (full resources, no contention)
+        if _large_steps:
+            log(f"  Phase 2: {len(_large_steps)} large steps sequential")
+            for step in _large_steps:
+                if _at_limit():
+                    log(f"  Cross {step['num']} ({step['prefix']}): SKIPPED (max_crosses reached)")
+                    continue
+                result = _execute_one_step(step)
+                _all_results.append(result)
+                log(f"    Completed Cross {step['num']} ({step['prefix']})")
 
-        # Collect results in original step order (by prefix)
+        # Collect results in canonical step order
         _step_order = ['dx', 'ax', 'ax2', 'ta2', 'ex2', 'sw', 'hod', 'mx', 'vx', 'asp', 'pn', 'mn']
-        _result_map = {r[0]: r for r in _step_results}
+        _result_map = {r[0]: r for r in _all_results}
         for prefix in _step_order:
             if prefix not in _result_map:
                 continue
@@ -2721,7 +3179,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             npz_path = os.path.join(out_dir, f'v2_crosses_{tf}.npz')
             names_path = os.path.join(out_dir, f'v2_cross_names_{tf}.json')
 
-        from atomic_io import atomic_save_npz, atomic_save_json, save_npz_indices_only, _NPZ_INDICES_ONLY
+        from atomic_io import atomic_save_npz, atomic_save_json, save_npz_indices_only, _NPZ_INDICES_ONLY, save_csr_npy
         # Ensure cross names are native Python strings (not np.str_) for JSON
         # Dedup names from truncation collisions — keep first occurrence, drop duplicates
         # CRITICAL: dedup BEFORE saving NPZ so matrix cols match name count
@@ -2759,6 +3217,18 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             os.remove(npz_path)
             raise
         atomic_save_json(cross_names, names_path)
+
+        # FIX 14: Also save as separate .npy files for mmap loading
+        # NPZ silently ignores mmap_mode — .npy enables zero-copy load
+        if symbol_tag:
+            npy_dir = os.path.join(out_dir, f'v2_crosses_{symbol_tag}_{tf}_npy')
+        else:
+            npy_dir = os.path.join(out_dir, f'v2_crosses_{tf}_npy')
+        try:
+            save_csr_npy(sparse_mat, npy_dir)
+            log(f"  Saved .npy memmap dir: {npy_dir}")
+        except Exception as _npy_err:
+            log(f"  WARNING: .npy save failed (NPZ still valid): {_npy_err}")
 
         # Final save succeeded — clean up per-cross-type checkpoints
         _cleanup_checkpoints()

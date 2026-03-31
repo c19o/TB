@@ -571,18 +571,24 @@ def check_environment(tf=None, cloud=False):
 
     # -- DB files must exist in BOTH root and v3.3/ (symlinked) --
     # cloud_run_tf.py runs from v3.3/ but some code references root-level DBs
-    workspace_root = os.path.dirname(PROJECT_DIR)  # /workspace
+    workspace_root = os.path.dirname(PROJECT_DIR)  # /workspace (or / if flat layout)
     dual_dbs = ['multi_asset_prices.db', 'v2_signals.db']
     for db_name in dual_dbs:
+        # Flat layout (/workspace/ is PROJECT_DIR): both paths are the same
         root_path = os.path.join(workspace_root, db_name)
         v33_path = os.path.join(PROJECT_DIR, db_name)
-        root_exists = os.path.exists(root_path)
-        v33_exists = os.path.exists(v33_path)
-        check(f"{db_name} in both root and v3.3/",
-              root_exists and v33_exists,
-              f"{db_name}: root={root_exists}, v3.3/={v33_exists}. "
-              f"Code references both locations. "
-              f"FIX: ln -sf /workspace/{db_name} /workspace/v3.3/{db_name}")
+        if workspace_root == '/' or workspace_root == PROJECT_DIR:
+            # Flat layout — just check PROJECT_DIR
+            check(f"{db_name} in project dir",
+                  os.path.exists(v33_path),
+                  f"{db_name} not found in {PROJECT_DIR}. FIX: scp it to /workspace/")
+        else:
+            root_exists = os.path.exists(root_path)
+            v33_exists = os.path.exists(v33_path)
+            check(f"{db_name} in both root and v3.3/",
+                  root_exists and v33_exists,
+                  f"{db_name}: root={root_exists}, v3.3/={v33_exists}. "
+                  f"FIX: ln -sf /workspace/{db_name} /workspace/v3.3/{db_name}")
 
     # -- Flat workspace layout: all .py files accessible from /workspace/ --
     # cloud_run_tf.py expects flat layout with symlinks from /workspace/*.py -> /workspace/v3.3/*.py

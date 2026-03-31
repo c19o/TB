@@ -67,7 +67,7 @@ if USE_GPU:
     gpu_params = params.copy()
     gpu_params["device_type"] = "cuda_sparse"
     gpu_params["gpu_device_id"] = GPU_ID
-    gpu_params["histogram_pool_size"] = 512
+    gpu_params["histogram_pool_size"] = 1024
     for k in ["force_col_wise", "force_row_wise", "device"]:
         gpu_params.pop(k, None)
 

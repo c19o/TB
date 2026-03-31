@@ -1005,11 +1005,33 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     l_vals = _np(l).astype(float)
 
     # --- Moving Averages ---
-    for w in [5, 10, 20, 50, 100, 200]:
-        out[f'sma_{w}'] = c.rolling(w).mean()
-        out[f'ema_{w}'] = c.ewm(span=w, adjust=False).mean()
-        out[f'close_vs_sma_{w}'] = (c - out[f'sma_{w}']) / out[f'sma_{w}']
-        out[f'close_vs_ema_{w}'] = (c - out[f'ema_{w}']) / out[f'ema_{w}']
+    if _HAS_GPU and cp is not None:
+        # GPU-accelerated SMA via CuPy cumsum (exact match to pandas rolling mean)
+        c_gpu = cp.asarray(c_vals, dtype=cp.float64)
+        _n = len(c_gpu)
+        # Prefix sum for O(1) rolling mean per window
+        _cs = cp.empty(_n + 1, dtype=cp.float64)
+        _cs[0] = 0.0
+        cp.cumsum(c_gpu, out=_cs[1:])
+        for w in [5, 10, 20, 50, 100, 200]:
+            sma_gpu = (_cs[w:] - _cs[:_n - w + 1]) / w
+            sma_np = cp.asnumpy(sma_gpu)
+            # Pad front with NaN to match pandas rolling(w).mean() alignment
+            sma_full = np.empty(_n, dtype=np.float64)
+            sma_full[:w - 1] = np.nan
+            sma_full[w - 1:] = sma_np
+            out[f'sma_{w}'] = sma_full
+            # EMA stays on CPU (inherently sequential, pandas C impl is fast)
+            out[f'ema_{w}'] = c.ewm(span=w, adjust=False).mean()
+            out[f'close_vs_sma_{w}'] = (c_vals - sma_full) / sma_full
+            out[f'close_vs_ema_{w}'] = (c - out[f'ema_{w}']) / out[f'ema_{w}']
+        del c_gpu, _cs
+    else:
+        for w in [5, 10, 20, 50, 100, 200]:
+            out[f'sma_{w}'] = c.rolling(w).mean()
+            out[f'ema_{w}'] = c.ewm(span=w, adjust=False).mean()
+            out[f'close_vs_sma_{w}'] = (c - out[f'sma_{w}']) / out[f'sma_{w}']
+            out[f'close_vs_ema_{w}'] = (c - out[f'ema_{w}']) / out[f'ema_{w}']
 
     for w in [20, 50, 200]:
         out[f'sma_{w}_slope'] = out[f'sma_{w}'].pct_change(5)
@@ -1038,8 +1060,31 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
         out['price_vs_365d_low'] = (c / c.rolling(_365_bars, min_periods=max(1, _365_bars // 2)).min()).astype(np.float32)
 
     # --- Bollinger Bands ---
-    mid = c.rolling(20).mean()
-    std = c.rolling(20).std()
+    if _HAS_GPU and cp is not None:
+        # Reuse SMA_20 already computed; GPU-accelerated rolling std via cumsum trick
+        mid = out['sma_20']
+        _c_gpu = cp.asarray(c_vals, dtype=cp.float64)
+        _c2_gpu = _c_gpu * _c_gpu
+        _cs1 = cp.empty(len(_c_gpu) + 1, dtype=cp.float64)
+        _cs2 = cp.empty(len(_c_gpu) + 1, dtype=cp.float64)
+        _cs1[0] = 0.0; _cs2[0] = 0.0
+        cp.cumsum(_c_gpu, out=_cs1[1:])
+        cp.cumsum(_c2_gpu, out=_cs2[1:])
+        _w = 20
+        _sum1 = _cs1[_w:] - _cs1[:len(_c_gpu) - _w + 1]
+        _sum2 = _cs2[_w:] - _cs2[:len(_c_gpu) - _w + 1]
+        _var = (_sum2 / _w) - (_sum1 / _w) ** 2
+        # Bessel correction (ddof=1) to match pandas .std()
+        _var = _var * _w / (_w - 1)
+        _std_gpu = cp.sqrt(cp.maximum(_var, 0))
+        _std_np = np.empty(len(c_vals), dtype=np.float64)
+        _std_np[:_w - 1] = np.nan
+        _std_np[_w - 1:] = cp.asnumpy(_std_gpu)
+        std = pd.Series(_std_np, index=c.index)
+        del _c_gpu, _c2_gpu, _cs1, _cs2, _sum1, _sum2, _var, _std_gpu
+    else:
+        mid = c.rolling(20).mean()
+        std = c.rolling(20).std()
     out['bb_upper_20'] = mid + 2 * std
     out['bb_lower_20'] = mid - 2 * std
     out['bb_width_20'] = (out['bb_upper_20'] - out['bb_lower_20']) / mid

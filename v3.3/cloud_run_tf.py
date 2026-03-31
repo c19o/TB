@@ -33,7 +33,7 @@ os.environ.setdefault('V30_DATA_DIR', '/workspace/v3.3')
 os.environ.setdefault('SAVAGE22_DB_DIR', '/workspace')
 # V1 DBs (tweets, astro, ephemeris, etc.) are in /workspace alongside everything else
 os.environ.setdefault('SAVAGE22_V1_DIR', '/workspace')
-os.chdir('/workspace')
+os.chdir('/workspace/v3.3' if os.path.isdir('/workspace/v3.3') else '/workspace')
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = _SCRIPT_DIR  # v3.3 directory
 
@@ -62,6 +62,31 @@ if _jemalloc_found:
         os.environ['LD_PRELOAD'] = f"{_jemalloc_found}:{_existing_preload}" if _existing_preload else _jemalloc_found
 else:
     _jemalloc_found = None  # will log warning after log() is defined
+
+# ── Fix #5: jemalloc tuning — reduce fragmentation for sparse alloc/free patterns ──
+if _jemalloc_found:
+    os.environ['MALLOC_CONF'] = 'background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000,narenas:32,tcache_max:4096,metadata_thp:auto'
+
+# ── Fix #6: NUMA balancing off — prevents page migration storms during cross gen ──
+try:
+    with open('/proc/sys/kernel/numa_balancing', 'w') as f:
+        f.write('0')
+    print("  NUMA auto-balancing: disabled (prevents page migration storms)")
+except (PermissionError, FileNotFoundError):
+    pass
+
+# ── Fix #7: Dirty page limits + swappiness — keep CSR in RAM ──
+for path, val, desc in [
+    ('/proc/sys/vm/swappiness', '10', 'swappiness=10 (keep CSR in RAM)'),
+    ('/proc/sys/vm/dirty_background_bytes', str(int(1.5e9)), 'dirty_bg=1.5GB'),
+    ('/proc/sys/vm/dirty_bytes', str(int(4e9)), 'dirty=4GB'),
+]:
+    try:
+        with open(path, 'w') as f:
+            f.write(val)
+        print(f"  Kernel: {desc}")
+    except (PermissionError, FileNotFoundError):
+        pass
 
 def _script(name):
     """Resolve script path — check CWD first, then script directory."""

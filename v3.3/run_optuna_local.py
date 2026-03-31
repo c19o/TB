@@ -99,6 +99,7 @@ from config import (
     OPTUNA_TF_PHASE1_LR, OPTUNA_TF_PHASE1_ROUNDS,
     OPTUNA_TF_MAX_DEPTH_RANGE, OPTUNA_TF_LR_SEARCH_RANGE,
     OPTUNA_TF_FINAL_ROUNDS,
+    COST_SENSITIVE_OBJ,
 )
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 from multi_gpu_optuna import (
@@ -371,16 +372,51 @@ def load_tf_data(tf_name):
     X_base = np.where(np.isinf(X_base), np.nan, X_base)
     n_base = len(feature_cols)
 
-    # Load sparse crosses
+    # Load sparse crosses — prefer .npy memmap (zero-copy) over NPZ (full RAM load)
     cross_matrix = None
     cross_cols = None
+    npy_dir = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy')
+    if not os.path.isdir(npy_dir):
+        npy_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy')
+        if os.path.isdir(npy_v30):
+            npy_dir = npy_v30
     npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
     if not os.path.exists(npz_path):
         npz_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz')
         if os.path.exists(npz_v30):
             npz_path = npz_v30
 
-    if os.path.exists(npz_path):
+    _loaded_from_npy = False
+    if os.path.isdir(npy_dir) and os.path.exists(os.path.join(npy_dir, 'indptr.npy')):
+        try:
+            from atomic_io import load_csr_npy
+            cross_matrix = load_csr_npy(npy_dir, mmap_mode='r')
+            # Enforce correct CSR dtypes: indptr=int64, indices=int32 (LightGBM PR #1719)
+            INT32_MAX = 2_147_483_647
+            if cross_matrix.indptr.dtype != np.int64:
+                cross_matrix.indptr = cross_matrix.indptr.astype(np.int64)
+            if cross_matrix.indices.dtype != np.int32:
+                assert cross_matrix.nnz == 0 or cross_matrix.indices.max() <= INT32_MAX, (
+                    f"FATAL: cross_matrix column index > int32 max")
+                cross_matrix.indices = cross_matrix.indices.astype(np.int32)
+            # Load column names (same logic as NPZ path)
+            for cols_dir in [DB_DIR, V30_DATA_DIR]:
+                cols_path = os.path.join(cols_dir, f'v2_cross_names_BTC_{tf_name}.json')
+                if os.path.exists(cols_path):
+                    with open(cols_path) as f:
+                        cross_cols = json.load(f)
+                    break
+            if cross_cols is None:
+                cross_cols = [f'cross_{i}' for i in range(cross_matrix.shape[1])]
+            _loaded_from_npy = True
+            log.info(f"  Loaded crosses via .npy memmap: {npy_dir} "
+                     f"({cross_matrix.shape[1]:,} cols, {cross_matrix.nnz:,} nnz)")
+        except Exception as _npy_err:
+            log.warning(f"  .npy memmap load failed, falling back to NPZ: {_npy_err}")
+            cross_matrix = None
+            cross_cols = None
+
+    if cross_matrix is None and os.path.exists(npz_path):
         try:
             cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
             # Enforce correct CSR dtypes: indptr=int64, indices=int32 (LightGBM PR #1719)
@@ -649,6 +685,17 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         _apply_binary_mode(params, tf_name)
         if params.get('objective') == 'binary' and not _lr_search_range:
             params['learning_rate'] = 0.3  # binary uses higher LR
+
+        # FIX 15: Cost-sensitive custom objective (opt-in via config)
+        _use_cost_obj = COST_SENSITIVE_OBJ and params.get('objective') != 'binary'
+        _fobj = None
+        _feval = None
+        if _use_cost_obj:
+            from cost_sensitive_obj import make_cost_sensitive_obj, make_cost_sensitive_eval, get_custom_obj_params
+            params = get_custom_obj_params(params)
+            _fobj = make_cost_sensitive_obj(regime_weights=None)
+            _feval = make_cost_sensitive_eval(regime_weights=None)
+
         # Wave 3: force_row_wise for 15m (high rows/bundles ratio)
         from config import TF_FORCE_ROW_WISE
         if tf_name in TF_FORCE_ROW_WISE:
@@ -664,7 +711,8 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
             if n_gpus > 0:
                 params['device_type'] = _detect_lgbm_device_type()
                 params['gpu_device_id'] = trial.number % n_gpus
-                params['histogram_pool_size'] = 512
+                params['gpu_use_dp'] = False  # FP32 histograms: 15-20x faster on consumer GPUs
+                params['histogram_pool_size'] = 1024
                 params.pop('force_col_wise', None)
                 params.pop('force_row_wise', None)
                 params.pop('device', None)
@@ -690,10 +738,11 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                     gpu_params = params.copy()
                     _dt = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else params.get('device_type', 'gpu')
                     gpu_params['device_type'] = _dt
+                    gpu_params['gpu_use_dp'] = False  # FP32 histograms
                     gpu_params.pop('force_col_wise', None)
                     gpu_params.pop('force_row_wise', None)
                     gpu_params.pop('device', None)
-                    gpu_params['histogram_pool_size'] = 512
+                    gpu_params['histogram_pool_size'] = 1024
                     if n_gpus > 0:
                         gpu_params['gpu_device_id'] = trial.number % n_gpus
 
@@ -724,20 +773,25 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                     gpu_params = params.copy()
                     _dt = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else params.get('device_type', 'gpu')
                     gpu_params['device_type'] = _dt
+                    gpu_params['gpu_use_dp'] = False  # FP32 histograms
                     gpu_params.pop('force_col_wise', None)
                     gpu_params.pop('force_row_wise', None)
                     gpu_params.pop('device', None)
-                    gpu_params['histogram_pool_size'] = 512
+                    gpu_params['histogram_pool_size'] = 1024
                     if n_gpus > 0:
                         gpu_params['gpu_device_id'] = trial.number % n_gpus
 
-                    model = lgb.train(
-                        gpu_params, dtrain,
+                    _train_kwargs = dict(
+                        params=gpu_params, train_set=dtrain,
                         num_boost_round=rounds,
                         valid_sets=[dval],
                         valid_names=['val'],
                         callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
                     )
+                    if _use_cost_obj:
+                        _train_kwargs['fobj'] = _fobj
+                        _train_kwargs['feval'] = _feval
+                    model = lgb.train(**_train_kwargs)
                 else:
                     # CPU path — no round-level pruning callback (it raises TrialPruned
                     # inside lgb.train which aborts training and marks trial as PRUNED
@@ -748,18 +802,27 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                         lgb.log_evaluation(0),
                     ]
 
-                    model = lgb.train(
-                        params, dtrain,
+                    _train_kwargs = dict(
+                        params=params, train_set=dtrain,
                         num_boost_round=rounds,
                         valid_sets=[dval],
                         valid_names=['val'],
                         callbacks=callbacks,
                     )
+                    if _use_cost_obj:
+                        _train_kwargs['fobj'] = _fobj
+                        _train_kwargs['feval'] = _feval
+                    model = lgb.train(**_train_kwargs)
 
                 # OOS predictions — use best_iteration from lgb.train or manual loop
                 _best_it = getattr(model, 'best_iteration', None)
                 preds = model.predict(X_test, num_iteration=_best_it) if _best_it else model.predict(X_test)
+                # Custom objective returns raw logits — apply softmax
+                if _use_cost_obj and preds.ndim == 2:
+                    from cost_sensitive_obj import softmax_np
+                    preds = softmax_np(preds)
                 # Binary mode: preds is 1D (P(class=1)), multiclass: 2D
+                # Note: _use_cost_obj is never True when objective='binary'
                 _is_binary_obj = (params.get('objective') == 'binary')
                 if _is_binary_obj:
                     preds_2d = np.column_stack([1 - preds, preds])
@@ -864,10 +927,14 @@ def _run_single_validation_fold(fold_i, train_rel, test_rel, valid_indices, X_al
         _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
         gpu_params = fold_params.copy()
         gpu_params['device_type'] = _detect_lgbm_device_type()
+        gpu_params['gpu_use_dp'] = False
         gpu_params.pop('force_col_wise', None)
         gpu_params.pop('force_row_wise', None)
         gpu_params.pop('device', None)
-        gpu_params['histogram_pool_size'] = 512
+        gpu_params['histogram_pool_size'] = 1024
+        if n_gpus > 1:
+            gpu_params['tree_learner'] = 'voting'
+            gpu_params['top_k'] = 50
         if n_gpus > 0:
             gpu_params['gpu_device_id'] = fold_i % n_gpus
 
@@ -897,9 +964,13 @@ def _run_single_validation_fold(fold_i, train_rel, test_rel, valid_indices, X_al
         # Standard LightGBM GPU (OpenCL) — fork not available or multi-GPU
         gpu_params = fold_params.copy()
         gpu_params['device_type'] = _detect_lgbm_device_type()
+        gpu_params['gpu_use_dp'] = False
+        if n_gpus > 1:
+            gpu_params['tree_learner'] = 'voting'
+            gpu_params['top_k'] = 50
         if n_gpus > 0:
             gpu_params['gpu_device_id'] = fold_i % n_gpus
-        gpu_params['histogram_pool_size'] = 512
+        gpu_params['histogram_pool_size'] = 1024
         gpu_params.pop('force_col_wise', None)
         gpu_params.pop('force_row_wise', None)
         gpu_params.pop('device', None)
@@ -1156,10 +1227,14 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
         _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
         gpu_params = fold_params.copy()
         gpu_params['device_type'] = _detect_lgbm_device_type()
+        gpu_params['gpu_use_dp'] = False
         gpu_params.pop('force_col_wise', None)
         gpu_params.pop('force_row_wise', None)
         gpu_params.pop('device', None)
-        gpu_params['histogram_pool_size'] = 512
+        gpu_params['histogram_pool_size'] = 1024
+        if n_gpus > 1:
+            gpu_params['tree_learner'] = 'voting'
+            gpu_params['top_k'] = 50
         if n_gpus > 0:
             gpu_params['gpu_device_id'] = fold_i % n_gpus
 
@@ -1189,9 +1264,13 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
         # Standard LightGBM GPU (OpenCL) — fork not available or multi-GPU
         gpu_params = fold_params.copy()
         gpu_params['device_type'] = _detect_lgbm_device_type()
+        gpu_params['gpu_use_dp'] = False
+        if n_gpus > 1:
+            gpu_params['tree_learner'] = 'voting'
+            gpu_params['top_k'] = 50
         if n_gpus > 0:
             gpu_params['gpu_device_id'] = fold_i % n_gpus
-        gpu_params['histogram_pool_size'] = 512
+        gpu_params['histogram_pool_size'] = 1024
         gpu_params.pop('force_col_wise', None)
         gpu_params.pop('force_row_wise', None)
         gpu_params.pop('device', None)

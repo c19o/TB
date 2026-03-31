@@ -395,11 +395,12 @@ def _train_gpu(params, ds_train, ds_val, X_train_csr, num_boost_round,
     params.pop('device', None)  # remove alias — 'device'='cpu' from V3_LGBM_PARAMS conflicts with device_type
     params['device_type'] = 'cuda_sparse'
     params['gpu_device_id'] = gpu_device_id
+    params['gpu_use_dp'] = False
     # Remove force_col_wise — GPU path uses its own histogram builder
     params.pop('force_col_wise', None)
     # GPU fork needs histogram_pool_size to avoid OOM on large num_leaves
     if 'histogram_pool_size' not in params:
-        params['histogram_pool_size'] = 512
+        params['histogram_pool_size'] = 1024
 
     # No CPU fallback — GPU-or-nothing
     # If set_external_csr fails, crash loud
@@ -615,9 +616,10 @@ def _cpcv_split_worker(args_tuple):
             _X_csr_w = X_train_es.tocsr() if not isinstance(X_train_es, sparse.csr_matrix) else X_train_es
             _gpu_params = dict(params)
             _gpu_params['device_type'] = 'cuda_sparse'
+            _gpu_params['gpu_use_dp'] = False
             _gpu_params.pop('force_col_wise', None)
             if 'histogram_pool_size' not in _gpu_params:
-                _gpu_params['histogram_pool_size'] = 512
+                _gpu_params['histogram_pool_size'] = 1024
             # No CPU fallback — GPU-or-nothing
             # If set_external_csr fails, crash loud
             booster = lgb.Booster(_gpu_params, dtrain)
@@ -935,11 +937,12 @@ def _gpu_fold_worker(fold_id, gpu_id, shared_dir, train_idx, test_idx,
             _gpu_params = dict(params)
             _gpu_params['device_type'] = 'cuda_sparse'
             _gpu_params['gpu_device_id'] = 0  # always 0 — CUDA_VISIBLE_DEVICES maps physical GPU
+            _gpu_params['gpu_use_dp'] = False
             _gpu_params.pop('force_col_wise', None)
             _gpu_params.pop('force_row_wise', None)
             _gpu_params.pop('device', None)
             if 'histogram_pool_size' not in _gpu_params:
-                _gpu_params['histogram_pool_size'] = 512
+                _gpu_params['histogram_pool_size'] = 1024
 
             booster = lgb.Booster(_gpu_params, dtrain)
             booster.set_external_csr(_X_csr)
@@ -1030,12 +1033,18 @@ def run_cpcv_gpu_parallel(splits, completed_folds, shared_dir, lgb_params,
                           hmm_overlay_names, db_dir, n_gpus=None):
     """Run CPCV folds in parallel across multiple GPUs via subprocess isolation.
 
+    FIX #13: Load-balanced fold assignment. Instead of round-robin (fold_i % n_gpus),
+    uses a priority queue keyed by estimated training samples per fold. Larger folds
+    are assigned to the GPU with the least queued work, so all GPUs finish each wave
+    at roughly the same time.
+
     Each fold trains in its own subprocess with CUDA_VISIBLE_DEVICES set before
     importing LightGBM, ensuring clean GPU isolation. Data is pre-saved as
     mmap'd .npy files in shared_dir by the caller.
 
     Returns list of result dicts (same format as _isolated_fold_worker output).
     """
+    import heapq
     import multiprocessing as mp
     import tempfile
 
@@ -1046,23 +1055,40 @@ def run_cpcv_gpu_parallel(splits, completed_folds, shared_dir, lgb_params,
     pending = [(wi, train_idx, test_idx) for wi, (train_idx, test_idx)
                in enumerate(splits) if wi not in completed_folds]
 
+    # Estimate fold cost by training set size (more rows = longer training)
+    fold_costs = [(len(train_idx), wi, train_idx, test_idx)
+                  for wi, train_idx, test_idx in pending]
+    # Sort largest folds first so they get dispatched early (LPT scheduling)
+    fold_costs.sort(key=lambda x: -x[0])
+
     log(f"  GPU-PARALLEL CPCV: {n_gpus} GPUs, {len(splits)} total folds, "
-        f"{len(pending)} pending")
+        f"{len(pending)} pending (load-balanced)")
+    if fold_costs:
+        _min_s = fold_costs[-1][0]
+        _max_s = fold_costs[0][0]
+        log(f"    Fold sizes: min={_min_s:,} max={_max_s:,} train samples")
 
     ctx = mp.get_context('spawn')
     all_results = []
 
-    for batch_start in range(0, len(pending), n_gpus):
-        batch = pending[batch_start:batch_start + n_gpus]
-        batch_num = batch_start // n_gpus + 1
-        total_batches = (len(pending) + n_gpus - 1) // n_gpus
-        log(f"\n  {elapsed()} Batch {batch_num}/{total_batches}: "
-            f"folds {[b[0]+1 for b in batch]}")
+    # Process in waves of n_gpus folds (same as before, but assignment is balanced)
+    for wave_start in range(0, len(fold_costs), n_gpus):
+        wave = fold_costs[wave_start:wave_start + n_gpus]
+        wave_num = wave_start // n_gpus + 1
+        total_waves = (len(fold_costs) + n_gpus - 1) // n_gpus
+        log(f"\n  {elapsed()} Wave {wave_num}/{total_waves}: "
+            f"folds {[w[1]+1 for w in wave]}")
+
+        # Priority queue: (cumulative_cost, gpu_id) — assign next fold to least-loaded GPU
+        gpu_heap = [(0, gid) for gid in range(n_gpus)]
+        heapq.heapify(gpu_heap)
 
         procs = []
         result_paths = []
-        for i, (fold_id, train_idx, test_idx) in enumerate(batch):
-            gpu_id = i % n_gpus
+        for cost, fold_id, train_idx, test_idx in wave:
+            load, gpu_id = heapq.heappop(gpu_heap)
+            heapq.heappush(gpu_heap, (load + cost, gpu_id))
+
             result_path = os.path.join(shared_dir, f'gpu_fold_{fold_id}_result.pkl')
             result_paths.append((fold_id, gpu_id, result_path))
 
@@ -1074,9 +1100,9 @@ def run_cpcv_gpu_parallel(splits, completed_folds, shared_dir, lgb_params,
             )
             p.start()
             procs.append((fold_id, gpu_id, p))
-            log(f"    Fold {fold_id+1} → GPU {gpu_id} (PID {p.pid})")
+            log(f"    Fold {fold_id+1} ({cost:,} train rows) → GPU {gpu_id} (PID {p.pid})")
 
-        # Wait for all in batch
+        # Wait for all in wave
         for fold_id, gpu_id, p in procs:
             p.join(timeout=7200)  # 2hr max per fold
             if p.is_alive():
@@ -1084,7 +1110,7 @@ def run_cpcv_gpu_parallel(splits, completed_folds, shared_dir, lgb_params,
                 p.terminate()
                 p.join(timeout=30)
 
-        # Collect results from this batch
+        # Collect results from this wave
         for fold_id, gpu_id, result_path in result_paths:
             if not os.path.exists(result_path):
                 log(f"    Fold {fold_id+1} (GPU {gpu_id}): NO OUTPUT")
@@ -1406,16 +1432,43 @@ if __name__ == '__main__':
           X_base = np.where(np.isinf(X_base), np.nan, X_base)
           n_base_features = len(feature_cols)
 
-          # Check for sparse cross .npz file for this TF
+          # Check for sparse cross .npy memmap dir or .npz file for this TF
           cross_matrix = None
           cross_cols = None
+          npy_dir = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy')
+          if not os.path.isdir(npy_dir):
+              npy_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy')
+              if os.path.isdir(npy_v30):
+                  npy_dir = npy_v30
           npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
           # v3.1: check v3.0 shared data dir for cross NPZ
           if not os.path.exists(npz_path):
               npz_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz')
               if os.path.exists(npz_v30):
                   npz_path = npz_v30
-          if os.path.exists(npz_path):
+          # Prefer .npy memmap (zero-copy) over NPZ (full RAM load)
+          if os.path.isdir(npy_dir) and os.path.exists(os.path.join(npy_dir, 'indptr.npy')):
+              try:
+                  from atomic_io import load_csr_npy
+                  log(f"  {elapsed()} Loading sparse cross matrix via .npy memmap: {npy_dir}")
+                  cross_matrix = load_csr_npy(npy_dir, mmap_mode='r')
+                  cross_matrix = _ensure_lgbm_sparse_dtypes(cross_matrix, "cross_matrix")
+                  # Load column names
+                  for _cols_dir in [DB_DIR, V30_DATA_DIR]:
+                      _cols_path = os.path.join(_cols_dir, f'v2_cross_names_BTC_{tf_name}.json')
+                      if os.path.exists(_cols_path):
+                          with open(_cols_path) as f:
+                              cross_cols = json.load(f)
+                          break
+                  if cross_cols is None:
+                      cross_cols = [f'cross_{i}' for i in range(cross_matrix.shape[1])]
+                  log(f"  Sparse crosses loaded (memmap): {cross_matrix.shape[0]} rows x {cross_matrix.shape[1]} cols "
+                      f"({cross_matrix.nnz} non-zeros)")
+              except Exception as _npy_err:
+                  log(f"  WARNING: .npy memmap load failed, falling back to NPZ: {_npy_err}")
+                  cross_matrix = None
+                  cross_cols = None
+          if cross_matrix is None and os.path.exists(npz_path):
               try:
                   log(f"  {elapsed()} Loading sparse cross matrix: {npz_path}")
                   cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
