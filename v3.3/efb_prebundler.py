@@ -73,6 +73,9 @@ def _is_binary_column(csc, col_idx):
 def _classify_binary_columns(csr_matrix):
     """Identify which columns are pure binary and compute their densities.
 
+    Vectorized: uses indptr differences for density, then checks data values
+    in bulk rather than per-column Python loop.
+
     Returns:
         binary_indices: array of column indices that are binary
         densities: array of densities for those columns
@@ -82,18 +85,23 @@ def _classify_binary_columns(csr_matrix):
     n_rows = csr_matrix.shape[0]
     csc = csr_matrix.tocsc()
 
-    binary_mask = np.zeros(n_cols, dtype=bool)
-    densities = np.zeros(n_cols, dtype=np.float32)
+    # Vectorized density: nnz per column via indptr differences
+    col_nnz = np.diff(csc.indptr)
+    densities = (col_nnz / n_rows).astype(np.float32)
 
-    for col_idx in range(n_cols):
-        start, end = csc.indptr[col_idx], csc.indptr[col_idx + 1]
-        nnz = end - start
-        densities[col_idx] = nnz / n_rows
-        if nnz == 0:
-            binary_mask[col_idx] = True
-        else:
-            vals = csc.data[start:end]
-            binary_mask[col_idx] = np.all((vals == 0) | (vals == 1))
+    # Vectorized binary check: all stored values must be 0 or 1.
+    # Mark each stored value as binary (0 or 1) or not.
+    is_binary_val = (csc.data == 0) | (csc.data == 1)
+
+    # For each column, check if ALL its stored values are binary.
+    # Use np.add.reduceat on the boolean mask, then compare to nnz.
+    # Columns with nnz==0 are trivially binary (all zeros).
+    binary_mask = np.ones(n_cols, dtype=bool)  # default True (handles nnz==0)
+    has_data = col_nnz > 0
+    if has_data.any():
+        # reduceat sums is_binary_val within each column's [start:end] range
+        binary_count = np.add.reduceat(is_binary_val.astype(np.int64), csc.indptr[:-1])[has_data]
+        binary_mask[has_data] = (binary_count == col_nnz[has_data])
 
     binary_indices = np.where(binary_mask)[0]
     non_binary_indices = np.where(~binary_mask)[0]

@@ -21,6 +21,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings('ignore')
 
@@ -1942,18 +1943,30 @@ def compute_numerology_expansion_features(df: pd.DataFrame, tf_name: str = '1d')
     out['loshu_is_corner'] = np.where(c_not_nan, np.isin(price_dr, [2, 4, 6, 8]).astype(np.float64), np.nan)
     out['loshu_is_edge'] = np.where(c_not_nan, np.isin(price_dr, [1, 3, 7, 9]).astype(np.float64), np.nan)
 
-    # 2. Lo Shu line completion (rolling 3-bar DR)
-    dr_float = pd.Series(np.where(c_not_nan, price_dr.astype(np.float64), np.nan), index=idx)
-
-    def _check_loshu_line(w):
-        if np.isnan(w).any():
-            return np.nan
-        s = frozenset(w.astype(int))
-        return 1.0 if s in LO_SHU_LINES else 0.0
-
-    out['loshu_line_complete'] = dr_float.rolling(3, min_periods=3).apply(
-        _check_loshu_line, raw=True
-    )
+    # 2. Lo Shu line completion (rolling 3-bar DR) — fully vectorized
+    # Encode each sorted triplet as hash = a*100 + b*10 + c (digits 1-9),
+    # then check membership via numpy isin against precomputed hash set.
+    _loshu_hashes = np.array([
+        a * 100 + b * 10 + c
+        for line in LO_SHU_LINES
+        for a, b, c in [tuple(sorted(line))]
+    ], dtype=np.int64)
+    dr_vals = np.where(c_not_nan, price_dr.astype(np.int64), -1)
+    n = len(dr_vals)
+    loshu_result = np.full(n, np.nan)
+    if n >= 3:
+        _w0 = dr_vals[:-2]
+        _w1 = dr_vals[1:-1]
+        _w2 = dr_vals[2:]
+        _valid = (_w0 >= 0) & (_w1 >= 0) & (_w2 >= 0)
+        # Sort triplets vectorized via min/max/middle
+        _mn = np.minimum(np.minimum(_w0, _w1), _w2)
+        _mx = np.maximum(np.maximum(_w0, _w1), _w2)
+        _md = _w0 + _w1 + _w2 - _mn - _mx
+        _hashes = _mn * 100 + _md * 10 + _mx
+        _matches = np.isin(_hashes, _loshu_hashes) & _valid
+        loshu_result[2:] = np.where(_valid, _matches.astype(np.float64), np.nan)
+    out['loshu_line_complete'] = pd.Series(loshu_result, index=idx)
 
     # 3. Angel number proximity (777, 888 harmonics)
     close_int = np.where(c_not_nan, np.abs(c_vals).astype(np.int64), 0)
@@ -6179,169 +6192,102 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         if extra in _df_cols_init:
             result[extra] = _np(df[extra])
 
-    # 1. TA features — run on GPU (cuDF rolling/ewm/shift accelerated)
+    # ── Phase 1: TA features (sequential — needed by SAR-numerology) ──
     t0 = time.time()
     ta_feats = compute_ta_features(df, tf_name)  # pass cuDF directly
     print(f"    TA features: {time.time()-t0:.1f}s ({len(ta_feats.columns)} cols)")
-    for col in ta_feats.columns:
-        result[col] = ta_feats[col]
+    result = pd.concat([result, ta_feats], axis=1)
 
-    # ALL compute functions handle GPU/CPU internally — pass df (cuDF) directly
-    # Each function detects _is_gpu(df) and converts to CPU as needed
-
-    # 1a. SAR-Numerology hybrid features (AlphaNumetrix-inspired, needs ta_feats)
+    # 1a. SAR-Numerology hybrid features (needs ta_feats — sequential)
     t0 = time.time()
     sar_num_feats = compute_sar_numerology_features(ta_feats, df)
     print(f"    SAR-Numerology features: {time.time()-t0:.1f}s ({len(sar_num_feats.columns)} cols)")
-    for col in sar_num_feats.columns:
-        result[col] = sar_num_feats[col]
+    result = pd.concat([result, sar_num_feats], axis=1)
 
-    # 1b. Fractional differentiation features (after TA, needs close/volume)
-    t0 = time.time()
-    frac_feats = compute_frac_diff_features(df)
-    print(f"    Frac diff features: {time.time()-t0:.1f}s ({len(frac_feats.columns)} cols)")
-    for col in frac_feats.columns:
-        result[col] = frac_feats[col]
+    # ── Phase 2: Independent compute functions — PARALLEL ──
+    # These all read from df/esoteric_frames/astro_cache only (not result).
+    # ThreadPoolExecutor releases GIL during numpy/pandas C extensions.
+    _phase2_t0 = time.time()
 
-    # 2. Time features
-    t0 = time.time()
-    time_feats = compute_time_features(df, tf_name)
-    print(f"    Time features: {time.time()-t0:.1f}s ({len(time_feats.columns)} cols)")
-    for col in time_feats.columns:
-        result[col] = time_feats[col]
+    def _run_compute(name, fn, *args, **kwargs):
+        t = time.time()
+        feats = fn(*args, **kwargs)
+        elapsed = time.time() - t
+        return name, feats, elapsed
 
-    # 3. Numerology features
-    t0 = time.time()
-    num_feats = compute_numerology_features(df)
-    print(f"    Numerology features: {time.time()-t0:.1f}s ({len(num_feats.columns)} cols)")
-    for col in num_feats.columns:
-        result[col] = num_feats[col]
+    _phase2_futures = {}
+    with ThreadPoolExecutor(max_workers=4) as _pool:
+        _phase2_futures['frac_diff'] = _pool.submit(
+            _run_compute, 'Frac diff', compute_frac_diff_features, df)
+        _phase2_futures['time'] = _pool.submit(
+            _run_compute, 'Time', compute_time_features, df, tf_name)
+        _phase2_futures['numerology'] = _pool.submit(
+            _run_compute, 'Numerology', compute_numerology_features, df)
+        _phase2_futures['numx'] = _pool.submit(
+            _run_compute, 'Numerology expansion', compute_numerology_expansion_features, df, tf_name)
+        _phase2_futures['vortex'] = _pool.submit(
+            _run_compute, 'Vortex/Sacred Geometry', compute_vortex_sacred_geometry_features, df, tf_name)
+        _phase2_futures['astrology'] = _pool.submit(
+            _run_compute, 'Astrology', compute_astrology_features, df, astro_cache, tf_name)
+        _phase2_futures['planet_exp'] = _pool.submit(
+            _run_compute, 'Planetary expansion', compute_planetary_expansion_features, df)
+        _phase2_futures['esoteric'] = _pool.submit(
+            _run_compute, 'Esoteric', compute_esoteric_features,
+            df,
+            esoteric_frames.get('tweets'), esoteric_frames.get('news'),
+            esoteric_frames.get('sports'), esoteric_frames.get('onchain'),
+            esoteric_frames.get('macro'), astro_cache, bucket_seconds)
+        _phase2_futures['evt_astro'] = _pool.submit(
+            _run_compute, 'Event astrology', compute_event_astrology,
+            df,
+            esoteric_frames.get('tweets'), esoteric_frames.get('news'),
+            esoteric_frames.get('sports'), bucket_seconds)
+        _phase2_futures['regime'] = _pool.submit(
+            _run_compute, 'Regime', compute_regime_features, df, tf_name)
+        _phase2_futures['lunar'] = _pool.submit(
+            _run_compute, 'Lunar/EM', compute_lunar_electromagnetic_features, df, tf_name)
+        _phase2_futures['cycle'] = _pool.submit(
+            _run_compute, 'Cycle', compute_cycle_features, df, tf_name)
+        _phase2_futures['hebrew'] = _pool.submit(
+            _run_compute, 'Hebrew calendar', compute_hebrew_calendar_features, df)
+        if space_weather_df is not None:
+            _phase2_futures['sw'] = _pool.submit(
+                _run_compute, 'Space weather', compute_space_weather_features,
+                df, space_weather_df, tf_name)
+        if htf_data:
+            _phase2_futures['htf'] = _pool.submit(
+                _run_compute, 'Higher TF', compute_higher_tf_features, df, htf_data)
+        if ltf_data and tf_name == '1w' and '1d' in (ltf_data or {}):
+            _phase2_futures['dres'] = _pool.submit(
+                _run_compute, 'Daily-resolution', compute_daily_resolution_features,
+                ohlcv, ltf_data['1d'])
 
-    # 3b. Numerology expansion (Lo Shu, angel numbers, Haramein, Pythagorean challenges)
-    t0 = time.time()
-    numx_feats = compute_numerology_expansion_features(df, tf_name)
-    print(f"    Numerology expansion features: {time.time()-t0:.1f}s ({len(numx_feats.columns)} cols)")
-    for col in numx_feats.columns:
-        result[col] = numx_feats[col]
+    # Collect results and batch-concat into result
+    _phase2_dfs = []
+    for key, fut in _phase2_futures.items():
+        name, feats, elapsed = fut.result()
+        print(f"    {name} features: {elapsed:.1f}s ({len(feats.columns)} cols)")
+        _phase2_dfs.append(feats)
 
-    # 3c. Vortex math & sacred geometry features
-    t0 = time.time()
-    vortex_feats = compute_vortex_sacred_geometry_features(df, tf_name)
-    print(f"    Vortex/Sacred Geometry features: {time.time()-t0:.1f}s ({len(vortex_feats.columns)} cols)")
-    for col in vortex_feats.columns:
-        result[col] = vortex_feats[col]
+    if _phase2_dfs:
+        result = pd.concat([result] + _phase2_dfs, axis=1)
+    del _phase2_dfs
+    print(f"    Phase 2 parallel total: {time.time()-_phase2_t0:.1f}s")
 
-    # 4. Astrology features (from cached daily data)
-    t0 = time.time()
-    astro_feats = compute_astrology_features(df, astro_cache, tf_name=tf_name)
-    print(f"    Astrology features: {time.time()-t0:.1f}s ({len(astro_feats.columns)} cols)")
-    for col in astro_feats.columns:
-        result[col] = astro_feats[col]
-
-    # 4b. Planetary expansion features (speeds, combustion, dignity, synodic, decan, stars)
-    t0 = time.time()
-    planet_exp_feats = compute_planetary_expansion_features(df)
-    print(f"    Planetary expansion features: {time.time()-t0:.1f}s ({len(planet_exp_feats.columns)} cols)")
-    for col in planet_exp_feats.columns:
-        result[col] = planet_exp_feats[col]
-
-    # 5. Esoteric features — GPU BATCH gematria/sentiment (zero .apply())
-    t0 = time.time()
-    eso_feats = compute_esoteric_features(
-        df,
-        tweets_df=esoteric_frames.get('tweets'),
-        news_df=esoteric_frames.get('news'),
-        sports_df=esoteric_frames.get('sports'),
-        onchain_df=esoteric_frames.get('onchain'),
-        macro_df=esoteric_frames.get('macro'),
-        astro_cache=astro_cache,
-        bucket_seconds=bucket_seconds,
-    )
-    print(f"    Esoteric features: {time.time()-t0:.1f}s ({len(eso_feats.columns)} cols)")
-    for col in eso_feats.columns:
-        result[col] = eso_feats[col]
-
-
-    # 5.5 Event-timestamp astrology features — vectorized (no .apply())
-    t0 = time.time()
-    evt_astro_feats = compute_event_astrology(
-        df,
-        tweets_df=esoteric_frames.get('tweets'),
-        news_df=esoteric_frames.get('news'),
-        sports_df=esoteric_frames.get('sports'),
-        bucket_seconds=bucket_seconds,
-    )
-    print(f"    Event astrology features: {time.time()-t0:.1f}s ({len(evt_astro_feats.columns)} cols)")
-    for col in evt_astro_feats.columns:
-        result[col] = evt_astro_feats[col]
-
-    # 6. Higher TF features
-    if htf_data:
-        t0 = time.time()
-        htf_feats = compute_higher_tf_features(df, htf_data)
-        print(f"    Higher TF features: {time.time()-t0:.1f}s ({len(htf_feats.columns)} cols)")
-        for col in htf_feats.columns:
-            result[col] = htf_feats[col]
-
-    # 6b. Daily-resolution features (lower TF aggregated to higher TF)
-    # For 1w: aggregate daily TA → weekly (AlphaNumetrix approach)
-    if ltf_data and tf_name == '1w' and '1d' in (ltf_data or {}):
-        t0 = time.time()
-        dres_feats = compute_daily_resolution_features(ohlcv, ltf_data['1d'])
-        print(f"    Daily-resolution features: {time.time()-t0:.1f}s ({len(dres_feats.columns)} cols)")
-        for col in dres_feats.columns:
-            result[col] = dres_feats[col]
-
-    # 7. Regime features
-    t0 = time.time()
-    regime_feats = compute_regime_features(df, tf_name)
-    print(f"    Regime features: {time.time()-t0:.1f}s ({len(regime_feats.columns)} cols)")
-    for col in regime_feats.columns:
-        result[col] = regime_feats[col]
-
-    # 8. Space weather features
-    if space_weather_df is not None:
-        t0 = time.time()
-        sw_feats = compute_space_weather_features(df, space_weather_df, tf_name)
-        print(f"    Space weather features: {time.time()-t0:.1f}s ({len(sw_feats.columns)} cols)")
-        for col in sw_feats.columns:
-            result[col] = sw_feats[col]
-
-    # 8b. Lunar / electromagnetic features
-    t0 = time.time()
-    lunar_feats = compute_lunar_electromagnetic_features(df, tf_name)
-    print(f"    Lunar/EM features: {time.time()-t0:.1f}s ({len(lunar_feats.columns)} cols)")
-    for col in lunar_feats.columns:
-        result[col] = lunar_feats[col]
-
-    # 9. Confirmed cycle features
-    t0 = time.time()
-    cycle_feats = compute_cycle_features(df, tf_name)
-    print(f"    Cycle features: {time.time()-t0:.1f}s ({len(cycle_feats.columns)} cols)")
-    for col in cycle_feats.columns:
-        result[col] = cycle_feats[col]
-
-    # 10. Hebrew / cultural calendar features
-    t0 = time.time()
-    hebrew_feats = compute_hebrew_calendar_features(df)
-    print(f"    Hebrew calendar features: {time.time()-t0:.1f}s ({len(hebrew_feats.columns)} cols)")
-    for col in hebrew_feats.columns:
-        result[col] = hebrew_feats[col]
+    # ── Phase 3: Features that depend on result (sequential) ──
 
     # 10b. Market calendar features (FOMC, options expiry, halving, tax, etc.)
     t0 = time.time()
     mkt_feats = compute_market_calendar_features(result)
     print(f"    Market calendar features: {time.time()-t0:.1f}s ({len(mkt_feats.columns)} cols)")
-    for col in mkt_feats.columns:
-        result[col] = mkt_feats[col]
+    result = pd.concat([result, mkt_feats], axis=1)
 
     # 10c. Market signal features (DeFi TVL, BTC dominance, mining stats)
     if market_signals is not None:
         t0 = time.time()
         mkt_sig_feats = compute_market_signal_features(result, market_signals, tf_name)
         print(f"    Market signal features: {time.time()-t0:.1f}s ({len(mkt_sig_feats.columns)} cols)")
-        for col in mkt_sig_feats.columns:
-            result[col] = mkt_sig_feats[col]
+        result = pd.concat([result, mkt_sig_feats], axis=1)
 
     # 11. Composite vol-to-direction features (after cycles are in result)
     # Pass cuDF copy to get GPU-accelerated rolling/ewm ops inside composite
@@ -6350,8 +6296,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     composite_feats = compute_composite_features(_comp_input, tf_name)
     del _comp_input
     print(f"    Composite features: {time.time()-t0:.1f}s ({len(composite_feats.columns)} cols)")
-    for col in composite_feats.columns:
-        result[col] = composite_feats[col]
+    result = pd.concat([result, composite_feats], axis=1)
 
     # 12. Cross-features that span multiple feature groups
     # Must run on CPU (uses pd.to_numeric, complex logic)
@@ -6363,8 +6308,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     t0 = time.time()
     decay_feats = compute_decay_features(result, esoteric_frames, tf_name)
     print(f"    Decay features: {time.time()-t0:.1f}s ({len(decay_feats.columns)} cols)")
-    for col in decay_feats.columns:
-        result[col] = decay_feats[col]
+    result = pd.concat([result, decay_feats], axis=1)
 
     # 12c. Trend-context cross features — SKIPPED
     # These (tx_, ex_, dx_, vwap, range, ex_adv) are ALL generated by
@@ -6385,8 +6329,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
                 bucket_seconds=bucket_seconds,
             )
             print(f"    LLM features: {time.time()-t0:.1f}s ({len(llm_feats.columns)} cols)")
-            for col in llm_feats.columns:
-                result[col] = llm_feats[col]
+            result = pd.concat([result, llm_feats], axis=1)
         except Exception as _llm_err:
             import logging as _lg
             _lg.getLogger('feature_library').warning(
@@ -6398,8 +6341,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         t0 = time.time()
         knn_feats = compute_knn_features(df, tf_name)
         print(f"    KNN features: {time.time()-t0:.1f}s ({len(knn_feats.columns)} cols)")
-        for col in knn_feats.columns:
-            result[col] = knn_feats[col]
+        result = pd.concat([result, knn_feats], axis=1)
 
     # 13b. KNN x trend cross (HTF-aware regime)
     knn_dir = result.get('knn_direction')
@@ -6436,8 +6378,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
     # Must run AFTER TA + numerology are in result (needs sar_value, rsi_14, ema_200)
     t0 = time.time()
     sar_num_feats = compute_sar_numerology_features(result)
-    for col in sar_num_feats.columns:
-        result[col] = sar_num_feats[col]
+    result = pd.concat([result, sar_num_feats], axis=1)
 
     # 13d. TA x TA and esoteric x TA crosses
     t0 = time.time()
@@ -6456,8 +6397,7 @@ def build_all_features(ohlcv: pd.DataFrame, esoteric_frames: dict,
         t0 = time.time()
         target_feats = compute_targets(df, tf_name)
         print(f"    Target features: {time.time()-t0:.1f}s ({len(target_feats.columns)} cols)")
-        for col in target_feats.columns:
-            result[col] = target_feats[col]
+        result = pd.concat([result, target_feats], axis=1)
 
     # Clean up string columns
     str_cols = [col for col in result.columns if result[col].dtype == 'object']
