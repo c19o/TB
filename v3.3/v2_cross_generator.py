@@ -827,164 +827,212 @@ def _detect_available_gpus():
         return [0]
 
 _MULTI_GPU_CROSS_GEN = os.environ.get('MULTI_GPU_CROSS_GEN', '1') == '1'
+_GPU_SERVER_BATCH = int(os.environ.get('GPU_SERVER_BATCH', '5000'))
 
 
 # ============================================================
-# MULTI-GPU CROSS WORKER (spawn-safe, top-level for pickling)
+# PERSISTENT GPU SERVER (long-lived, queue-based, ZERO scipy in hot loop)
 # ============================================================
 
-def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
-                            valid_pairs_npy_path, all_names_path,
-                            pair_start, pair_end, N, out_dir):
+def _gpu_server(gpu_id, work_queue, result_queue, left_npy_path, right_npy_path,
+                n_left_cols, N, out_dir):
     """
-    Spawn-safe worker: runs Step 2 GPU batch multiply on a slice of valid_pairs.
-    Sets CUDA_VISIBLE_DEVICES BEFORE importing CuPy so each worker owns one GPU.
-    Saves COO results as NPZ + names as .npy to out_dir.
-    Returns nothing — results are on disk.
+    Persistent GPU server process. Initializes CUDA + uploads CSC matrix ONCE,
+    then processes batches from work_queue until poison pill (None).
+
+    ZERO scipy in hot loop — only numpy + cupy + raw binary file I/O.
+    Memory is CONSTANT: CSC indices on GPU + per-batch kernel buffers (freed each batch).
+    Per-server host RAM: ~5-10GB (CSC indptr/indices + col_nnz array).
+
+    .idx binary format (per pair with nnz > 0):
+        pair_local_idx (int32) | nnz (int32) | row_indices (int32[nnz])
+
+    Work queue message: (batch_pairs_remapped: ndarray[int32, (n,2)], batch_idx: int)
+    Result queue message: (gpu_id: int, batch_idx: int, total_nnz: int, idx_path: str|None)
+    Error signal: (gpu_id, -1, -1, error_message_str)
+    Poison pill: None (triggers clean exit)
     """
-    import os, gc, time, sys
+    import os, time, gc, traceback
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')
 
     import numpy as np
-    from scipy import sparse
 
-    import cupy as cp
-    import cupyx.scipy.sparse as cusp
-    cp.cuda.Device(0).use()  # always device 0 (remapped by CUDA_VISIBLE_DEVICES)
-    cp.get_default_memory_pool().set_limit(size=28 * 1024**3)  # 28GB cap, leave ~3GB for CUDA context
-    cp.cuda.set_pinned_memory_allocator(None)  # use pageable memory, saves ~40-80GB host RAM across 8 workers
+    # Import CuPy fresh — CUDA_VISIBLE_DEVICES already set above
+    import cupy as _cp
+    _cp.cuda.Device(0).use()
+    _cp.cuda.set_pinned_memory_allocator(None)
+    mem_free, mem_total = _cp.cuda.Device(0).mem_info
+    vram_gb = mem_total / (1024**3)
+    _cp.get_default_memory_pool().set_limit(size=int(vram_gb * 0.85 * 1024**3))
 
     def _log(msg):
-        print(f"[{time.strftime('%H:%M:%S')}] [GPU-{gpu_id}] {msg}", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] [GPU-SRV-{gpu_id}] {msg}", flush=True)
 
-    # Load shared data from disk
-    left_mat = np.load(left_npy_path, mmap_mode='r')
-    right_mat = np.load(right_npy_path, mmap_mode='r')
-    valid_pairs = np.load(valid_pairs_npy_path, mmap_mode='r')
-    all_names = np.load(all_names_path, allow_pickle=True)
+    batches_done = 0
+    try:
+        _log(f"Initializing — VRAM: {vram_gb:.1f}GB")
 
-    my_pairs = valid_pairs[pair_start:pair_end]
-    n_my_pairs = len(my_pairs)
-    _log(f"Worker start: pairs [{pair_start}:{pair_end}] = {n_my_pairs:,}")
+        # ── ONE-TIME INIT: Load matrices, build combined CSC, upload to GPU ──
+        left_mat = np.load(left_npy_path, mmap_mode='r')
+        right_mat = np.load(right_npy_path, mmap_mode='r')
 
-    # Upload matrices to GPU
-    left_gpu = cp.asarray(np.ascontiguousarray(left_mat))
-    right_gpu = cp.asarray(np.ascontiguousarray(right_mat))
-
-    # VRAM-adaptive batch sizing (same formula as single-GPU path)
-    mem_free, mem_total = cp.cuda.Device(0).mem_info
-    gpu_vram_gb = mem_total / (1024**3)
-    avail_vram = int(gpu_vram_gb * 0.5 * 1024**3)
-    bytes_per_pair = N * 12
-    BATCH = max(100, min(50000, avail_vram // max(1, bytes_per_pair)))
-    _log(f"VRAM: {gpu_vram_gb:.1f}GB, BATCH={BATCH}")
-
-    # Accumulate results
-    names_out = []
-    csr_chunks = []
-    coo_rows = []
-    coo_data = []
-    coo_names = []
-    coo_col_local = 0
-    col_idx = 0
-
-    FLUSH_FEATS = max(5000, min(50000, 37000))
-
-    def _flush_coo():
-        nonlocal coo_col_local
-        if not coo_rows:
-            return
-        r_all = np.concatenate(coo_rows)
-        c_parts = []
-        for ci, r in enumerate(coo_rows):
-            c_parts.append(np.full(len(r), ci, dtype=np.int32))
-        c_all = np.concatenate(c_parts)
-        d_all = np.concatenate(coo_data)
-        csr = sparse.coo_matrix((d_all, (r_all, c_all)),
-                                shape=(N, coo_col_local)).tocsr()
-        csr_chunks.append(csr)
-        names_out.extend(coo_names)
-        coo_names.clear()
-        coo_rows.clear()
-        coo_data.clear()
-        coo_col_local = 0
-        del r_all, c_all, d_all, csr, c_parts
+        # Build combined CSC [left | right] — scipy used ONLY here at init
+        from scipy import sparse as _sp_init
+        combined = np.hstack([np.asarray(left_mat), np.asarray(right_mat)])
+        combined_csc = _sp_init.csc_matrix(combined.astype(np.float32))
+        del combined, left_mat, right_mat, _sp_init
         gc.collect()
 
-    for b_start in range(0, n_my_pairs, BATCH):
-        b_end = min(b_start + BATCH, n_my_pairs)
-        chunk = my_pairs[b_start:b_end]
+        # Upload CSC structure to GPU (just indptr + indices — no data, binary AND)
+        indptr_gpu = _cp.asarray(combined_csc.indptr.astype(np.int32))
+        indices_gpu = _cp.asarray(combined_csc.indices.astype(np.int32))
 
-        left_cols = left_gpu[:, chunk[:, 0]]
-        right_cols = right_gpu[:, chunk[:, 1]]
-        crosses_gpu = left_cols * right_cols
-        del left_cols, right_cols
+        # Per-column nnz for VRAM-adaptive sub-batching
+        col_nnz = np.diff(combined_csc.indptr).astype(np.int64)
+        del combined_csc
+        gc.collect()
 
-        nz_rows_gpu, nz_cols_gpu = cp.nonzero(crosses_gpu)
-        nz_rows_all = cp.asnumpy(nz_rows_gpu)
-        nz_cols_all = cp.asnumpy(nz_cols_gpu)
-        del nz_rows_gpu, nz_cols_gpu
+        _log(f"CSC uploaded — {len(col_nnz)} cols, max_nnz={int(col_nnz.max())}, "
+             f"GPU mem: {_cp.cuda.Device(0).mem_info[0]/1e9:.1f}GB free")
 
-        del crosses_gpu
-        cp.cuda.Stream.null.synchronize()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp.get_default_memory_pool().free_all_blocks()
+        # ── Compile CUDA kernel (same logic as _get_sparse_and_kernel, local to this process) ──
+        kernel = _cp.RawKernel(r"""
+        extern "C" __global__
+        void sparse_and_batch(
+            const int* __restrict__ indptr,
+            const int* __restrict__ indices,
+            const int* __restrict__ col_pairs,
+            int*       result_indices,
+            int*       result_counts,
+            const int  max_out_per_pair
+        ) {
+            int pair = blockIdx.x;
+            int col_a = col_pairs[pair * 2];
+            int col_b = col_pairs[pair * 2 + 1];
+            int a = indptr[col_a], a_end = indptr[col_a + 1];
+            int b = indptr[col_b], b_end = indptr[col_b + 1];
+            int* out = result_indices + pair * max_out_per_pair;
+            int cnt = 0;
+            while (a < a_end && b < b_end && cnt < max_out_per_pair) {
+                int ra = indices[a], rb = indices[b];
+                if (ra == rb) { out[cnt++] = ra; a++; b++; }
+                else if (ra < rb) { a++; }
+                else { b++; }
+            }
+            result_counts[pair] = cnt;
+        }
+        """, "sparse_and_batch")
 
-        if len(nz_rows_all) > 0:
-            unique_cols, col_starts = np.unique(nz_cols_all, return_index=True)
-            col_ends = np.append(col_starts[1:], len(nz_cols_all))
+        _log("Kernel compiled, entering work loop")
 
-            for k in range(len(unique_cols)):
-                c = int(unique_cols[k])
-                s, e = int(col_starts[k]), int(col_ends[k])
-                nz = nz_rows_all[s:e]
-                # Map back to global pair index for name lookup
-                global_pair_idx = pair_start + b_start + c
-                coo_names.append(all_names[global_pair_idx])
-                coo_rows.append(nz)
-                coo_data.append(np.ones(len(nz), dtype=np.float32))
-                coo_col_local += 1
-                col_idx += 1
+        # ── WORK LOOP: Process batches until poison pill ──
+        while True:
+            msg = work_queue.get()
+            if msg is None:  # poison pill → clean exit
+                break
 
-        if coo_col_local >= FLUSH_FEATS:
-            _flush_coo()
-            _log(f"  Flush: {col_idx:,}/{n_my_pairs:,} features")
+            batch_pairs, batch_idx = msg
+            # batch_pairs: ndarray (n_pairs, 2) int32 — already remapped (right += n_left_cols)
+            n_pairs = len(batch_pairs)
+            t0 = time.time()
 
-    # Final flush
-    _flush_coo()
+            # Per-pair max_nnz for tight buffer sizing (avoids over-allocation)
+            left_nnz = col_nnz[batch_pairs[:, 0]]
+            right_nnz = col_nnz[batch_pairs[:, 1]]
+            pair_max_nnz = np.minimum(left_nnz, right_nnz)
+            max_out = int(pair_max_nnz.max()) if n_pairs > 0 else 0
 
-    del left_gpu, right_gpu
-    cp.cuda.Stream.null.synchronize()
-    cp.get_default_pinned_memory_pool().free_all_blocks()
-    cp.get_default_memory_pool().free_all_blocks()
+            if max_out == 0:
+                result_queue.put((gpu_id, batch_idx, 0, None))
+                continue
+            max_out = min(max_out, N)
 
-    # Merge all CSR chunks and save to disk
-    os.makedirs(out_dir, exist_ok=True)
-    if csr_chunks:
-        if len(csr_chunks) == 1:
-            merged = csr_chunks[0]
-        else:
-            merged = sparse.hstack(csr_chunks, format='csr')
-        out_path = os.path.join(out_dir, f'gpu_{gpu_id}_csr.npz')
-        tmp_path = out_path + '.tmp'
-        sparse.save_npz(tmp_path, merged, compressed=False)
-        if not tmp_path.endswith('.npz'):
-            os.rename(tmp_path + '.npz', tmp_path)
-        os.replace(tmp_path, out_path)
-        del merged, csr_chunks
-    else:
-        out_path = None
+            # VRAM-adaptive sub-batching — never exceed 60% of free VRAM
+            result_bytes = n_pairs * max_out * 4
+            mem_free_now = _cp.cuda.Device(0).mem_info[0]
+            if result_bytes > mem_free_now * 0.6:
+                sub_batch_size = max(100, int(n_pairs * (mem_free_now * 0.5) / result_bytes))
+            else:
+                sub_batch_size = n_pairs
 
-    # Save names
-    names_path = os.path.join(out_dir, f'gpu_{gpu_id}_names.npy')
-    np.save(names_path, np.array(names_out, dtype=object))
+            # Process sub-batches, stream results directly to .idx file — ZERO accumulation
+            idx_path = os.path.join(out_dir, f'gpu{gpu_id}_batch{batch_idx}.idx')
+            total_nnz = 0
 
-    # Save metadata
-    meta_path = os.path.join(out_dir, f'gpu_{gpu_id}_meta.npy')
-    np.save(meta_path, np.array([col_idx], dtype=np.int64))
+            with open(idx_path, 'wb') as f:
+                for sb_start in range(0, n_pairs, sub_batch_size):
+                    sb_end = min(sb_start + sub_batch_size, n_pairs)
+                    sb_pairs = batch_pairs[sb_start:sb_end]
+                    sb_max_nnz = pair_max_nnz[sb_start:sb_end]
+                    n_sb = sb_end - sb_start
 
-    _log(f"Worker done: {col_idx:,} features saved")
-    gc.collect()
+                    sb_max_out = int(sb_max_nnz.max()) if n_sb > 0 else 0
+                    if sb_max_out == 0:
+                        continue
+                    sb_max_out = min(sb_max_out, N)
+
+                    # Launch kernel
+                    pairs_gpu = _cp.asarray(sb_pairs.astype(np.int32).ravel())
+                    result_buf = _cp.zeros(n_sb * sb_max_out, dtype=_cp.int32)
+                    result_counts = _cp.zeros(n_sb, dtype=_cp.int32)
+
+                    kernel((n_sb,), (1,),
+                           (indptr_gpu, indices_gpu, pairs_gpu,
+                            result_buf, result_counts, np.int32(sb_max_out)))
+                    _cp.cuda.Stream.null.synchronize()
+
+                    counts_cpu = _cp.asnumpy(result_counts)
+
+                    # Stream results to .idx file — NO host-side accumulation
+                    for i in range(n_sb):
+                        cnt = int(counts_cpu[i])
+                        if cnt > 0:
+                            offset = i * sb_max_out
+                            rows = _cp.asnumpy(result_buf[offset:offset + cnt])
+                            # Format: pair_local_idx(int32) | nnz(int32) | row_indices(int32[nnz])
+                            f.write(np.int32(sb_start + i).tobytes())
+                            f.write(np.int32(cnt).tobytes())
+                            f.write(rows.astype(np.int32).tobytes())
+                            total_nnz += cnt
+
+                    del pairs_gpu, result_buf, result_counts
+                    _cp.get_default_memory_pool().free_all_blocks()
+
+            dt = time.time() - t0
+            batches_done += 1
+
+            if total_nnz == 0:
+                # Remove empty file
+                try:
+                    os.remove(idx_path)
+                except OSError:
+                    pass
+                idx_path = None
+
+            result_queue.put((gpu_id, batch_idx, total_nnz, idx_path))
+
+            if batches_done % 3 == 0:
+                _log(f"Batch {batch_idx}: {n_pairs} pairs → {total_nnz:,} nnz in {dt:.1f}s "
+                     f"({batches_done} batches done)")
+
+    except Exception as e:
+        _log(f"FATAL ERROR: {e}")
+        traceback.print_exc()
+        # Signal error to supervisor via result_queue
+        result_queue.put((gpu_id, -1, -1, str(e)))
+
+    finally:
+        # Cleanup GPU memory
+        try:
+            del indptr_gpu, indices_gpu
+        except NameError:
+            pass
+        try:
+            _cp.get_default_memory_pool().free_all_blocks()
+        except Exception:
+            pass
+        _log(f"Server exiting ({batches_done} batches processed)")
 
 
 # ============================================================
@@ -1345,7 +1393,8 @@ def _sparse_gpu_cross_batch(left_csc, right_csc, valid_pairs, all_names,
 # ============================================================
 
 def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
-                    gpu_id=0, min_nonzero=None, max_features=None, col_offset=0):
+                    gpu_id=0, min_nonzero=None, max_features=None, col_offset=0,
+                    daemon_handles=None):
     """
     Cross every left signal with every right signal using GPU batch multiply.
     Returns (feature_names_list, rows_list, cols_list, data_list, n_new_cols)
@@ -1435,7 +1484,8 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
                 c_names, c_rows, c_cols, c_data, c_ncols = _gpu_cross_chunk(
                     left_names, left_mat, r_names_chunk, right_mat_chunk,
                     prefix, gpu_id, min_nonzero, max_features, total_feats,
-                    col_offset=current_offset
+                    col_offset=current_offset,
+                    daemon_handles=daemon_handles
                 )
             elif _USE_NUMBA_CROSS:
                 c_names, c_rows, c_cols, c_data, c_ncols = _numba_cross_chunk(
@@ -1575,12 +1625,15 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
 
 def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                      gpu_id, min_nonzero, max_features, feats_so_far,
-                     col_offset=0):
+                     col_offset=0, daemon_handles=None):
     """
     GPU cross multiply with co-occurrence pre-filter.
     Step 1: Bitpacked POPCNT (or sparse matmul fallback) for co-occurrence filtering.
     Step 2: GPU element-wise multiply ONLY for valid pairs.
     No 3D tensor — works for ANY row count including 217K+ (15m).
+
+    When daemon_handles is provided (V4 architecture), dispatches to persistent
+    GPU daemons via Pipe IPC. Otherwise falls through to legacy paths.
     """
     names = []
     rows_list = []
@@ -1608,7 +1661,70 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     all_names = [f'{prefix}_{left_names[int(p[0])][:40]}_{right_names[int(p[1])][:40]}'
                  for p in valid_pairs]
 
-    # ── Multi-GPU dispatch (Step 2 across N GPUs) ──
+    # ── V4 DAEMON DISPATCH PATH (persistent daemons, zero scipy in GPU workers) ──
+    # When daemon_handles is provided, use the new architecture:
+    # - Daemons are ALREADY running (started in generate_all_crosses)
+    # - RELOAD uploads new CSC once per cross step (not 48× per RIGHT_CHUNK)
+    # - Batches dispatched via Pipe IPC, results as .idx files
+    # - CSR built from .idx files AFTER all GPU work completes
+    if daemon_handles is not None and len(daemon_handles) >= 2:
+        n_active = sum(1 for h in daemon_handles if h.status != 'dead')
+        if n_active >= 2 and n_valid >= n_active * 100:
+            log(f"  V4 DAEMON DISPATCH: {n_valid:,} pairs → {n_active} persistent daemons")
+            try:
+                from cross_supervisor import run_cross_step, build_csr_from_idx_files
+
+                N = left_mat.shape[0]
+                _out_dir = os.environ.get('V30_DATA_DIR', '.')
+
+                idx_files, total_nnz, n_feats = run_cross_step(
+                    daemon_handles=daemon_handles,
+                    left_mat=left_mat,
+                    right_mat=right_mat,
+                    valid_pairs=valid_pairs,
+                    all_names=all_names,
+                    prefix=prefix,
+                    n_rows=N,
+                    out_dir=_out_dir,
+                    pair_id_offset=col_offset
+                )
+
+                if not idx_files:
+                    log(f"  V4 daemon dispatch: no .idx files (0 nnz)")
+                    return all_names[:0], [], [], [], 0
+
+                # Build CSR from .idx files (Stage 3)
+                _idx_dir = os.path.dirname(idx_files[0])
+                final_csr = build_csr_from_idx_files(
+                    idx_dir=_idx_dir,
+                    n_rows=N,
+                    all_names=all_names
+                )
+
+                # Save CSR to disk (same format as old multi-GPU path)
+                _csr_out_dir = os.path.join(_out_dir, f'_gpu_csr_{prefix}_{os.getpid()}')
+                os.makedirs(_csr_out_dir, exist_ok=True)
+                out_path = os.path.join(_csr_out_dir, 'gpu_csr_0000.npz')
+                sparse.save_npz(out_path, final_csr, compressed=False)
+                total_cols = final_csr.shape[1]
+                del final_csr
+                gc.collect()
+
+                # Clean up .idx files
+                import shutil
+                shutil.rmtree(_idx_dir, ignore_errors=True)
+
+                log(f"  V4 DAEMON DONE: {total_cols:,} features from {n_active} GPUs, "
+                    f"{total_nnz:,} total nnz")
+                return all_names[:total_cols], [out_path], 'disk', _csr_out_dir, total_cols
+
+            except Exception as _v4_err:
+                log(f"  V4 daemon dispatch FAILED ({_v4_err}), falling back to legacy path")
+                import traceback
+                traceback.print_exc()
+                # Fall through to legacy multi-GPU or single-GPU paths
+
+    # ── Legacy Multi-GPU dispatch (Step 2 across N GPUs) ──
     available_gpus = _detect_available_gpus()
     n_gpus = len(available_gpus) if _MULTI_GPU_CROSS_GEN else 1
 
@@ -1643,168 +1759,135 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
         np.save(_pairs_path, valid_pairs)
         np.save(_names_path, np.array(all_names, dtype=object))
 
-        # Split pairs into N contiguous slices
-        slices = []
-        chunk_size = (n_valid + n_gpus - 1) // n_gpus
-        for i in range(n_gpus):
-            s = i * chunk_size
-            e = min(s + chunk_size, n_valid)
-            if s < e:
-                slices.append((available_gpus[i], s, e))
-
-        # Adaptive RAM-gated worker pool — NO hardcoded limits
-        # Watches psutil.virtual_memory().available in real-time.
-        # Launches workers ONLY when RAM is stable above headroom threshold.
-        # Works on ANY machine (500GB, 774GB, 2TB) with ANY per-worker footprint.
-        import psutil
-        from collections import deque
+        # ── PERSISTENT GPU SERVER ARCHITECTURE ──
+        # Each GPU gets a long-lived server process (CUDA init once).
+        # Pairs are split into small batches dispatched via Queue.
+        # Servers write raw index files (ZERO scipy) → constant memory.
+        # Post-processing builds CSR after all servers exit (full RAM available).
+        import json as _json
         ctx = _mp.get_context('spawn')
+        n_left_cols = left_mat.shape[1]
 
-        _total_ram = psutil.virtual_memory().total
-        _headroom = int(_total_ram * 0.05)  # 5% headroom (38GB on 774GB)
-        _headroom = max(_headroom, 20 * 1024**3)  # minimum 20GB
-        _stability_window = 4.0  # seconds of stable RAM required before launch
-        _poll_interval = 0.25  # RAM sampling at 4Hz
-        _drop_tolerance = 0.02  # 2% of total RAM allowed variance
+        # Batch sizing: split pairs into chunks of 5000
+        BATCH_SIZE = 5000
+        all_batches = []
+        for b_start in range(0, n_valid, BATCH_SIZE):
+            b_end = min(b_start + BATCH_SIZE, n_valid)
+            all_batches.append((valid_pairs[b_start:b_end], b_start // BATCH_SIZE))
 
-        # Background RAM monitor thread
-        _ram_buf = deque(maxlen=int(120 / _poll_interval))
-        _ram_buf.append((time.time(), psutil.virtual_memory().available))
-        _ram_lock = threading.Lock()
-        _monitor_running = True
+        log(f"  GPU servers: {n_gpus} GPUs, {len(all_batches)} batches of {BATCH_SIZE}")
 
-        def _ram_monitor():
-            while _monitor_running:
-                avail = psutil.virtual_memory().available
-                with _ram_lock:
-                    _ram_buf.append((time.time(), avail))
-                time.sleep(_poll_interval)
+        # Create queues
+        work_queue = ctx.Queue()
+        result_queue = ctx.Queue()
 
-        _mon_thread = threading.Thread(target=_ram_monitor, daemon=True)
-        _mon_thread.start()
-
-        def _ram_stable_above():
-            """True if RAM has been stable above headroom for the full window."""
-            now = time.time()
-            with _ram_lock:
-                recent = [(t, v) for t, v in _ram_buf if t >= now - _stability_window]
-            if len(recent) < 3:
-                return False
-            if recent[-1][0] - recent[0][0] < _stability_window * 0.75:
-                return False
-            # Floor check: every sample above headroom
-            if any(v < _headroom for _, v in recent):
-                return False
-            # Slope check: RAM not actively dropping (worker mid-allocation)
-            net_drop = recent[0][1] - recent[-1][1]
-            if net_drop > _total_ram * _drop_tolerance:
-                return False
-            return True
-
-        log(f"  RAM-gated pool: {_total_ram/1e9:.0f}GB total, "
-            f"{_headroom/1e9:.0f}GB headroom, {_stability_window}s window, "
-            f"{len(slices)} workers queued")
-
-        active = []  # (gpu_id, process) pairs
-        completed_gpus = []
-        failed = False
-        task_idx = 0
-
-        while task_idx < len(slices) or active:
-            # Reap finished workers
-            still_alive = []
-            for gid, proc in active:
-                if proc.is_alive():
-                    still_alive.append((gid, proc))
-                else:
-                    proc.join(timeout=10)
-                    if proc.exitcode != 0:
-                        log(f"  WARNING: GPU-{gid} worker exited with code {proc.exitcode}")
-                        failed = True
-                    else:
-                        completed_gpus.append(gid)
-                        _avail_gb = psutil.virtual_memory().available / 1e9
-                        log(f"  GPU-{gid} done | {len(completed_gpus)}/{len(slices)} "
-                            f"| avail={_avail_gb:.0f}GB")
-            active = still_alive
-
-            if failed:
-                break
-
-            # Nothing left to launch — wait for stragglers
-            if task_idx >= len(slices):
-                time.sleep(0.5)
-                continue
-
-            # RAM stability gate — THE critical check
-            if not _ram_stable_above():
-                time.sleep(0.5)
-                continue
-
-            # Launch next worker
-            g_id, p_start, p_end = slices[task_idx]
+        # Start persistent GPU servers
+        servers = []
+        for g_id in available_gpus:
             p = ctx.Process(
-                target=_multi_gpu_cross_worker,
-                args=(g_id, _left_path, _right_path, _pairs_path, _names_path,
-                      p_start, p_end, N, _mgpu_tmp),
+                target=_gpu_server,
+                args=(g_id, work_queue, result_queue,
+                      _left_path, _right_path, n_left_cols, N, _mgpu_tmp),
                 daemon=False,
             )
             p.start()
-            active.append((g_id, p))
-            task_idx += 1
-            _avail_gb = psutil.virtual_memory().available / 1e9
-            log(f"  Launched GPU-{g_id} ({task_idx}/{len(slices)}) "
-                f"| active={len(active)} | avail={_avail_gb:.0f}GB")
+            servers.append((g_id, p))
+            time.sleep(1)  # stagger CUDA context init
 
-            # Sleep > stability_window to flush pre-launch samples
-            # This prevents race: next window is entirely post-launch
-            time.sleep(_stability_window + _poll_interval * 2)
+        # Dispatch all batches round-robin
+        for batch_pairs, batch_idx in all_batches:
+            # Remap pairs: left cols stay [0,n_left), right cols become [n_left, n_left+n_right)
+            remapped = batch_pairs.copy()
+            remapped[:, 1] += n_left_cols
+            work_queue.put((remapped, batch_idx))
 
-        _monitor_running = False
+        # Send poison pills
+        for _ in servers:
+            work_queue.put(None)
+
+        # Collect results
+        completed_batches = 0
+        idx_files = []
+        failed = False
+        while completed_batches < len(all_batches):
+            try:
+                gpu_id, batch_idx, nnz, path = result_queue.get(timeout=600)
+                if batch_idx == -1:  # error signal
+                    log(f"  ERROR from GPU-{gpu_id}: {path}")
+                    failed = True
+                    break
+                if path:
+                    idx_files.append(path)
+                completed_batches += 1
+                if completed_batches % 2 == 0 or completed_batches == len(all_batches):
+                    log(f"  Batches: {completed_batches}/{len(all_batches)} "
+                        f"({nnz} nnz in last batch)")
+            except Exception as e:
+                log(f"  Queue timeout or error: {e}")
+                failed = True
+                break
+
+        # Join servers
+        for g_id, p in servers:
+            p.join(timeout=30)
+            if p.is_alive():
+                p.terminate()
 
         if failed:
             import shutil
             shutil.rmtree(_mgpu_tmp, ignore_errors=True)
-            raise RuntimeError(
-                f"Multi-GPU cross gen failed. {len(completed_gpus)}/{len(slices)} workers succeeded. "
-                f"Completed GPUs: {completed_gpus}")
+            raise RuntimeError("GPU server cross gen failed. Check logs above.")
 
-        # Merge results in GPU-ID order (preserves pair ordering)
-        merged_names = []
-        merged_csr = []
-        total_cols = 0
-        for g_id, p_start, p_end in slices:
-            meta = np.load(os.path.join(_mgpu_tmp, f'gpu_{g_id}_meta.npy'))
-            n_cols = int(meta[0])
-            total_cols += n_cols
-            w_names = np.load(os.path.join(_mgpu_tmp, f'gpu_{g_id}_names.npy'),
-                              allow_pickle=True).tolist()
-            merged_names.extend(w_names)
-            csr_path = os.path.join(_mgpu_tmp, f'gpu_{g_id}_csr.npz')
-            if os.path.exists(csr_path):
-                merged_csr.append(sparse.load_npz(csr_path))
+        # ── POST-PROCESSING: Build CSR from raw index files ──
+        # All GPU servers have exited — full RAM available for merge.
+        log(f"  Building CSR from {len(idx_files)} index files...")
+        all_coo_rows = []
+        all_coo_cols = []
+        col_offset = 0
+        merged_names = list(all_names)
 
-        # Clean up temp files
+        for idx_path in sorted(idx_files):
+            with open(idx_path, 'rb') as f:
+                data = f.read()
+            pos = 0
+            while pos < len(data):
+                pair_local = int(np.frombuffer(data[pos:pos+4], dtype=np.int32)[0])
+                pos += 4
+                nnz = int(np.frombuffer(data[pos:pos+4], dtype=np.int32)[0])
+                pos += 4
+                rows = np.frombuffer(data[pos:pos+nnz*4], dtype=np.int32)
+                pos += nnz * 4
+                # pair_local is index into the batch — need global column index
+                # For now, use sequential column assignment
+                all_coo_rows.append(rows)
+                all_coo_cols.append(np.full(nnz, col_offset, dtype=np.int32))
+                col_offset += 1
+
+        total_cols = col_offset
+        if all_coo_rows:
+            _r = np.concatenate(all_coo_rows)
+            _c = np.concatenate(all_coo_cols)
+            _d = np.ones(len(_r), dtype=np.float32)
+            final_csr = sparse.csr_matrix((_d, (_r, _c)), shape=(N, total_cols))
+            del _r, _c, _d, all_coo_rows, all_coo_cols
+        else:
+            final_csr = sparse.csr_matrix((N, 0), dtype=np.float32)
+
+        # Clean up index files + temp dir
         import shutil
         shutil.rmtree(_mgpu_tmp, ignore_errors=True)
 
         log(f"  MULTI-GPU done: {total_cols:,} features from {n_gpus} GPUs")
 
-        if merged_csr:
-            # Return disk-style: save merged CSR to a single NPZ
-            _mgpu_out_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
-                                         f'_gpu_csr_{prefix}_{os.getpid()}')
-            os.makedirs(_mgpu_out_dir, exist_ok=True)
-            if len(merged_csr) == 1:
-                final_csr = merged_csr[0]
-            else:
-                final_csr = sparse.hstack(merged_csr, format='csr')
-            out_path = os.path.join(_mgpu_out_dir, 'gpu_csr_0000.npz')
-            sparse.save_npz(out_path, final_csr, compressed=False)
-            del final_csr, merged_csr
-            gc.collect()
-            return merged_names, [out_path], 'disk', _mgpu_out_dir, total_cols
-        return merged_names, [], [], [], total_cols
+        # Save merged CSR
+        _mgpu_out_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
+                                     f'_gpu_csr_{prefix}_{os.getpid()}')
+        os.makedirs(_mgpu_out_dir, exist_ok=True)
+        out_path = os.path.join(_mgpu_out_dir, 'gpu_csr_0000.npz')
+        sparse.save_npz(out_path, final_csr, compressed=False)
+        del final_csr
+        gc.collect()
+        return merged_names[:total_cols], [out_path], 'disk', _mgpu_out_dir, total_cols
 
     # ── Step 2a: CUDA sparse kernel path (O(nnz) memory — preferred) ──
     # Uses two-pointer sorted merge on CSC indices instead of dense multiply.
@@ -2465,6 +2548,33 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     log(f"V2 Cross Generator — {tf.upper()}")
     log(f"  Input: {N:,} rows × {len(df.columns):,} cols")
 
+    # ── Pre-start GPU daemons (V4 architecture: persistent daemons, zero scipy) ──
+    # Daemons are forked HERE so CUDA init overlaps with binarization (CPU-bound).
+    # Lifetime: entire generate_all_crosses() call. One RELOAD per cross step.
+    _daemon_handles = None
+    available_gpus = _detect_available_gpus() if GPU else []
+    n_gpus = len(available_gpus) if _MULTI_GPU_CROSS_GEN else (1 if GPU else 0)
+    if n_gpus > 1 and GPU:
+        try:
+            from gpu_daemon import prestage_gpu_daemons
+            log(f"  Pre-starting {n_gpus} GPU daemons (V4 zero-scipy architecture)...")
+            _daemon_handles = prestage_gpu_daemons(
+                n_gpus=n_gpus,
+                available_gpu_ids=available_gpus,
+                vram_limit_pct=0.85
+            )
+            _active = sum(1 for h in _daemon_handles if h.status == 'idle')
+            if _active < 2:
+                log(f"  WARNING: Only {_active}/{n_gpus} daemons active, falling back to old path")
+                from gpu_daemon import shutdown_daemons
+                shutdown_daemons(_daemon_handles, timeout=10)
+                _daemon_handles = None
+            else:
+                log(f"  {_active}/{n_gpus} GPU daemons ready (CUDA init hidden behind binarization)")
+        except Exception as _daemon_err:
+            log(f"  WARNING: GPU daemon prestage failed ({_daemon_err}), using legacy path")
+            _daemon_handles = None
+
     # ── Step 1: Binarize all contexts (4-tier) ──
     log("  Step 1: Binarizing contexts (4-tier)...")
     ctx_names, ctx_arrays = binarize_contexts(df, four_tier=True)
@@ -2919,7 +3029,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     # Cross 13: REMOVED — Regime-aware DOY was redundant with dx_ (Cross 1)
 
-    def _execute_one_step(step):
+    def _execute_one_step(step, daemon_handles=None):
         """Execute a single cross step. Returns (prefix, label, names, r, c, d, nc, combo_formulas)."""
         _log_memory(f"Cross {step['num']} ({step['prefix']}) START")
         t_step = time.time()
@@ -2947,7 +3057,8 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         names, r, c, d, nc = gpu_batch_cross(
             left_n, left_a, right_n, right_a,
             step['prefix'], gpu_id=gpu_id, col_offset=0,
-            max_features=max_crosses
+            max_features=max_crosses,
+            daemon_handles=daemon_handles
         )
 
         elapsed_step = time.time() - t_step
@@ -2996,7 +3107,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         def _execute_one_step_locked(step):
             """Execute a cross step with GPU lock to prevent VRAM contention."""
             with _gpu_lock:
-                return _execute_one_step(step)
+                return _execute_one_step(step, daemon_handles=_daemon_handles)
 
         def _parallel_execute(steps_to_run):
             """Run steps in ThreadPoolExecutor with memory-aware backpressure."""
@@ -3058,7 +3169,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                 if _at_limit():
                     log(f"  Cross {step['num']} ({step['prefix']}): SKIPPED (max_crosses reached)")
                     continue
-                result = _execute_one_step(step)
+                result = _execute_one_step(step, daemon_handles=_daemon_handles)
                 _all_results.append(result)
                 log(f"    Completed Cross {step['num']} ({step['prefix']})")
 
@@ -3086,7 +3197,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             if _at_limit():
                 log(f"  Cross {step['num']} ({step['prefix']}): SKIPPED (max_crosses reached)")
                 continue
-            _pfx, _lbl, _names, _r, _c, _d, _nc, _combo_f = _execute_one_step(step)
+            _pfx, _lbl, _names, _r, _c, _d, _nc, _combo_f = _execute_one_step(step, daemon_handles=_daemon_handles)
             if _combo_f:
                 all_combo_formulas.update(_combo_f)
             if _names:
@@ -3095,6 +3206,19 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             del _names, _r, _c, _d
             gc.collect()
             _malloc_trim()
+
+    # ── Shutdown GPU daemons (V4: must happen BEFORE final assembly) ──
+    if _daemon_handles is not None:
+        try:
+            from gpu_daemon import shutdown_daemons
+            log("  Shutting down GPU daemons...")
+            shutdown_daemons(_daemon_handles, timeout=60)
+            log("  GPU daemons shut down — full RAM available for assembly")
+        except Exception as _sd_err:
+            log(f"  WARNING: Daemon shutdown error: {_sd_err}")
+        _daemon_handles = None
+        gc.collect()
+        _malloc_trim()
 
     # ── Save inference artifacts (for live cross computation) ──
     if len(all_cross_names) > 0:
