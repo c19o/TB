@@ -1,109 +1,102 @@
 # V3.3 Session Resume — 2026-03-31
 
 ## INSTRUCTION TO NEW SESSION
-Read this file completely. Then read v3.3/CLAUDE.md, v3.3/1W_FINAL_ASSESSMENT.md, v3.3/TF_CAVEAT_1D.md, v3.3/WHAT_WORKED_AND_WHY.md. Resume 1d training company.
+Read this file completely. Then read v3.3/CLAUDE.md. Resume from "Next Steps" below.
 
 ---
 
-## MACHINE STATUS
-- **Instance 33852303 — DESTROYED** (all artifacts downloaded to v3.3/1w_cloud_artifacts/)
-- **Next machine**: Taiwan 10x RTX 4090, 144c Xeon, 516GB RAM, $3.07/hr (ID 25635685) — RENT WHEN CODE READY
-- **1d ETA on Taiwan**: ~25 min per run, ~$1.28/run
+## Current State
+
+### 1w Training: COMPLETE
+- CPCV: 57.5%, Model: 79.3%, Binary mode, all steps PASS
+- Artifacts: v3.3/1w_cloud_artifacts_v3/
+- OOS 70%+ confidence = 83-100% accuracy
+
+### 1d Training: BLOCKED on daemon RELOAD bug
+- V4 daemon architecture PROVEN: 138K features in 4s, 44GB RAM (was 700GB+ OOM)
+- First 2 cross steps work via daemons (dx, ax)
+- Steps 3+ fail: daemons die during RELOAD (matrix swap between cross steps)
+- Falls back to legacy path which OOMs at 700GB+
+
+### 4h/1h/15m: Waiting on 1d
 
 ---
 
-## 1W FINAL RESULTS (V7 — Champion)
-- **56.4% CPCV binary OOS** (60.9% at >=85% confidence)
-- **37.8% → 56.4%** = +18.6% total improvement
-- Competitive with institutional benchmarks (55-60% = respectable under CPCV)
-- No published CPCV weekly BTC benchmark exists
-- 11 actual trades over 16 years, 63.6% win rate
-- All artifacts saved in v3.3/1w_cloud_artifacts/
-
-### What Worked (in order of impact)
-1. Binary mode (+8.2%) — drop FLAT, UP/DOWN only
-2. Param tuning (+8.5%) — LR=0.234, leaves=5, ES=50, CPCV(8,2)
-3. Prime features (+1.4%) — price_is_prime, rsi_is_prime, etc.
-4. Lean mode (+1.3%) — drop redundant TA, keep SAR/EMA/RSI + all esoteric
-5. max_hold 50→78, max_bin 255→7, deterministic removed
-
-### Known Issues
-- Confidence drops above 85% — needs Platt/isotonic calibration
-- PrecS=41.4% (SHORT predictions weak)
-- Only 11 tradable signals in 16 years
-- Cross features add noise on 819 rows (work on larger TFs)
+## Machine
+Sichuan 8x RTX 3090, instance 33876301, $1.12/hr, PAUSED
+SSH: ssh1.vast.ai:36300
+CRITICAL: v3.3/*.py must be SYMLINKS to /workspace/*.py (already set up)
 
 ---
 
-## 1D PLAN — NEXT SESSION
+## V4 Daemon Architecture
 
-### Machine
-Taiwan 10x RTX 4090 (ID 25635685), $3.07/hr, 144c, 516GB RAM
-- CPCV 10 paths / 10 GPUs = 1 round (perfect match)
-- 99.88% reliability, 11-month max lease
+### Files
+- v3.3/gpu_daemon.py — persistent GPU process, zero scipy, Pipe IPC
+- v3.3/cross_supervisor.py — supervisor + CSR builder
+- v3.3/v2_cross_generator.py — daemon_handles flow: __main__ → generate_all_crosses → _execute_one_step → gpu_batch_cross → _gpu_cross_chunk
 
-### Key Config for 1d
-- Rows: 5,733
-- Trade duration: 6-90 bars
-- max_hold_bars: 90
-- Cross gen: ENABLED (~500K features, EFB bundles to ~4K)
-- Lean mode: OFF (enough rows for full TA)
-- Binary mode: TEST (also test 3-class with wider barriers)
-- return_bars: [1, 3, 7, 14, 30, 60, 90] (add 60/90 for full trade duration)
-- All primes + prime x esoteric crosses (25 features)
-- All SAR-numerology hybrids (16 features)
-- Load unused DBs: open_interest, market_cap, tweet engagement, google_trends
+### What Works
+- 8/8 daemons start from __main__ (before CUDA init)
+- CUDA kernel compiles once per daemon
+- Batch dispatch: 5K pairs/batch, round-robin 8 GPUs
+- First 2 cross steps complete: 138K features, 44GB RAM
+- Side-channel debug: /tmp/xgen_daemon_debug.log
 
-### Company Structure (REVISED — 15 agents, not 30)
-Lesson learned: agents get stuck on large files. Use fewer, more focused agents.
+### The Bug
+- Daemons die during RELOAD for cross step 3+ (vx, asp, etc.)
+- RELOAD sends new left/right matrix paths → daemon loads, builds CSC, uploads to GPU
+- Something in the RELOAD handler crashes the daemon
+- Error: "All daemons dead after RELOAD" → falls back to legacy OOM path
 
-**PHASE 1: Analysis (8 read-only agents, parallel)**
-1. Astrology Master — verify daily resolution features
-2. Numerology Master — verify all numerology, propose date_string_gematria
-3. Prime Master — verify 17 primes + 15 crosses work on 1d
-4. Feature Auditor — count total features, check for NaN to 0, constant features
-5. Flat Zone Analyst — compute FLAT% at different ATR multipliers for 1d
-6. Param Analyst — verify 1d LightGBM/Optuna/CPCV config
-7. DB Schema Inspector — SSH to check unused DB schemas
-8. Matrix Thesis Guardian — verify no violations
-
-**PHASE 2: Implementation (3 surgical agents + main session)**
-9. Binary Mode Generalizer — make BINARY_TF_MODE dict work for any TF
-10. Calibrator Implementer — Platt/isotonic scaling post-training
-11. Return/Duration Fixer — add return_60/90, price_vs_365d_high/low
-- Main session handles: DB loading, config changes (too risky for agents on large files)
-
-**PHASE 3: Training (4 agents)**
-12. Deployer — SCP to cloud, validate, launch
-13. Monitor — logs, GPU util, errors
-14. CPCV Analyst — results analysis
-15. Confidence Analyst — confidence vs accuracy, verify calibration
-
-### Tests to Run
-1. Binary 1d (first, ~25 min)
-2. 3-class 1d with current barriers (second, ~25 min)
-3. If 3-class has enough FLAT: test wider barriers (third)
-4. Pick winner, document for 4h
-
-### Target
-- 60-65% CPCV binary (or 3-class if FLAT works)
-- 65-70% at high confidence (with calibration fix)
-- Esoteric contributing 25-40% of model gain (vs 15% on 1w)
-- Settings that carry directly to 4h/1h/15m without tuning
+### Root Cause Investigation Needed
+- Read gpu_daemon.py RELOAD handler (around line 231-260)
+- Check if matrix dimensions change between cross steps
+- Check if np.hstack([left, right]) fails for different-sized matrices
+- Check if CSC construction without scipy has a bug for certain shapes
 
 ---
 
-## GIT STATE
-- Branch: v3.3-clean
-- Latest commit: 10cc69a (1w final assessment + TF caveats + prime features)
-- Pushed to: tb33 (github.com/c19o/TB-3.3)
-- 1w artifacts: v3.3/1w_cloud_artifacts/ (79 files, not in git)
+## 10 OOM Attempts (Legacy Path)
+1. All 8 simultaneous → 714GB OOM
+2. Disable pinned pool → 693GB
+3. Stagger launch → all launched
+4. RSS measurement → too low
+5. RAM stability gate → spike later
+6. Sparse kernel → 283GB start, grew to 691GB
+7. Flush 5K → 699GB
+8. Stream-to-disk → 707GB
+9. Deferred merge → 722GB
+10. 15% headroom → not tested
 
-## BEHAVIORAL RULES
-1. Claude Max = unlimited. No budget/turn caps.
-2. Fewer agents (15 not 30). Agents cannot edit large files — do that directly.
-3. Rent machine AFTER code is ready, not before.
-4. Download everything before destroying machines.
-5. Perplexity for HOW not WHY. Never ask if esoteric works.
-6. Binary + confidence gating = implicit FLAT.
-7. 1w ceiling is ~56% with 819 rows. More data (1d+) is the path forward.
+Root causes: scipy fragmentation, CuPy state, np.ascontiguousarray copies, csr_chunks unbounded
+
+---
+
+## 20 Speed Optimizations Implemented
+See git log for details. Key ones:
+- CUDA sparse kernel (O(nnz) memory)
+- gpu_use_dp=False (2-4x GPU speed)
+- Persistent GPU daemons (zero scipy in workers)
+- Bitpack POPCNT cache optimization
+- Two-pass → single-pass Numba fusion
+- Parallel final retrain across GPUs
+- jemalloc + NUMA + THP tuning
+
+---
+
+## Deploy Protocol
+1. Edit locally, commit, push
+2. python v3.3/deploy_manifest.py
+3. SCP *.py + manifest to /workspace/
+4. Symlink: for f in /workspace/*.py; do ln -sf $f /workspace/v3.3/$(basename $f); done
+5. deploy_verify.py must PASS
+6. Launch training
+
+---
+
+## Next Steps
+1. Fix daemon RELOAD bug in gpu_daemon.py (the ONLY remaining blocker)
+2. Once fixed: 1d trains with 44GB RAM on 774GB machine (proven)
+3. Then 4h → 1h → 15m
+4. Long-term: custom CUDA C++ pipeline (Option B, 4-5 months)
