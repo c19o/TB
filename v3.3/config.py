@@ -560,7 +560,7 @@ EFB_PREBUNDLE_ENABLED = {
 # LightGBM: applied via is_unbalance=True or class_weight param
 # 1w: explicit SHORT upweight (3x) because model never predicts SHORT without it
 TF_CLASS_WEIGHT = {
-    '1d': {0: 3.0, 1: 1.0, 2: 1.0},  # SHORT=3x — force directional SHORT learning
+    '1d': {0: 1.5, 1: 1.0},           # Binary: DOWN=1.5x mild upweight (was 3-class {0:3,1:1,2:1})
     '1w': {0: 2.0, 1: 1.0, 2: 1.0},  # SHORT=2x — reduced from 3x (model was ONLY predicting SHORT)
     '4h': {0: 2.0, 1: 1.0, 2: 1.0},  # SHORT=2x — insurance (v3.2 4h had SHORT accuracy issues)
 }
@@ -587,7 +587,7 @@ CPCV_SAMPLE_SEED = 42             # deterministic sampling for reproducibility
 # Per-TF num_leaves caps (scaled with data size — larger TFs support deeper trees)
 TF_NUM_LEAVES = {
     '1w': 15,    # 819 rows — raised from 7. Perplexity: 15-31 optimal for tiny data. 15 = conservative start.
-    '1d': 15,    # 5.7K rows — moderate (EFB ratio 0.28:1)
+    '1d': 31,    # 5.7K rows — 7x more data than 1w, Optuna needs room to search
     '4h': 31,    # 23K rows — standard (EFB ratio 0.92:1)
     '1h': 63,    # 75K rows — can handle complexity (EFB ratio 3.8:1)
     '15m': 127,  # 294K rows — deep trees viable (EFB ratio 6.9:1)
@@ -675,7 +675,7 @@ OPTUNA_TF_PHASE1_ROUNDS = {
 # 1w: floor at 3 to prevent trivially shallow trees on tiny data
 OPTUNA_TF_MAX_DEPTH_RANGE = {
     '1w': (3, 8),    # tiny data — floor=3 prevents 2-deep stumps, cap=8 prevents memorization
-    '1d': (3, 8),    # moderate data — same logic
+    '1d': (3, 6),    # 338K features — cap depth to prevent memorization
 }
 
 # Per-TF learning_rate Optuna search range (default = None, meaning fixed LR from phase config)

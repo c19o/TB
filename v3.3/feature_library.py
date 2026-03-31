@@ -5968,6 +5968,16 @@ def compute_prime_features(result, tf_name='1w'):
         out['week_is_prime'] = _is_prime_numba(week)
         doy = result.index.dayofyear.values.astype(np.float64)
         out['doy_is_prime'] = _is_prime_numba(doy)
+        month = result.index.month.values.astype(np.float64)
+        out['month_is_prime'] = _is_prime_numba(month)  # months 2,3,5,7,11 are prime
+
+    # year_digit_sum_is_prime — numerological prime energy of the year
+    if hasattr(result.index, 'year'):
+        year_ds = _digit_sum_numba(result.index.year.values.astype(np.float64))
+        out['year_digit_sum_is_prime'] = _is_prime_numba(year_ds.astype(np.float64))
+
+    # bar_number_is_prime — is the nth bar a prime number?
+    out['bar_number_is_prime'] = _is_prime_numba(np.arange(1, len(result) + 1, dtype=np.float64))
 
     # hour_is_prime — only for sub-daily TFs (not 1w/1d)
     if tf_name not in ('1w', '1d') and hasattr(result.index, 'hour'):
