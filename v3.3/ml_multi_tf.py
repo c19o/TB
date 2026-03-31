@@ -2417,6 +2417,12 @@ if __name__ == '__main__':
                           _parent_ds.construct()
                       log(f"  Parent Dataset: {_Xp.shape[1]:,} features, EFB bins computed "
                           f"({time.time() - _parent_t0:.1f}s). Folds reuse via reference=.")
+                      # Save binary for future runs (skip EFB reconstruction next time)
+                      try:
+                          _parent_ds.save_binary(bin_path)
+                          log(f"  Parent Dataset saved to binary: {bin_path}")
+                      except Exception as _sbe:
+                          log(f"  WARNING: save_binary failed ({_sbe}) — next run will rebuild")
                       del _Xp
                   gc.collect()
               except Exception as _pde:
@@ -3049,6 +3055,42 @@ if __name__ == '__main__':
               log(f"  Platt calibrator saved (platt_{tf_name}.pkl) -- multinomial 3-class")
           else:
               platt = None
+
+          # ── Isotonic Calibrator (CalibratedClassifierCV with cv='prefit') ──
+          log(f"\n  {elapsed()} Isotonic calibration (CalibratedClassifierCV)...")
+          try:
+              from sklearn.calibration import CalibratedClassifierCV
+
+              class _LGBMPrefit:
+                  """Minimal sklearn-compatible wrapper for a fitted LightGBM Booster.
+                  CalibratedClassifierCV(cv='prefit') needs predict_proba() and classes_."""
+                  def __init__(self, booster, n_classes, best_iteration):
+                      self._booster = booster
+                      self._best_iteration = best_iteration
+                      self.classes_ = np.arange(n_classes)
+                  def predict_proba(self, X):
+                      raw = self._booster.predict(X, num_iteration=self._best_iteration)
+                      return _fix_binary_preds(raw)
+                  def predict(self, X):
+                      return np.argmax(self.predict_proba(X), axis=1)
+
+              if len(cal_raw_3c) > 50:
+                  _n_cal_classes = int(y_cal.max()) + 1
+                  _lgbm_wrapper = _LGBMPrefit(final_model, _n_cal_classes, final_model.best_iteration)
+                  # Fit isotonic calibration on OOS predictions (X_val_f held-out from final train)
+                  iso_cal = CalibratedClassifierCV(_lgbm_wrapper, cv='prefit', method='isotonic')
+                  iso_cal.fit(X_val_f, y_val_f)
+                  _iso_path = f'{DB_DIR}/calibrator_{tf_name}.pkl'
+                  _iso_tmp = _iso_path + '.tmp'
+                  with open(_iso_tmp, 'wb') as f:
+                      pickle.dump(iso_cal, f)
+                  os.replace(_iso_tmp, _iso_path)
+                  log(f"  Isotonic calibrator saved (calibrator_{tf_name}.pkl) "
+                      f"-- {_n_cal_classes}-class, fitted on {len(y_val_f)} val samples")
+              else:
+                  log(f"  Isotonic calibration: skipped (too few OOS samples: {len(cal_raw_3c)})")
+          except Exception as _iso_err:
+              log(f"  WARNING: Isotonic calibration failed: {_iso_err}")
 
           # Confidence threshold validation (using held-out val set from final model)
           log(f"\n  {elapsed()} CONFIDENCE THRESHOLD VALIDATION (on val set)...")
