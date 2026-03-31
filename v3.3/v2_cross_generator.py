@@ -829,6 +829,159 @@ _MULTI_GPU_CROSS_GEN = os.environ.get('MULTI_GPU_CROSS_GEN', '1') == '1'
 
 
 # ============================================================
+# MULTI-GPU CROSS WORKER (spawn-safe, top-level for pickling)
+# ============================================================
+
+def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
+                            valid_pairs_npy_path, all_names_path,
+                            pair_start, pair_end, N, out_dir):
+    """
+    Spawn-safe worker: runs Step 2 GPU batch multiply on a slice of valid_pairs.
+    Sets CUDA_VISIBLE_DEVICES BEFORE importing CuPy so each worker owns one GPU.
+    Saves COO results as NPZ + names as .npy to out_dir.
+    Returns nothing — results are on disk.
+    """
+    import os, gc, time, sys
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+
+    import numpy as np
+    from scipy import sparse
+
+    import cupy as cp
+    import cupyx.scipy.sparse as cusp
+    cp.cuda.Device(0).use()  # always device 0 (remapped by CUDA_VISIBLE_DEVICES)
+
+    def _log(msg):
+        print(f"[{time.strftime('%H:%M:%S')}] [GPU-{gpu_id}] {msg}", flush=True)
+
+    # Load shared data from disk
+    left_mat = np.load(left_npy_path, mmap_mode='r')
+    right_mat = np.load(right_npy_path, mmap_mode='r')
+    valid_pairs = np.load(valid_pairs_npy_path, mmap_mode='r')
+    all_names = np.load(all_names_path, allow_pickle=True)
+
+    my_pairs = valid_pairs[pair_start:pair_end]
+    n_my_pairs = len(my_pairs)
+    _log(f"Worker start: pairs [{pair_start}:{pair_end}] = {n_my_pairs:,}")
+
+    # Upload matrices to GPU
+    left_gpu = cp.asarray(np.ascontiguousarray(left_mat))
+    right_gpu = cp.asarray(np.ascontiguousarray(right_mat))
+
+    # VRAM-adaptive batch sizing (same formula as single-GPU path)
+    mem_free, mem_total = cp.cuda.Device(0).mem_info
+    gpu_vram_gb = mem_total / (1024**3)
+    avail_vram = int(gpu_vram_gb * 0.5 * 1024**3)
+    bytes_per_pair = N * 12
+    BATCH = max(100, min(50000, avail_vram // max(1, bytes_per_pair)))
+    _log(f"VRAM: {gpu_vram_gb:.1f}GB, BATCH={BATCH}")
+
+    # Accumulate results
+    names_out = []
+    csr_chunks = []
+    coo_rows = []
+    coo_data = []
+    coo_names = []
+    coo_col_local = 0
+    col_idx = 0
+
+    FLUSH_FEATS = max(5000, min(50000, 37000))
+
+    def _flush_coo():
+        nonlocal coo_col_local
+        if not coo_rows:
+            return
+        r_all = np.concatenate(coo_rows)
+        c_parts = []
+        for ci, r in enumerate(coo_rows):
+            c_parts.append(np.full(len(r), ci, dtype=np.int32))
+        c_all = np.concatenate(c_parts)
+        d_all = np.concatenate(coo_data)
+        csr = sparse.coo_matrix((d_all, (r_all, c_all)),
+                                shape=(N, coo_col_local)).tocsr()
+        csr_chunks.append(csr)
+        names_out.extend(coo_names)
+        coo_names.clear()
+        coo_rows.clear()
+        coo_data.clear()
+        coo_col_local = 0
+        del r_all, c_all, d_all, csr, c_parts
+        gc.collect()
+
+    for b_start in range(0, n_my_pairs, BATCH):
+        b_end = min(b_start + BATCH, n_my_pairs)
+        chunk = my_pairs[b_start:b_end]
+
+        left_cols = left_gpu[:, chunk[:, 0]]
+        right_cols = right_gpu[:, chunk[:, 1]]
+        crosses_gpu = left_cols * right_cols
+        del left_cols, right_cols
+
+        nz_rows_gpu, nz_cols_gpu = cp.nonzero(crosses_gpu)
+        nz_rows_all = cp.asnumpy(nz_rows_gpu)
+        nz_cols_all = cp.asnumpy(nz_cols_gpu)
+        del nz_rows_gpu, nz_cols_gpu
+
+        crosses = cp.asnumpy(crosses_gpu)
+        del crosses_gpu
+        cp.get_default_memory_pool().free_all_blocks()
+
+        if len(nz_rows_all) > 0:
+            unique_cols, col_starts = np.unique(nz_cols_all, return_index=True)
+            col_ends = np.append(col_starts[1:], len(nz_cols_all))
+
+            for k in range(len(unique_cols)):
+                c = int(unique_cols[k])
+                s, e = int(col_starts[k]), int(col_ends[k])
+                nz = nz_rows_all[s:e]
+                # Map back to global pair index for name lookup
+                global_pair_idx = pair_start + b_start + c
+                coo_names.append(all_names[global_pair_idx])
+                coo_rows.append(nz)
+                coo_data.append(crosses[nz, c].astype(np.float32))
+                coo_col_local += 1
+                col_idx += 1
+
+        if coo_col_local >= FLUSH_FEATS:
+            _flush_coo()
+            _log(f"  Flush: {col_idx:,}/{n_my_pairs:,} features")
+
+    # Final flush
+    _flush_coo()
+
+    del left_gpu, right_gpu
+    cp.get_default_memory_pool().free_all_blocks()
+
+    # Merge all CSR chunks and save to disk
+    os.makedirs(out_dir, exist_ok=True)
+    if csr_chunks:
+        if len(csr_chunks) == 1:
+            merged = csr_chunks[0]
+        else:
+            merged = sparse.hstack(csr_chunks, format='csr')
+        out_path = os.path.join(out_dir, f'gpu_{gpu_id}_csr.npz')
+        tmp_path = out_path + '.tmp'
+        sparse.save_npz(tmp_path, merged, compressed=False)
+        if not tmp_path.endswith('.npz'):
+            os.rename(tmp_path + '.npz', tmp_path)
+        os.replace(tmp_path, out_path)
+        del merged, csr_chunks
+    else:
+        out_path = None
+
+    # Save names
+    names_path = os.path.join(out_dir, f'gpu_{gpu_id}_names.npy')
+    np.save(names_path, np.array(names_out, dtype=object))
+
+    # Save metadata
+    meta_path = os.path.join(out_dir, f'gpu_{gpu_id}_meta.npy')
+    np.save(meta_path, np.array([col_idx], dtype=np.int64))
+
+    _log(f"Worker done: {col_idx:,} features saved")
+    gc.collect()
+
+
+# ============================================================
 # BATCH GPU CROSS MULTIPLICATION (CHUNKED RIGHT-SIDE)
 # ============================================================
 
@@ -1093,7 +1246,99 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     all_names = [f'{prefix}_{left_names[int(p[0])][:40]}_{right_names[int(p[1])][:40]}'
                  for p in valid_pairs]
 
-    # ── Step 2: Vectorized GPU batch multiply ──
+    # ── Multi-GPU dispatch (Step 2 across N GPUs) ──
+    available_gpus = _detect_available_gpus()
+    n_gpus = len(available_gpus) if _MULTI_GPU_CROSS_GEN else 1
+
+    if n_gpus > 1 and n_valid >= n_gpus * 100:
+        import multiprocessing as _mp
+        log(f"  MULTI-GPU: sharding {n_valid:,} pairs across {n_gpus} GPUs ({available_gpus})")
+
+        N = left_mat.shape[0]
+        _mgpu_tmp = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
+                                 f'_mgpu_{prefix}_{os.getpid()}')
+        os.makedirs(_mgpu_tmp, exist_ok=True)
+
+        # Save shared data to temp .npy for workers (mmap-friendly)
+        _left_path = os.path.join(_mgpu_tmp, 'left_mat.npy')
+        _right_path = os.path.join(_mgpu_tmp, 'right_mat.npy')
+        _pairs_path = os.path.join(_mgpu_tmp, 'valid_pairs.npy')
+        _names_path = os.path.join(_mgpu_tmp, 'all_names.npy')
+        np.save(_left_path, np.ascontiguousarray(left_mat))
+        np.save(_right_path, np.ascontiguousarray(right_mat))
+        np.save(_pairs_path, valid_pairs)
+        np.save(_names_path, np.array(all_names, dtype=object))
+
+        # Split pairs into N contiguous slices
+        slices = []
+        chunk_size = (n_valid + n_gpus - 1) // n_gpus
+        for i in range(n_gpus):
+            s = i * chunk_size
+            e = min(s + chunk_size, n_valid)
+            if s < e:
+                slices.append((available_gpus[i], s, e))
+
+        # Launch workers with spawn context
+        ctx = _mp.get_context('spawn')
+        workers = []
+        for g_id, p_start, p_end in slices:
+            p = ctx.Process(
+                target=_multi_gpu_cross_worker,
+                args=(g_id, _left_path, _right_path, _pairs_path, _names_path,
+                      p_start, p_end, N, _mgpu_tmp)
+            )
+            p.start()
+            workers.append((g_id, p))
+
+        # Wait for all workers — crash if any fail
+        for g_id, p in workers:
+            p.join()
+            if p.exitcode != 0:
+                # Clean up temp files before crash
+                import shutil
+                shutil.rmtree(_mgpu_tmp, ignore_errors=True)
+                raise RuntimeError(
+                    f"Multi-GPU worker GPU-{g_id} failed (exit code {p.exitcode}). "
+                    f"Checkpoint any prior NPZ and investigate.")
+
+        # Merge results in GPU-ID order (preserves pair ordering)
+        merged_names = []
+        merged_csr = []
+        total_cols = 0
+        for g_id, p_start, p_end in slices:
+            meta = np.load(os.path.join(_mgpu_tmp, f'gpu_{g_id}_meta.npy'))
+            n_cols = int(meta[0])
+            total_cols += n_cols
+            w_names = np.load(os.path.join(_mgpu_tmp, f'gpu_{g_id}_names.npy'),
+                              allow_pickle=True).tolist()
+            merged_names.extend(w_names)
+            csr_path = os.path.join(_mgpu_tmp, f'gpu_{g_id}_csr.npz')
+            if os.path.exists(csr_path):
+                merged_csr.append(sparse.load_npz(csr_path))
+
+        # Clean up temp files
+        import shutil
+        shutil.rmtree(_mgpu_tmp, ignore_errors=True)
+
+        log(f"  MULTI-GPU done: {total_cols:,} features from {n_gpus} GPUs")
+
+        if merged_csr:
+            # Return disk-style: save merged CSR to a single NPZ
+            _mgpu_out_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
+                                         f'_gpu_csr_{prefix}_{os.getpid()}')
+            os.makedirs(_mgpu_out_dir, exist_ok=True)
+            if len(merged_csr) == 1:
+                final_csr = merged_csr[0]
+            else:
+                final_csr = sparse.hstack(merged_csr, format='csr')
+            out_path = os.path.join(_mgpu_out_dir, 'gpu_csr_0000.npz')
+            sparse.save_npz(out_path, final_csr, compressed=False)
+            del final_csr, merged_csr
+            gc.collect()
+            return merged_names, [out_path], 'disk', _mgpu_out_dir, total_cols
+        return merged_names, [], [], [], total_cols
+
+    # ── Step 2: Vectorized GPU batch multiply (single-GPU path) ──
     # Flush COO→CSR every FLUSH_INTERVAL batches to prevent unbounded RAM growth.
     # Without this, 1.38M features accumulate ~16GB+ of COO arrays before returning.
     _dev = 0 if os.environ.get('CUDA_VISIBLE_DEVICES') else gpu_id
