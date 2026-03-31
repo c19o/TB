@@ -1323,10 +1323,10 @@ if __name__ == '__main__':
           log(f"  Triple-barrier labels (tp={tb_cfg['tp_atr_mult']}xATR, sl={tb_cfg['sl_atr_mult']}xATR, hold={tb_cfg['max_hold_bars']}): "
               f"{int(n_long)} LONG, {int(n_short)} SHORT, {int(n_flat)} FLAT, {int(n_nan)} NaN")
 
-          # ── BINARY MODE for 1w ──
-          from config import LEAN_1W_MODE
-          _BINARY_1W = getattr(__import__('config'), 'BINARY_1W_MODE', False)
-          if _BINARY_1W and tf_name == '1w':
+          # ── BINARY MODE (per-TF) ──
+          from config import LEAN_1W_MODE, BINARY_TF_MODE
+          _BINARY_MODE = BINARY_TF_MODE.get(tf_name, False)
+          if _BINARY_MODE:
               # Convert 3-class → binary: SHORT(0)→0, FLAT(1)→NaN(drop), LONG(2)→1
               _flat_mask = (y_3class == 1)
               y_3class[_flat_mask] = np.nan  # mark FLAT as NaN → excluded from training
@@ -1434,10 +1434,15 @@ if __name__ == '__main__':
               # Dense conversion is unnecessary and OOMs on 4h+ (498GB for 5.3M features).
               # With force_col_wise=True, sparse training is multi-threaded.
               _n_total_features = X_all.shape[1]
-              # OPT-9: Convert to CSC for LightGBM column-wise iteration (force_col_wise=True)
-              # CSC = columns contiguous in memory → faster histogram building
-              X_all = X_all.tocsc()
-              log(f"  Keeping SPARSE CSC ({_n_total_features:,} features, LightGBM native sparse + force_col_wise)")
+              # OPT-9: Convert to optimal sparse format for LightGBM
+              # CSC for force_col_wise, CSR for force_row_wise — skip wasteful conversion
+              from config import TF_FORCE_ROW_WISE
+              if tf_name in TF_FORCE_ROW_WISE:
+                  X_all = X_all.tocsr() if not isinstance(X_all, sp_sparse.csr_matrix) else X_all
+                  log(f"  Keeping SPARSE CSR ({_n_total_features:,} features, force_row_wise for {tf_name})")
+              else:
+                  X_all = X_all.tocsc()
+                  log(f"  Keeping SPARSE CSC ({_n_total_features:,} features, force_col_wise)")
               feature_cols = feature_cols + cross_cols
               _X_all_is_sparse = True  # ALWAYS sparse — no dense conversion
               nnz = X_all.nnz if hasattr(X_all, 'nnz') else int((X_all != 0).sum())
@@ -1640,12 +1645,12 @@ if __name__ == '__main__':
           else:
               _base_lgb_params['force_col_wise'] = True
           # ── BINARY MODE: override objective ──
-          if _BINARY_1W and tf_name == '1w':
+          if _BINARY_MODE:
               _base_lgb_params['objective'] = 'binary'
               _base_lgb_params.pop('num_class', None)
               _base_lgb_params['learning_rate'] = 0.3  # higher for binary
               _base_lgb_params['metric'] = 'binary_logloss'
-              log(f"  BINARY MODE: objective=binary, LR=0.3")
+              log(f"  BINARY MODE ({tf_name}): objective=binary, LR=0.3")
 
           # Cap num_threads for small datasets (LightGBM docs: >64 threads on <10K rows = poor scaling)
           _n_rows = X_all.shape[0] if not hasattr(X_all, 'nnz') else X_all.shape[0]
@@ -2751,7 +2756,7 @@ if __name__ == '__main__':
                   rank_matrix = np.zeros((len(all_importances), len(feat_list)))
                   for fold_i, imp in enumerate(all_importances):
                       gains = np.array([imp.get(f, 0) for f in feat_list])
-                      rank_matrix[fold_i] = stats.rankdata(-gains)  # higher gain = lower rank
+                      rank_matrix[fold_i] = np.argsort(np.argsort(-gains)) + 1  # 3x faster than rankdata
 
                   # Stability: mean rank + rank CV across folds
                   mean_ranks = rank_matrix.mean(axis=0)

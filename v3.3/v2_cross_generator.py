@@ -805,6 +805,30 @@ def extract_signal_groups(df, ctx_names, ctx_arrays):
 
 
 # ============================================================
+# MULTI-GPU DETECTION
+# ============================================================
+
+def _detect_available_gpus():
+    """Detect all available GPUs. Returns list of GPU IDs."""
+    try:
+        import subprocess
+        result = subprocess.run(['nvidia-smi', '--list-gpus'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            gpu_count = result.stdout.strip().count('\n') + 1 if result.stdout.strip() else 0
+            return list(range(gpu_count))
+    except Exception:
+        pass
+    # Fallback: try CuPy
+    try:
+        import cupy as cp
+        return list(range(cp.cuda.runtime.getDeviceCount()))
+    except Exception:
+        return [0]
+
+_MULTI_GPU_CROSS_GEN = os.environ.get('MULTI_GPU_CROSS_GEN', '1') == '1'
+
+
+# ============================================================
 # BATCH GPU CROSS MULTIPLICATION (CHUNKED RIGHT-SIDE)
 # ============================================================
 

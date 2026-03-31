@@ -404,6 +404,12 @@ def train_lstm(tf_name, device=None):
     # Model
     input_size = X_arr.shape[1]
     model = LSTMDirectionModel(input_size, hidden, layers).to(device)
+    # torch.compile for kernel fusion (10-30% speedup)
+    try:
+        model = torch.compile(model)
+        log(f"  torch.compile enabled")
+    except Exception:
+        pass  # compile not available on older PyTorch
 
     # Multi-GPU: wrap with DataParallel if multiple GPUs available
     n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
@@ -430,7 +436,7 @@ def train_lstm(tf_name, device=None):
         train_correct = 0
         train_total = 0
         for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            X_batch, y_batch = X_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)
             optimizer.zero_grad()
             pred = model(X_batch)
             loss = criterion(pred, y_batch)
@@ -448,7 +454,7 @@ def train_lstm(tf_name, device=None):
         test_total = 0
         with torch.no_grad():
             for X_batch, y_batch in test_loader:
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                X_batch, y_batch = X_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)
                 pred = model(X_batch)
                 loss = criterion(pred, y_batch)
                 test_loss += loss.item() * len(y_batch)
