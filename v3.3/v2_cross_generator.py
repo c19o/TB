@@ -1667,9 +1667,19 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     # - RELOAD uploads new CSC once per cross step (not 48× per RIGHT_CHUNK)
     # - Batches dispatched via Pipe IPC, results as .idx files
     # - CSR built from .idx files AFTER all GPU work completes
+    # SIDE-CHANNEL DEBUG: write to file to bypass run_tee buffering
+    with open('/tmp/xgen_daemon_debug.log', 'a') as _dbg:
+        _dbg.write(f"[{time.strftime('%H:%M:%S')}] _gpu_cross_chunk: daemon_handles={'PRESENT('+str(len(daemon_handles))+')' if daemon_handles else 'None'}, n_valid={n_valid}\n")
+        if daemon_handles:
+            for _h in daemon_handles:
+                _dbg.write(f"  GPU-{_h.gpu_id}: status={_h.status}, alive={_h.process.is_alive()}\n")
+        _dbg.flush()
     print(f"[XGEN-DEBUG] _gpu_cross_chunk: daemon_handles={'PRESENT('+str(len(daemon_handles))+')' if daemon_handles else 'None'}, n_valid={n_valid}", flush=True)
     if daemon_handles is not None and len(daemon_handles) >= 2:
         n_active = sum(1 for h in daemon_handles if h.status != 'dead')
+        with open('/tmp/xgen_daemon_debug.log', 'a') as _dbg:
+            _dbg.write(f"  n_active={n_active}, threshold={n_active * 100}, n_valid={n_valid}\n")
+            _dbg.flush()
         if n_active >= 2 and n_valid >= n_active * 100:
             log(f"  V4 DAEMON DISPATCH: {n_valid:,} pairs → {n_active} persistent daemons")
             try:
@@ -1679,15 +1689,14 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                 _out_dir = os.environ.get('V30_DATA_DIR', '.')
 
                 idx_files, total_nnz, n_feats = run_cross_step(
-                    daemon_handles=daemon_handles,
+                    handles=daemon_handles,
                     left_mat=left_mat,
                     right_mat=right_mat,
                     valid_pairs=valid_pairs,
                     all_names=all_names,
-                    prefix=prefix,
-                    n_rows=N,
+                    N=N,
                     out_dir=_out_dir,
-                    pair_id_offset=col_offset
+                    prefix=prefix,
                 )
 
                 if not idx_files:
