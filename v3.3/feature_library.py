@@ -1029,9 +1029,12 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['price_vs_52w_high'] = (c / c.rolling(52).max()).astype(np.float32)
     out['price_vs_52w_low'] = (c / c.rolling(52).min()).astype(np.float32)
 
-    # --- 365-day features (yearly high/low distance — medium-term regime context) ---
-    out['price_vs_365d_high'] = (c / c.rolling(365).max()).astype(np.float32)
-    out['price_vs_365d_low'] = (c / c.rolling(365).min()).astype(np.float32)
+    # --- 365-day high/low features (meaningful for daily+ TFs) ---
+    _bucket = cfg.get('bucket_seconds', 0)
+    if _bucket >= 86400:  # 1d and 1w only — 365 bars = 1 year for daily
+        _365_bars = 365 if _bucket == 86400 else 52  # 52 weeks = 1 year for weekly
+        out['price_vs_365d_high'] = (c / c.rolling(_365_bars, min_periods=max(1, _365_bars // 2)).max()).astype(np.float32)
+        out['price_vs_365d_low'] = (c / c.rolling(_365_bars, min_periods=max(1, _365_bars // 2)).min()).astype(np.float32)
 
     # --- Bollinger Bands ---
     mid = c.rolling(20).mean()

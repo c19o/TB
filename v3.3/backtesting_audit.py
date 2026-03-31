@@ -194,11 +194,23 @@ def load_full_history(tf_name):
         conn.close()
         print(f"  Loaded from SQLite: {db_path} ({len(df):,} rows)", flush=True)
 
-    # Timestamps
+    # Timestamps — handle all common column names
     if 'timestamp' in df.columns:
         df['timestamp'] = pd.to_datetime(df['timestamp'])
     elif 'date' in df.columns:
         df['timestamp'] = pd.to_datetime(df['date'])
+    elif 'open_time' in df.columns:
+        df['timestamp'] = pd.to_datetime(df['open_time'], unit='ms')
+    else:
+        # Last resort: try to infer from index or raise clear error
+        if isinstance(df.index, pd.DatetimeIndex):
+            df['timestamp'] = df.index
+        else:
+            raise KeyError(
+                f"No timestamp column found in {cfg['db']}. "
+                f"Expected 'timestamp', 'date', or 'open_time'. "
+                f"Available columns: {list(df.columns[:20])}"
+            )
 
     timestamps = df['timestamp'].values
 
@@ -1273,13 +1285,32 @@ def run_unified_backtest(tf_list=None):
     print(f"  Timeline bars: {len(timeline):,} (base TF: {base_tf})", flush=True)
 
     # For each TF, build a lookup: timestamp -> bar index in that TF's data
+    # Vectorized: use pandas Series for O(1) hash lookup instead of Python for-loop
     tf_ts_to_idx = {}
     for tf in loaded_tfs:
         ts = tf_data[tf]['ts_pd']
-        ts_set = {}
-        for idx_i in range(len(ts)):
-            ts_set[ts[idx_i]] = idx_i
-        tf_ts_to_idx[tf] = ts_set
+        tf_ts_to_idx[tf] = dict(zip(ts, range(len(ts))))
+
+    # Pre-build aligned index arrays: for each TF, map timeline position -> TF bar index
+    # -1 means "no bar for this TF at this timeline position" (avoids dict lookup in hot loop)
+    n_timeline = len(timeline)
+    _n_tfs = len(loaded_tfs)
+    _tf_bar_map = np.full((n_timeline, _n_tfs), -1, dtype=np.int64)
+    for ti, tf in enumerate(loaded_tfs):
+        _lookup = tf_ts_to_idx[tf]
+        for t_idx in range(n_timeline):
+            ts_val = timeline[t_idx]
+            if ts_val in _lookup:
+                _tf_bar_map[t_idx, ti] = _lookup[ts_val]
+
+    # Pre-build per-TF data arrays for fast numpy indexing in the hot loop
+    _tf_closes_list = [tf_data[tf]['closes'] for tf in loaded_tfs]
+    _tf_highs_list = [tf_data[tf]['highs'] for tf in loaded_tfs]
+    _tf_lows_list = [tf_data[tf]['lows'] for tf in loaded_tfs]
+    _tf_dirs_list = [tf_data[tf]['directions'] for tf in loaded_tfs]
+    _tf_confs_list = [tf_data[tf]['confidences'] for tf in loaded_tfs]
+    _tf_atrs_list = [tf_data[tf]['atrs'] for tf in loaded_tfs]
+    _tf_regimes_list = [tf_data[tf]['regimes'] for tf in loaded_tfs]
 
     # --- Portfolio state ---
     balance = STARTING_BALANCE
@@ -1310,8 +1341,10 @@ def run_unified_backtest(tf_list=None):
     sim_start = time.time()
     last_pct = -1
 
-    n_timeline = len(timeline)
     bar_counter = 0
+
+    # Build TF name→index map for position tracking
+    _tf_name_to_ti = {tf: ti for ti, tf in enumerate(loaded_tfs)}
 
     for t_idx in range(n_timeline):
         bar_counter += 1
@@ -1327,12 +1360,12 @@ def run_unified_backtest(tf_list=None):
                   f"balance=${balance:,.2f} | trades={len(all_trades)} | "
                   f"active={len(active_positions)} | {bars_per_sec:,.0f} bars/s", flush=True)
 
-        # Get current price from the base TF (or fastest available)
+        # Get current price from the base TF (or fastest available) — array lookup
         current_price = None
-        for tf in loaded_tfs:
-            if current_ts in tf_ts_to_idx[tf]:
-                idx = tf_ts_to_idx[tf][current_ts]
-                current_price = tf_data[tf]['closes'][idx]
+        for ti in range(_n_tfs):
+            bar_idx_t = _tf_bar_map[t_idx, ti]
+            if bar_idx_t >= 0:
+                current_price = _tf_closes_list[ti][bar_idx_t]
                 break
         if current_price is None or current_price <= 0:
             continue
@@ -1342,16 +1375,18 @@ def run_unified_backtest(tf_list=None):
         for pos in active_positions:
             pos['bars_held'] += 1
             tf = pos['tf']
+            ti = _tf_name_to_ti[tf]
 
-            # Get current high/low/close for this TF if bar exists, else use base price
-            p_high = current_price
-            p_low = current_price
-            p_close = current_price
-            if current_ts in tf_ts_to_idx[tf]:
-                pidx = tf_ts_to_idx[tf][current_ts]
-                p_high = tf_data[tf]['highs'][pidx]
-                p_low = tf_data[tf]['lows'][pidx]
-                p_close = tf_data[tf]['closes'][pidx]
+            # Get current high/low/close for this TF if bar exists — array lookup
+            bar_idx_t = _tf_bar_map[t_idx, ti]
+            if bar_idx_t >= 0:
+                p_high = _tf_highs_list[ti][bar_idx_t]
+                p_low = _tf_lows_list[ti][bar_idx_t]
+                p_close = _tf_closes_list[ti][bar_idx_t]
+            else:
+                p_high = current_price
+                p_low = current_price
+                p_close = current_price
 
             # Check exits
             hit_sl = False
@@ -1466,22 +1501,21 @@ def run_unified_backtest(tf_list=None):
                 (balance * p['risk_pct'] / 100.0) for p in active_positions
             ) / max(balance, 1e-8)
 
-            for tf in loaded_tfs:
+            for ti, tf in enumerate(loaded_tfs):
                 if per_tf_suspended[tf]:
                     continue
 
-                # Check if this TF has a bar closing at current timestamp
-                if current_ts not in tf_ts_to_idx[tf]:
+                # Check if this TF has a bar closing at current timestamp — array lookup
+                bar_idx = _tf_bar_map[t_idx, ti]
+                if bar_idx < 0:
                     continue
 
-                bar_idx = tf_ts_to_idx[tf][current_ts]
-                data = tf_data[tf]
                 config = tf_configs[tf]
                 conf_thresh = float(config['conf_thresh'])
 
-                # Get prediction for this bar
-                direction = int(data['directions'][bar_idx])
-                confidence = float(data['confidences'][bar_idx])
+                # Get prediction for this bar — array lookup
+                direction = int(_tf_dirs_list[ti][bar_idx])
+                confidence = float(_tf_confs_list[ti][bar_idx])
 
                 # Update confluence signal for this TF (always, even if no trade)
                 if direction != 0 and confidence > conf_thresh:
@@ -1504,7 +1538,7 @@ def run_unified_backtest(tf_list=None):
                             'tf': tf,
                             'direction': direction,
                             'confidence': confidence,
-                            'entry_price': float(data['closes'][bar_idx]),
+                            'entry_price': float(_tf_closes_list[ti][bar_idx]),
                             'entry_time': current_ts,
                             'parent_tf': parent_tf,
                             'parent_dir': parent_dir,
@@ -1532,7 +1566,7 @@ def run_unified_backtest(tf_list=None):
                     continue
 
                 # Regime adjustments
-                r = int(data['regimes'][bar_idx])
+                r = int(_tf_regimes_list[ti][bar_idx])
                 eff_lev = float(config['leverage']) * regime_lev_arr[r]
                 eff_risk = new_risk_pct * regime_risk_arr[r]
                 eff_stop = float(config['stop_atr']) * regime_stop_arr[r]
@@ -1575,8 +1609,8 @@ def run_unified_backtest(tf_list=None):
                     continue
 
                 # Compute stop/TP with per-TF slippage
-                atr_val = float(data['atrs'][bar_idx])
-                raw_entry_price = float(data['closes'][bar_idx])
+                atr_val = float(_tf_atrs_list[ti][bar_idx])
+                raw_entry_price = float(_tf_closes_list[ti][bar_idx])
                 slippage = TF_SLIPPAGE.get(tf, 0.0002)
 
                 # Apply slippage to entry price
