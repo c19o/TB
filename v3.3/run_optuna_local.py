@@ -743,7 +743,7 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
 # VALIDATION GATE
 # ============================================================
 def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
-                    max_hold, parent_ds, use_gpu=False):
+                    max_hold, parent_ds, use_gpu=False, n_val_workers=1):
     """Validate a single config with 4-fold CPCV, 200 rounds, LR=0.08.
 
     Returns mean OOS mlogloss (lower = better). No pruning — full evaluation.
@@ -767,7 +767,7 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
     params = V3_LGBM_PARAMS.copy()
     params.update({
         'is_enable_sparse': True,  # always True — sparse CSR is always the data format
-        'num_threads': 0,  # auto-detect via OpenMP (full cores for validation)
+        'num_threads': max(1, (get_cpu_count() or 8) // max(1, n_val_workers)),  # FIX #18: cap to prevent oversubscription in parallel validation
         'learning_rate': lr,
         'seed': OPTUNA_SEED,
         'bagging_freq': 1,
@@ -1546,6 +1546,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
                     validate_config,
                     trial.params, X_all, y, sample_weights, is_sparse, tf_name,
                     max_hold, parent_ds=_parent_ds, use_gpu=search_use_gpu,
+                    n_val_workers=_val_max_workers,
                 )
                 _val_futures[fut] = trial
 
@@ -1702,7 +1703,11 @@ def main():
         n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, total_cores // 8)
 
     log.info(f"Optuna LightGBM Search v3.3 (Phase 1 + Validation Gate)")
-    log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}")
+    # FIX #18: Cap num_threads to prevent oversubscription (total_cores / n_parallel_workers)
+    _threads_per_trial = max(1, total_cores // n_jobs)
+    if n_jobs * _threads_per_trial > total_cores:
+        _threads_per_trial = max(1, total_cores // n_jobs)
+    log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}, Threads/trial: {_threads_per_trial}")
     if _gpu_cfg.enabled:
         log.info(f"  GPUs: {_gpu_cfg.num_gpus} ({', '.join(_gpu_cfg.gpu_names[:4])})")
     log.info(f"  Timeframes: {timeframes}")

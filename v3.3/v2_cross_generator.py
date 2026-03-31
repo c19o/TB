@@ -907,6 +907,9 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
     # Process right-side in adaptive chunks (was static RIGHT_CHUNK)
     _chunk_ctrl = AdaptiveChunkController(max_cap=RIGHT_CHUNK, target_pct=_RAM_CEILING_PCT)
     rc_start = 0
+    # FIX #40: Disable GC during batch multiply loop — 100+ gc.collect() calls in hot paths
+    # add ~5-10% overhead. We do explicit gc.collect() only at chunk boundaries and flush points.
+    gc.disable()
     while rc_start < len(right_names):
         _chunk_size = _chunk_ctrl.get_chunk_size()
         rc_end = min(rc_start + _chunk_size, len(right_names))
@@ -1033,6 +1036,8 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
             continue
 
     del left_mat
+    gc.enable()  # FIX #40: Re-enable GC after batch multiply loop
+    gc.collect()
 
     # Flush any remaining in-memory chunks to disk
     if _disk_npz_files and _local_csr_chunks:

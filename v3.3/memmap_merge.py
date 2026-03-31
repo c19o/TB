@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 """
-memmap_merge.py — Two-pass streaming CSC merge via memory-mapped files
-======================================================================
+memmap_merge.py — Single-pass streaming CSC merge via memory-mapped files
+=========================================================================
 Solves the 1h (1.8TB peak RAM) and 15m (3TB+) cross-gen final assembly OOM.
 
 Instead of np.concatenate() of all data/indices/indptr arrays in RAM,
 this module:
-  Pass 1: Scans each checkpoint file one at a time, counts total NNZ and columns.
-  Pass 2: Pre-allocates memmap files on disk, fills from each checkpoint sequentially.
+  Pre-scan: Fast metadata read (nnz + cols) from each source without CSC conversion.
+  Single pass: Pre-allocates memmap files on disk, loads each source as CSC and fills.
   Constructs scipy.sparse.csc_matrix backed by memmap arrays (no RAM spike).
   save_npz streams from memmap via OS paging.
 
@@ -97,28 +97,33 @@ def memmap_streaming_merge(sources, n_rows, tmp_dir=None):
             tmp_dir = tempfile.gettempdir()
 
     # ================================================================
-    # PASS 1: Scan all sources — count total NNZ and columns
+    # SINGLE PASS: Scan sizes, allocate memmaps, fill — each source loaded ONCE
     # ================================================================
-    log("  [memmap] Pass 1: scanning checkpoint sizes...")
+    # Pre-scan: fast metadata read (nnz + cols) without full CSC conversion.
+    # For file sources, load_npz + shape/nnz is cheap; for in-memory, even cheaper.
+    log("  [memmap] Pre-scan: reading source metadata...")
     t0 = time.time()
 
     total_nnz = np.int64(0)
     total_cols = 0
-    source_meta = []  # list of (nnz, n_cols) per source
 
     for i, src in enumerate(sources):
-        csc = _load_as_csc(src)
-        nnz = np.int64(csc.nnz)
-        n_cols = csc.shape[1]
-        source_meta.append((nnz, n_cols))
+        if isinstance(src, str):
+            mat = sparse.load_npz(src)
+        else:
+            mat = src
+        if not sparse.issparse(mat):
+            raise ValueError(f"Expected sparse matrix, got {type(mat)}")
+        nnz = np.int64(mat.nnz)
+        n_cols = mat.shape[1] if sparse.issparse(mat) else mat.shape[1]
+        # For CSR input, tocsc() changes shape[1] — use original shape
         total_nnz += nnz
         total_cols += n_cols
         src_label = os.path.basename(src) if isinstance(src, str) else f"memory[{i}]"
         log(f"    [{i+1}/{len(sources)}] {src_label}: {n_cols:,} cols, {nnz:,} nnz")
-        del csc
-        gc.collect()
+        del mat
 
-    log(f"  [memmap] Pass 1 done: {total_cols:,} total cols, {total_nnz:,} total NNZ ({time.time()-t0:.1f}s)")
+    log(f"  [memmap] Pre-scan done: {total_cols:,} total cols, {total_nnz:,} total NNZ ({time.time()-t0:.1f}s)")
 
     # Estimate memmap size
     data_bytes = int(total_nnz) * 4  # float32
@@ -126,12 +131,6 @@ def memmap_streaming_merge(sources, n_rows, tmp_dir=None):
     indptr_bytes = (total_cols + 1) * 8  # int64
     total_bytes = data_bytes + indices_bytes + indptr_bytes
     log(f"  [memmap] Allocating {total_bytes / 1e9:.2f} GB memmap on disk")
-
-    # ================================================================
-    # PASS 2: Allocate memmaps, fill from each source sequentially
-    # ================================================================
-    log("  [memmap] Pass 2: filling memmap arrays...")
-    t1 = time.time()
 
     # Create memmap files
     data_path = os.path.join(tmp_dir, f'_memmap_data_{os.getpid()}.dat')
@@ -143,6 +142,9 @@ def memmap_streaming_merge(sources, n_rows, tmp_dir=None):
     mm_data = np.memmap(data_path, dtype=np.float32, mode='w+', shape=(int(total_nnz),))
     mm_indices = np.memmap(indices_path, dtype=np.int32, mode='w+', shape=(int(total_nnz),))
     mm_indptr = np.memmap(indptr_path, dtype=np.int64, mode='w+', shape=(total_cols + 1,))
+
+    log("  [memmap] Filling memmap arrays (single pass)...")
+    t1 = time.time()
 
     nnz_offset = np.int64(0)
     col_offset = 0
@@ -181,7 +183,7 @@ def memmap_streaming_merge(sources, n_rows, tmp_dir=None):
     mm_indices.flush()
     mm_indptr.flush()
 
-    log(f"  [memmap] Pass 2 done: memmaps filled ({time.time()-t1:.1f}s)")
+    log(f"  [memmap] Single pass done: memmaps filled ({time.time()-t1:.1f}s)")
 
     # ================================================================
     # Construct CSC matrix backed by memmap arrays

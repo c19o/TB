@@ -24,6 +24,8 @@ Steps:
 import os, sys, subprocess, time, json, glob, sqlite3
 
 os.environ['PYTHONUNBUFFERED'] = '1'
+# FIX #43: PyTorch expandable segments — reduces fragmentation-induced OOM on LSTM/meta steps
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 # CuPy Blackwell (sm_120) compat: PTX JIT lets CUDA 13.0 driver compile for sm_120
 os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')
 # V30_DATA_DIR fallback to /workspace/v3.3 so config.py doesn't resolve to /v3.0 (LGBM)
@@ -545,10 +547,20 @@ else:
 # Saves optuna_configs_{tf}.json with best params — does NOT save a production model.
 # Step 4 reads optuna_configs_{tf}.json and uses those params for the real CPCV training.
 # ============================================================
-# --- Unset OMP/NUMBA so LightGBM uses num_threads=0 (all cores) ---
+# --- FIX #45: Reset thread pools between phases to prevent MKL/OpenMP/Numba conflicts ---
+# Cross gen sets OMP_NUM_THREADS=cpu_count + MKL_DYNAMIC=FALSE. Training needs a clean slate.
 os.environ.pop('OMP_NUM_THREADS', None)
 os.environ.pop('NUMBA_NUM_THREADS', None)
-log(f"Training phase: OMP_NUM_THREADS/NUMBA_NUM_THREADS unset (LightGBM uses all cores)")
+os.environ.pop('MKL_DYNAMIC', None)
+os.environ.pop('OMP_PROC_BIND', None)
+os.environ.pop('OMP_PLACES', None)
+try:
+    from threadpoolctl import threadpool_limits
+    threadpool_limits(limits=cpu_count, user_api='blas')
+    threadpool_limits(limits=cpu_count, user_api='openmp')
+    log(f"Training phase: thread pools reset to {cpu_count} cores (blas+openmp)")
+except ImportError:
+    log(f"Training phase: threadpoolctl not available, env vars cleared")
 
 # OPT-14: NUMA-aware process binding for multi-socket cloud machines
 # Detect NUMA topology and bind training to node 0 for memory locality

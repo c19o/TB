@@ -2074,6 +2074,19 @@ if __name__ == '__main__':
                           _hmm_overlay_names_par,
                       ))
 
+              # FIX #44: Pre-compile .pyc + warm OS page cache for heavy libs BEFORE spawning.
+              # With 'spawn' context each child re-imports from scratch (3-5s × N workers).
+              # Pre-compiling ensures .pyc exists; importing in parent warms filesystem cache.
+              import py_compile
+              for _precache_mod in ('numpy', 'scipy', 'scipy.sparse', 'lightgbm',
+                                    'sklearn', 'sklearn.metrics', 'threadpoolctl'):
+                  try:
+                      _mod = __import__(_precache_mod)
+                      if hasattr(_mod, '__file__') and _mod.__file__:
+                          py_compile.compile(_mod.__file__, doraise=False)
+                  except ImportError:
+                      pass
+
               # Use 'spawn' context to avoid fork+OpenMP deadlock (GCC bug: forked
               # OpenMP runtime is in undefined state, causes hangs/crashes in LightGBM).
               import multiprocessing as _mp_ctx
