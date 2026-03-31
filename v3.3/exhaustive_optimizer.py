@@ -381,6 +381,299 @@ def load_tf_data(tf_name: str):
 # ---------------------------------------------------------------------------
 # Vectorized simulation engine
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# FIX #15: CuPy RawKernel — fuses entire bar-by-bar simulation into ONE kernel launch
+# Each CUDA thread handles one parameter combo through all T bars.
+# Eliminates ~30+ kernel launches per bar × T bars → 1 launch total.
+# ---------------------------------------------------------------------------
+_SIMULATE_KERNEL_CODE = r'''
+extern "C" __global__
+void simulate_kernel(
+    const float* __restrict__ params,       // [N, 7] row-major
+    const float* __restrict__ confs,        // [T]
+    const float* __restrict__ dirs,         // [T]
+    const float* __restrict__ closes,       // [T]
+    const float* __restrict__ atrs,         // [T]
+    const float* __restrict__ highs,        // [T]
+    const float* __restrict__ lows,         // [T]
+    const float* __restrict__ bar_lev_m,    // [T]
+    const float* __restrict__ bar_risk_m,   // [T]
+    const float* __restrict__ bar_stop_m,   // [T]
+    const float* __restrict__ bar_rr_m,     // [T]
+    const float* __restrict__ bar_hold_m,   // [T]
+    const float* __restrict__ bar_conf_mult,// [T]
+    const float* __restrict__ dd_thresh_vals,  // [n_dd]
+    const float* __restrict__ dd_thresholds,   // [n_dd] risk multipliers
+    const float* __restrict__ dd_min_confs_arr,// [n_dd]
+    const int T,
+    const int N,
+    const int n_dd,
+    const float starting_balance,
+    const float fee_rate,
+    const float total_slippage,
+    float* __restrict__ results  // [N, 7]
+) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i >= N) return;
+
+    // Unpack params for this combo
+    float lev = params[i * 7 + 0];
+    float risk_pct = params[i * 7 + 1] / 100.0f;
+    float stop_mult = params[i * 7 + 2];
+    float rr = params[i * 7 + 3];
+    float max_hold_base = params[i * 7 + 4];
+    float exit_type_val = params[i * 7 + 5];
+    float conf_th = params[i * 7 + 6];
+
+    // Pre-compute trailing stop config
+    bool is_trail = exit_type_val < 0.0f;
+    float trail_mult = is_trail ? fabsf(exit_type_val) : 0.0f;
+    bool is_partial = !is_trail;
+    float partial_pct = (is_partial && exit_type_val > 0.0f) ? exit_type_val / 100.0f : 1.0f;
+
+    // State
+    float balance = starting_balance;
+    float peak = starting_balance;
+    float max_dd = 0.0f;
+    int wins = 0, losses = 0;
+    bool in_trade = false;
+    int trade_bars = 0;
+    int trade_dir_val = 0;
+    float entry_pr = 0.0f, stop_pr_val = 0.0f, tp_pr_val = 0.0f, best_pr_val = 0.0f;
+    float entry_conf_mult = 1.0f;
+    bool alive = true;
+    bool scaled_in = false;
+
+    double sum_log_ret = 0.0;
+    double sum_neg_sq = 0.0;
+    int count_neg = 0;
+    int total_trades = 0;
+
+    float dd_risk_mult_val = 1.0f;
+    float dd_min_conf_val = 0.0f;
+
+    for (int t = 0; t < T; t++) {
+        if (!alive) continue;
+
+        float c_val = confs[t];
+        float d_val = dirs[t];
+        float p_val = closes[t];
+        float h_val = highs[t];
+        float l_val = lows[t];
+        float a_val = atrs[t];
+        float lev_m = bar_lev_m[t];
+        float risk_m = bar_risk_m[t];
+        float stop_m = bar_stop_m[t];
+        float rr_m = bar_rr_m[t];
+        float hold_m = bar_hold_m[t];
+        float conf_mult_t = bar_conf_mult[t];
+
+        if (in_trade) {
+            trade_bars++;
+
+            // Scale-in on bar 2
+            if (trade_bars == 2 && !scaled_in) {
+                bool profitable = (trade_dir_val == 1 && p_val > entry_pr) ||
+                                  (trade_dir_val == -1 && p_val < entry_pr);
+                if (profitable) {
+                    entry_conf_mult *= 1.5f;
+                    entry_pr = entry_pr * (2.0f / 3.0f) + p_val * (1.0f / 3.0f);
+                    float old_stop_dist = fabsf(entry_pr - stop_pr_val) * 1.2f;
+                    stop_pr_val = (trade_dir_val == 1) ? entry_pr - old_stop_dist : entry_pr + old_stop_dist;
+                    scaled_in = true;
+                }
+            }
+
+            // Update best price for trailing
+            if (trade_dir_val == 1) best_pr_val = fmaxf(best_pr_val, h_val);
+            else best_pr_val = fminf(best_pr_val, l_val);
+
+            // Trailing stop update
+            if (is_trail) {
+                float one_r = stop_mult * a_val;
+                if (trade_dir_val == 1 && p_val >= entry_pr + one_r) {
+                    float new_trail = best_pr_val - trail_mult * a_val;
+                    stop_pr_val = fmaxf(stop_pr_val, new_trail);
+                }
+                if (trade_dir_val == -1 && p_val <= entry_pr - one_r) {
+                    float new_trail = best_pr_val + trail_mult * a_val;
+                    stop_pr_val = fminf(stop_pr_val, new_trail);
+                }
+            }
+
+            // SL check (intrabar)
+            bool sl_hit = (trade_dir_val == 1 && l_val <= stop_pr_val) ||
+                          (trade_dir_val == -1 && h_val >= stop_pr_val);
+
+            // TP check (intrabar)
+            bool tp_hit = (trade_dir_val == 1 && h_val >= tp_pr_val) ||
+                          (trade_dir_val == -1 && l_val <= tp_pr_val);
+
+            // Hold check (regime-adjusted)
+            bool hold_exit = (float)trade_bars >= max_hold_base * hold_m;
+
+            bool exiting = sl_hit || tp_hit || hold_exit;
+
+            if (exiting) {
+                // Priority: SL > TP > hold
+                float exit_price = sl_hit ? stop_pr_val : (tp_hit ? tp_pr_val : p_val);
+
+                float price_chg = (exit_price - entry_pr) / fmaxf(entry_pr, 1e-8f) * (float)trade_dir_val;
+                float eff_lev = lev * lev_m;
+                float gross_pnl = price_chg * eff_lev;
+                float fee_cost = (fee_rate + total_slippage) * eff_lev;
+                float net_pnl = gross_pnl - fee_cost;
+
+                // Partial TP scale
+                float scale = (tp_hit && is_partial && exit_type_val > 0.0f) ? partial_pct : 1.0f;
+
+                float eff_risk = risk_pct * risk_m * entry_conf_mult * dd_risk_mult_val;
+                float pnl_dollar = balance * eff_risk * net_pnl * scale;
+
+                // Sortino accumulators
+                float new_bal = fmaxf(balance + pnl_dollar, 1.0f);
+                double log_ret_val = log((double)new_bal / fmax((double)balance, 1.0));
+                sum_log_ret += log_ret_val;
+                if (log_ret_val < 0.0) {
+                    sum_neg_sq += log_ret_val * log_ret_val;
+                    count_neg++;
+                }
+                total_trades++;
+
+                balance = new_bal;
+                if (pnl_dollar > 0.0f) wins++;
+                else losses++;
+
+                // Reset trade state
+                in_trade = false;
+                trade_bars = 0;
+                entry_conf_mult = 1.0f;
+                scaled_in = false;
+            }
+        }
+
+        alive = balance > 0.0f;
+        if (!alive) continue;
+
+        // Entry logic
+        if (!in_trade) {
+            float eff_conf_th = fmaxf(conf_th, dd_min_conf_val);
+            bool go_long = (d_val == 1.0f) && (c_val > eff_conf_th) && (dd_risk_mult_val > 0.0f);
+            bool go_short = (d_val == -1.0f) && (c_val > eff_conf_th) && (dd_risk_mult_val > 0.0f);
+
+            if (go_long || go_short) {
+                trade_dir_val = go_long ? 1 : -1;
+                entry_conf_mult = conf_mult_t;
+                entry_pr = p_val;
+
+                float sl_dist = stop_mult * stop_m * a_val;
+                stop_pr_val = (trade_dir_val == 1) ? p_val - sl_dist : p_val + sl_dist;
+
+                float tp_dist = sl_dist * rr * rr_m;
+                tp_pr_val = (trade_dir_val == 1) ? p_val + tp_dist : p_val - tp_dist;
+
+                best_pr_val = p_val;
+                in_trade = true;
+                trade_bars = 0;
+                scaled_in = false;
+            }
+        }
+
+        // Drawdown tracking
+        peak = fmaxf(peak, balance);
+        float dd = (peak > 0.0f) ? (peak - balance) / peak : 0.0f;
+        max_dd = fmaxf(max_dd, dd);
+
+        // Drawdown protocol
+        dd_risk_mult_val = 1.0f;
+        dd_min_conf_val = 0.0f;
+        for (int di = 0; di < n_dd; di++) {
+            if (dd >= dd_thresh_vals[di]) {
+                dd_risk_mult_val = dd_thresholds[di];
+                if (dd_min_confs_arr[di] > 0.0f) dd_min_conf_val = dd_min_confs_arr[di];
+            }
+        }
+    }
+
+    // Final metrics
+    float total_tr = (float)(wins + losses);
+    float win_rate = total_tr > 0.0f ? (float)wins / total_tr : 0.0f;
+    float roi_pct = (balance - starting_balance) / starting_balance * 100.0f;
+    float max_dd_pct = max_dd * 100.0f;
+
+    // Sortino
+    double mean_log = total_trades > 0 ? sum_log_ret / (double)total_trades : 0.0;
+    double downside_var = count_neg > 0 ? sum_neg_sq / (double)count_neg : 0.0;
+    double downside_std = sqrt(fmax(downside_var, 1e-12));
+    float sortino = (downside_std > 1e-6) ? (float)(mean_log / downside_std) : (float)(mean_log * 10.0);
+
+    results[i * 7 + 0] = balance;
+    results[i * 7 + 1] = max_dd_pct;
+    results[i * 7 + 2] = win_rate;
+    results[i * 7 + 3] = total_tr;
+    results[i * 7 + 4] = roi_pct;
+    results[i * 7 + 5] = sortino;
+    results[i * 7 + 6] = (float)total_trades;
+}
+'''
+
+# Lazily compiled RawKernel (compiled once, reused)
+_simulate_kernel = None
+
+def _get_simulate_kernel():
+    """Compile and cache the simulation RawKernel."""
+    global _simulate_kernel
+    if _simulate_kernel is None:
+        _simulate_kernel = cp.RawKernel(_SIMULATE_KERNEL_CODE, 'simulate_kernel')
+    return _simulate_kernel
+
+
+def simulate_batch_rawkernel(params_batch, confs_cpu, dirs_cpu, closes_cpu, atrs_cpu,
+                             highs_cpu, lows_cpu, bar_lev_m, bar_risk_m, bar_stop_m,
+                             bar_rr_m, bar_hold_m, bar_conf_mult,
+                             dd_thresh_vals, dd_thresholds, dd_min_confs,
+                             starting_balance, fee_rate, total_slippage):
+    """Run simulation via fused CUDA RawKernel — one launch for all combos × all bars."""
+    N = params_batch.shape[0]
+    T = len(confs_cpu)
+
+    # Upload pre-computed per-bar arrays to GPU
+    g_confs = cp.asarray(confs_cpu, dtype=cp.float32)
+    g_dirs = cp.asarray(dirs_cpu, dtype=cp.float32)
+    g_closes = cp.asarray(closes_cpu, dtype=cp.float32)
+    g_atrs = cp.asarray(atrs_cpu, dtype=cp.float32)
+    g_highs = cp.asarray(highs_cpu, dtype=cp.float32)
+    g_lows = cp.asarray(lows_cpu, dtype=cp.float32)
+    g_lev_m = cp.asarray(bar_lev_m, dtype=cp.float32)
+    g_risk_m = cp.asarray(bar_risk_m, dtype=cp.float32)
+    g_stop_m = cp.asarray(bar_stop_m, dtype=cp.float32)
+    g_rr_m = cp.asarray(bar_rr_m, dtype=cp.float32)
+    g_hold_m = cp.asarray(bar_hold_m, dtype=cp.float32)
+    g_conf_mult = cp.asarray(bar_conf_mult, dtype=cp.float32)
+    g_dd_thresh = cp.asarray(dd_thresh_vals, dtype=cp.float32)
+    g_dd_mult = cp.asarray(dd_thresholds, dtype=cp.float32)
+    g_dd_minc = cp.asarray(dd_min_confs, dtype=cp.float32)
+
+    g_params = cp.asarray(params_batch, dtype=cp.float32)
+    g_results = cp.empty((N, 7), dtype=cp.float32)
+
+    n_dd = len(dd_thresh_vals)
+    kernel = _get_simulate_kernel()
+    block_size = 256
+    grid_size = (N + block_size - 1) // block_size
+
+    kernel((grid_size,), (block_size,), (
+        g_params, g_confs, g_dirs, g_closes, g_atrs, g_highs, g_lows,
+        g_lev_m, g_risk_m, g_stop_m, g_rr_m, g_hold_m, g_conf_mult,
+        g_dd_thresh, g_dd_mult, g_dd_minc,
+        np.int32(T), np.int32(N), np.int32(n_dd),
+        np.float32(starting_balance), np.float32(fee_rate), np.float32(total_slippage),
+        g_results
+    ))
+
+    return g_results
+
+
 def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime, xp_lib,
                     slippage=0.0):
     """
@@ -446,6 +739,19 @@ def simulate_batch(params_batch, confs, dirs, closes, atrs, highs, lows, regime,
     dd_thresholds = np.array([DRAWDOWN_PROTOCOL[k]['risk_multiplier'] for k in dd_protocol_levels], dtype=np.float32)
     dd_thresh_vals = np.array(dd_protocol_levels, dtype=np.float32)
     dd_min_confs = np.array([DRAWDOWN_PROTOCOL[k].get('min_confidence') or 0.0 for k in dd_protocol_levels], dtype=np.float32)
+
+    # FIX #15: Try RawKernel path first — single kernel launch instead of ~30×T launches
+    if xp_lib is cp:
+        try:
+            params_np = cp.asnumpy(params_batch) if isinstance(params_batch, cp.ndarray) else np.asarray(params_batch, dtype=np.float32)
+            return simulate_batch_rawkernel(
+                params_np, confs_cpu, dirs_cpu, closes_cpu, atrs_cpu,
+                highs_cpu, lows_cpu, bar_lev_m, bar_risk_m, bar_stop_m,
+                bar_rr_m, bar_hold_m, bar_conf_mult,
+                dd_thresh_vals, dd_thresholds, dd_min_confs,
+                STARTING_BALANCE, TOTAL_COST_PER_TRADE, 2.0 * slippage)
+        except Exception as _rk_err:
+            print(f"  [WARN] RawKernel failed ({_rk_err}), falling back to Python loop")
 
     # Unpack params — each is (N,)
     lev       = params_batch[:, 0]

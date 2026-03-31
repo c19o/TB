@@ -366,6 +366,10 @@ def train_lstm(tf_name, device=None):
     epochs = cfg['epochs']
     batch_size = cfg['batch']
 
+    # FIX #22: Dynamic batch size — larger batches = better GPU utilization
+    if len(X_arr) > 5000:
+        batch_size = max(batch_size, 64)
+
     if device is None:
         if torch.cuda.is_available():
             # Smoke test: verify GPU arch is supported (RTX 5090 sm_120 may not be)
@@ -407,7 +411,7 @@ def train_lstm(tf_name, device=None):
     # torch.compile for kernel fusion (10-30% speedup)
     try:
         model = torch.compile(model)
-        log(f"  torch.compile enabled")
+        log.info(f"  torch.compile enabled")
     except Exception:
         pass  # compile not available on older PyTorch
 
@@ -421,8 +425,12 @@ def train_lstm(tf_name, device=None):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
     criterion = nn.BCELoss()
 
+    # FIX #13: AMP (mixed precision) — 1.5-2x speedup on Tensor Cores
+    use_amp = (device.type == 'cuda')
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
+
     log.info(f"Model: LSTM(input={input_size}, hidden={hidden}, layers={layers})")
-    log.info(f"Training: {epochs} epochs, batch={batch_size}, lr={lr}")
+    log.info(f"Training: {epochs} epochs, batch={batch_size}, lr={lr}, AMP={use_amp}")
 
     best_acc = 0
     best_state = None
@@ -438,11 +446,14 @@ def train_lstm(tf_name, device=None):
         for X_batch, y_batch in train_loader:
             X_batch, y_batch = X_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)
             optimizer.zero_grad()
-            pred = model(X_batch)
-            loss = criterion(pred, y_batch)
-            loss.backward()
+            with torch.amp.autocast('cuda', enabled=use_amp):
+                pred = model(X_batch)
+                loss = criterion(pred, y_batch)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             train_loss += loss.item() * len(y_batch)
             train_correct += ((pred > 0.5).float() == y_batch).sum().item()
             train_total += len(y_batch)
@@ -455,8 +466,9 @@ def train_lstm(tf_name, device=None):
         with torch.no_grad():
             for X_batch, y_batch in test_loader:
                 X_batch, y_batch = X_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True)
-                pred = model(X_batch)
-                loss = criterion(pred, y_batch)
+                with torch.amp.autocast('cuda', enabled=use_amp):
+                    pred = model(X_batch)
+                    loss = criterion(pred, y_batch)
                 test_loss += loss.item() * len(y_batch)
                 test_correct += ((pred > 0.5).float() == y_batch).sum().item()
                 test_total += len(y_batch)
