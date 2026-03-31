@@ -1,0 +1,377 @@
+{
+  "active_features": 72,
+  "active_crosses": 0,
+  "active_base": 72,
+  "cross_shap_pct": 0.0,
+  "method": "split_importance (pred_contrib skipped \u2014 OOM on sparse crosses)",
+  "top_20_families": {
+    "sum": {
+      "close": 1209.1020290851593,
+      "sma": 685.1784961223602,
+      "avwap": 340.2471709251404,
+      "sar": 311.8703931570053,
+      "ema": 211.00915956497192,
+      "doy": 202.5575407743454,
+      "adx": 177.78231000900269,
+      "cross": 120.81650018692017,
+      "rsi": 118.17389941215515,
+      "frac": 88.570960521698,
+      "volume": 68.22468030452728,
+      "atr": 55.24548923969269,
+      "tt": 50.51717948913574,
+      "tweet": 43.548681020736694,
+      "price": 22.418389797210693,
+      "btc": 9.189120292663574,
+      "jupiter": 7.035959720611572,
+      "supertrend": 5.57882022857666,
+      "wyckoff": 5.0997700691223145,
+      "hurst": 4.433559894561768
+    },
+    "mean": {
+      "close": 17.27288612978799,
+      "sma": 52.70603816325848,
+      "avwap": 37.80524121390449,
+      "sar": 14.175926961682059,
+      "ema": 19.1826508695429,
+      "doy": 0.2729885994263415,
+      "adx": 35.55646200180054,
+      "cross": 2.745829549702731,
+      "rsi": 4.545149977390583,
+      "frac": 3.054171052472345,
+      "volume": 3.7902600169181824,
+      "atr": 18.415163079897564,
+      "tt": 4.2097649574279785,
+      "tweet": 0.19705285529745112,
+      "price": 0.4229884867398244,
+      "btc": 0.14137108142559346,
+      "jupiter": 0.2132109006245931,
+      "supertrend": 5.57882022857666,
+      "wyckoff": 0.17585414031456256,
+      "hurst": 0.6333656992231097
+    },
+    "count": {
+      "close": 70,
+      "sma": 13,
+      "avwap": 9,
+      "sar": 22,
+      "ema": 11,
+      "doy": 742,
+      "adx": 5,
+      "cross": 44,
+      "rsi": 26,
+      "frac": 29,
+      "volume": 18,
+      "atr": 3,
+      "tt": 12,
+      "tweet": 221,
+      "price": 53,
+      "btc": 65,
+      "jupiter": 33,
+      "supertrend": 1,
+      "wyckoff": 29,
+      "hurst": 7
+    }
+  },
+  "top_50_features": [
+    {
+      "feature": "sma_200_slope",
+      "gain": 605.1309161186218,
+      "splits": 15,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_sma_200",
+      "gain": 291.996506690979,
+      "splits": 19,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_ema_100",
+      "gain": 223.72526693344116,
+      "splits": 15,
+      "is_cross": false
+    },
+    {
+      "feature": "sar_value_HIGH",
+      "gain": 219.9028034210205,
+      "splits": 14,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_sma_50",
+      "gain": 205.40594053268433,
+      "splits": 20,
+      "is_cross": false
+    },
+    {
+      "feature": "adx_14",
+      "gain": 121.55024027824402,
+      "splits": 14,
+      "is_cross": false
+    },
+    {
+      "feature": "cross_vol_score_x_trend",
+      "gain": 120.81650018692017,
+      "splits": 14,
+      "is_cross": false
+    },
+    {
+      "feature": "avwap_from_swing_high",
+      "gain": 118.41901969909668,
+      "splits": 14,
+      "is_cross": false
+    },
+    {
+      "feature": "avwap_from_swing_low",
+      "gain": 113.01752042770386,
+      "splits": 19,
+      "is_cross": false
+    },
+    {
+      "feature": "ema_20_EXTREME_HIGH",
+      "gain": 104.42582941055298,
+      "splits": 8,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_ema_10",
+      "gain": 89.92628121376038,
+      "splits": 11,
+      "is_cross": false
+    },
+    {
+      "feature": "frac_diff_obv_0.3",
+      "gain": 88.570960521698,
+      "splits": 13,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_sma_20",
+      "gain": 88.25929248332977,
+      "splits": 10,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_ema_200",
+      "gain": 73.76992046833038,
+      "splits": 13,
+      "is_cross": false
+    },
+    {
+      "feature": "doy_sin",
+      "gain": 71.68626022338867,
+      "splits": 18,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_sma_10",
+      "gain": 65.76761150360107,
+      "splits": 6,
+      "is_cross": false
+    },
+    {
+      "feature": "sma_200",
+      "gain": 65.66423964500427,
+      "splits": 11,
+      "is_cross": false
+    },
+    {
+      "feature": "rsi_14_HIGH",
+      "gain": 62.39173936843872,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_ema_200_EXTREME_LOW",
+      "gain": 57.312519788742065,
+      "splits": 8,
+      "is_cross": false
+    },
+    {
+      "feature": "avwap_position",
+      "gain": 56.30702090263367,
+      "splits": 8,
+      "is_cross": false
+    },
+    {
+      "feature": "atr_14",
+      "gain": 55.24548923969269,
+      "splits": 6,
+      "is_cross": false
+    },
+    {
+      "feature": "sar_digital_root",
+      "gain": 51.152730226516724,
+      "splits": 11,
+      "is_cross": false
+    },
+    {
+      "feature": "doy_cos",
+      "gain": 47.61667037010193,
+      "splits": 10,
+      "is_cross": false
+    },
+    {
+      "feature": "avwap_from_swing_low_HIGH",
+      "gain": 44.60198998451233,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "adx_14_LOW",
+      "gain": 42.054229736328125,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "volume_sma_20",
+      "gain": 39.923749923706055,
+      "splits": 6,
+      "is_cross": false
+    },
+    {
+      "feature": "ema_200",
+      "gain": 39.7099392414093,
+      "splits": 7,
+      "is_cross": false
+    },
+    {
+      "feature": "doy_222_w2",
+      "gain": 32.58218050003052,
+      "splits": 5,
+      "is_cross": false
+    },
+    {
+      "feature": "tt_momentum_trend",
+      "gain": 29.256179809570312,
+      "splits": 5,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_sma_100_LOW",
+      "gain": 28.514529705047607,
+      "splits": 3,
+      "is_cross": false
+    },
+    {
+      "feature": "doy_cos_leap",
+      "gain": 28.147719860076904,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "ema_20",
+      "gain": 25.235150575637817,
+      "splits": 3,
+      "is_cross": false
+    },
+    {
+      "feature": "ema_50_HIGH",
+      "gain": 23.368030548095703,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "price_sar_digit_diff",
+      "gain": 22.418389797210693,
+      "splits": 2,
+      "is_cross": false
+    },
+    {
+      "feature": "tweet_influence_bull",
+      "gain": 21.880670309066772,
+      "splits": 5,
+      "is_cross": false
+    },
+    {
+      "feature": "tweet_bull_count",
+      "gain": 21.668010711669922,
+      "splits": 2,
+      "is_cross": false
+    },
+    {
+      "feature": "tt_confirmed_bear",
+      "gain": 21.26099967956543,
+      "splits": 1,
+      "is_cross": false
+    },
+    {
+      "feature": "sar_is_prime",
+      "gain": 20.652089715003967,
+      "splits": 6,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_ema_20",
+      "gain": 20.563820123672485,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_ema_100_EXTREME_LOW",
+      "gain": 15.335360527038574,
+      "splits": 2,
+      "is_cross": false
+    },
+    {
+      "feature": "rsi_numerology_zone",
+      "gain": 15.09190034866333,
+      "splits": 2,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_vwap",
+      "gain": 14.716809749603271,
+      "splits": 3,
+      "is_cross": false
+    },
+    {
+      "feature": "volume_x_atr_HIGH",
+      "gain": 14.675000190734863,
+      "splits": 2,
+      "is_cross": false
+    },
+    {
+      "feature": "sma_50_slope",
+      "gain": 14.38334035873413,
+      "splits": 2,
+      "is_cross": false
+    },
+    {
+      "feature": "adx_14_EXTREME_LOW",
+      "gain": 14.177839994430542,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "rsi_digit_sum",
+      "gain": 14.175399780273438,
+      "splits": 4,
+      "is_cross": false
+    },
+    {
+      "feature": "doy_304_w2",
+      "gain": 13.358399868011475,
+      "splits": 3,
+      "is_cross": false
+    },
+    {
+      "feature": "close_vs_ema_10_EXTREME_LOW",
+      "gain": 11.030409812927246,
+      "splits": 2,
+      "is_cross": false
+    },
+    {
+      "feature": "ema_200_EXTREME_HIGH",
+      "gain": 10.832099914550781,
+      "splits": 1,
+      "is_cross": false
+    },
+    {
+      "feature": "rsi_26_EXTREME_LOW",
+      "gain": 10.607399940490723,
+      "splits": 1,
+      "is_cross": false
+    }
+  ]
+}
