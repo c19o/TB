@@ -1667,6 +1667,7 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     # - RELOAD uploads new CSC once per cross step (not 48× per RIGHT_CHUNK)
     # - Batches dispatched via Pipe IPC, results as .idx files
     # - CSR built from .idx files AFTER all GPU work completes
+    print(f"[XGEN-DEBUG] _gpu_cross_chunk: daemon_handles={'PRESENT('+str(len(daemon_handles))+')' if daemon_handles else 'None'}, n_valid={n_valid}", flush=True)
     if daemon_handles is not None and len(daemon_handles) >= 2:
         n_active = sum(1 for h in daemon_handles if h.status != 'dead')
         if n_active >= 2 and n_valid >= n_active * 100:
@@ -2523,7 +2524,7 @@ def create_multi_signal_combos(signals, prefix, max_pairs=100):
 # MAIN CROSS GENERATION
 # ============================================================
 
-def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=None, max_crosses=None):
+def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=None, max_crosses=None, daemon_handles=None):
     """
     Generate ALL V2 cross features for a single asset's feature DataFrame.
 
@@ -2531,48 +2532,75 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     We never hold more than one batch of dense arrays at a time.
     Peak RAM stays under ~4GB regardless of total feature count.
 
+    Args:
+        daemon_handles: Pre-started GPU daemon handles from __main__ (V4 architecture).
+                        If None, will attempt to start daemons here (fallback).
+
     Returns base DataFrame (crosses are in sparse .npz file, not in df).
     """
     global PARALLEL_CROSS_STEPS
+    print(f"[XGEN-DEBUG] generate_all_crosses() ENTERED tf={tf} gpu_id={gpu_id} daemon_handles={'PASSED' if daemon_handles else 'None'}", flush=True)
     t0 = time.time()
     N = len(df)
     out_dir = output_dir or V2_DIR
 
     # Pin to GPU — CUDA_VISIBLE_DEVICES remaps, so always use Device(0) when set
+    print(f"[XGEN-DEBUG] GPU={GPU}, about to pin device", flush=True)
     if GPU:
         if os.environ.get('CUDA_VISIBLE_DEVICES'):
             cp.cuda.Device(0).use()
         else:
             cp.cuda.Device(gpu_id).use()
+    print(f"[XGEN-DEBUG] GPU pin done", flush=True)
 
     log(f"V2 Cross Generator — {tf.upper()}")
     log(f"  Input: {N:,} rows × {len(df.columns):,} cols")
 
-    # ── Pre-start GPU daemons (V4 architecture: persistent daemons, zero scipy) ──
-    # Daemons are forked HERE so CUDA init overlaps with binarization (CPU-bound).
-    # Lifetime: entire generate_all_crosses() call. One RELOAD per cross step.
-    _daemon_handles = None
-    available_gpus = _detect_available_gpus() if GPU else []
-    n_gpus = len(available_gpus) if _MULTI_GPU_CROSS_GEN else (1 if GPU else 0)
-    if n_gpus > 1 and GPU:
-        try:
-            from gpu_daemon import prestage_gpu_daemons
-            log(f"  Pre-starting {n_gpus} GPU daemons (V4 zero-scipy architecture)...")
-            _daemon_handles = prestage_gpu_daemons(
-                n_gpus=n_gpus,
-                available_gpu_ids=available_gpus,
-                vram_limit_pct=0.85
-            )
-            _active = sum(1 for h in _daemon_handles if h.status == 'idle')
-            if _active < 2:
-                log(f"  WARNING: Only {_active}/{n_gpus} daemons active, falling back to old path")
-                from gpu_daemon import shutdown_daemons
-                shutdown_daemons(_daemon_handles, timeout=10)
+    # ── GPU daemons (V4 architecture: persistent daemons, zero scipy) ──
+    # If daemon_handles passed from __main__, use them directly.
+    # Otherwise, try to start here (fallback for non-CLI callers).
+    _daemon_handles = daemon_handles
+    print(f"[XGEN-DEBUG] daemon_handles from caller: {'PRESENT' if _daemon_handles else 'None'}", flush=True)
+
+    if _daemon_handles is None:
+        # Fallback: try to start daemons here (original path)
+        available_gpus = _detect_available_gpus() if GPU else []
+        n_gpus = len(available_gpus) if _MULTI_GPU_CROSS_GEN else (1 if GPU else 0)
+        print(f"[XGEN-DEBUG] Fallback daemon start: GPU={GPU}, n_gpus={n_gpus}, MULTI_GPU={_MULTI_GPU_CROSS_GEN}, available_gpus={available_gpus}", flush=True)
+        log(f"  [DEBUG] GPU={GPU}, n_gpus={n_gpus}, MULTI_GPU={_MULTI_GPU_CROSS_GEN}, available_gpus={available_gpus}")
+        if n_gpus > 1 and GPU:
+            try:
+                print(f"[XGEN-DEBUG] Importing gpu_daemon for fallback prestage...", flush=True)
+                from gpu_daemon import prestage_gpu_daemons
+                log(f"  Pre-starting {n_gpus} GPU daemons (V4 zero-scipy architecture)...")
+                _daemon_handles = prestage_gpu_daemons(
+                    n_gpus=n_gpus,
+                    available_gpu_ids=available_gpus,
+                    vram_limit_pct=0.85
+                )
+                _active = sum(1 for h in _daemon_handles if h.status == 'idle')
+                if _active < 2:
+                    log(f"  WARNING: Only {_active}/{n_gpus} daemons active, falling back to old path")
+                    from gpu_daemon import shutdown_daemons
+                    shutdown_daemons(_daemon_handles, timeout=10)
+                    _daemon_handles = None
+                else:
+                    log(f"  {_active}/{n_gpus} GPU daemons ready (CUDA init hidden behind binarization)")
+            except Exception as _daemon_err:
+                import traceback as _tb
+                print(f"[XGEN-DEBUG] DAEMON PRESTAGE EXCEPTION: {_daemon_err}", flush=True)
+                _tb.print_exc()
+                log(f"  WARNING: GPU daemon prestage failed ({_daemon_err}), using legacy path")
                 _daemon_handles = None
-            else:
-                log(f"  {_active}/{n_gpus} GPU daemons ready (CUDA init hidden behind binarization)")
-        except Exception as _daemon_err:
-            log(f"  WARNING: GPU daemon prestage failed ({_daemon_err}), using legacy path")
+    else:
+        # Daemons passed from __main__ — validate they're alive
+        _active = sum(1 for h in _daemon_handles if h.status == 'idle')
+        log(f"  Using {_active}/{len(_daemon_handles)} pre-started GPU daemons from __main__")
+        print(f"[XGEN-DEBUG] Pre-started daemons: {_active}/{len(_daemon_handles)} active", flush=True)
+        if _active < 2:
+            log(f"  WARNING: Only {_active} daemons alive, falling back to legacy path")
+            from gpu_daemon import shutdown_daemons
+            shutdown_daemons(_daemon_handles, timeout=10)
             _daemon_handles = None
 
     # ── Step 1: Binarize all contexts (4-tier) ──
@@ -3031,6 +3059,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     def _execute_one_step(step, daemon_handles=None):
         """Execute a single cross step. Returns (prefix, label, names, r, c, d, nc, combo_formulas)."""
+        print(f"[XGEN-DEBUG] _execute_one_step: Cross {step['num']} ({step['prefix']}), daemon_handles={'PRESENT' if daemon_handles else 'None'}", flush=True)
         _log_memory(f"Cross {step['num']} ({step['prefix']}) START")
         t_step = time.time()
         log(f"  Cross {step['num']}: {step['desc']}...")
@@ -3208,10 +3237,12 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             _malloc_trim()
 
     # ── Shutdown GPU daemons (V4: must happen BEFORE final assembly) ──
-    if _daemon_handles is not None:
+    # Only shutdown daemons we created locally (not ones passed from __main__)
+    _owns_daemons = (daemon_handles is None and _daemon_handles is not None)
+    if _owns_daemons:
         try:
             from gpu_daemon import shutdown_daemons
-            log("  Shutting down GPU daemons...")
+            log("  Shutting down GPU daemons (locally-created)...")
             shutdown_daemons(_daemon_handles, timeout=60)
             log("  GPU daemons shut down — full RAM available for assembly")
         except Exception as _sd_err:
@@ -3219,6 +3250,8 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         _daemon_handles = None
         gc.collect()
         _malloc_trim()
+    elif _daemon_handles is not None:
+        log("  GPU daemons owned by __main__ — NOT shutting down (reuse for next TF)")
 
     # ── Save inference artifacts (for live cross computation) ──
     if len(all_cross_names) > 0:
@@ -3409,6 +3442,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 # ============================================================
 
 if __name__ == '__main__':
+    print("[XGEN-DEBUG] __main__ ENTERED", flush=True)
     parser = argparse.ArgumentParser(description='V2 Cross Feature Generator')
     parser.add_argument('--tf', nargs='+', default=['1d'], help='Timeframes to process')
     parser.add_argument('--gpu', type=int, default=0, help='GPU device ID')
@@ -3416,8 +3450,45 @@ if __name__ == '__main__':
     parser.add_argument('--input', help='Input parquet path (overrides auto-detect)')
     parser.add_argument('--symbol', default='BTC', help='Asset symbol')
     args = parser.parse_args()
+    print(f"[XGEN-DEBUG] args={args}", flush=True)
+
+    # ── V4: Pre-start GPU daemons BEFORE any CuPy-heavy code ──
+    # This runs in __main__ (top-level process) so daemons fork from a clean state.
+    # Previously this was inside generate_all_crosses() but the code path was never
+    # reached due to unknown control flow issue. Moving it here guarantees execution.
+    _main_daemon_handles = None
+    if GPU and _MULTI_GPU_CROSS_GEN:
+        print(f"[XGEN-DEBUG] __main__: Detecting GPUs for daemon prestage...", flush=True)
+        _main_available_gpus = _detect_available_gpus()
+        _main_n_gpus = len(_main_available_gpus)
+        print(f"[XGEN-DEBUG] __main__: Detected {_main_n_gpus} GPUs: {_main_available_gpus}", flush=True)
+        if _main_n_gpus > 1:
+            try:
+                from gpu_daemon import prestage_gpu_daemons, shutdown_daemons
+                print(f"[XGEN-DEBUG] __main__: Calling prestage_gpu_daemons(n_gpus={_main_n_gpus})...", flush=True)
+                _main_daemon_handles = prestage_gpu_daemons(
+                    n_gpus=_main_n_gpus,
+                    available_gpu_ids=_main_available_gpus,
+                    vram_limit_pct=0.85
+                )
+                _main_active = sum(1 for h in _main_daemon_handles if h.status == 'idle')
+                print(f"[XGEN-DEBUG] __main__: Daemon prestage done: {_main_active}/{_main_n_gpus} active", flush=True)
+                log(f"[DAEMON] {_main_active}/{_main_n_gpus} GPU daemons pre-started from __main__")
+                if _main_active < 2:
+                    log(f"[DAEMON] WARNING: Only {_main_active} alive, will fall back to legacy path")
+                    shutdown_daemons(_main_daemon_handles, timeout=10)
+                    _main_daemon_handles = None
+            except Exception as _main_daemon_err:
+                import traceback
+                print(f"[XGEN-DEBUG] __main__: DAEMON PRESTAGE FAILED: {_main_daemon_err}", flush=True)
+                traceback.print_exc()
+                log(f"[DAEMON] WARNING: prestage failed ({_main_daemon_err}), will use legacy path")
+                _main_daemon_handles = None
+    else:
+        print(f"[XGEN-DEBUG] __main__: Skipping daemon prestage (GPU={GPU}, MULTI_GPU={_MULTI_GPU_CROSS_GEN})", flush=True)
 
     for tf in args.tf:
+        print(f"[XGEN-DEBUG] __main__: Processing tf={tf}", flush=True)
         # Look for input parquet
         if args.input:
             path = args.input
@@ -3438,16 +3509,28 @@ if __name__ == '__main__':
                 continue
 
         log(f"Loading {path}...")
+        print(f"[XGEN-DEBUG] __main__: Loading parquet from {path}...", flush=True)
         df = pd.read_parquet(path)
+        print(f"[XGEN-DEBUG] __main__: Parquet loaded, {len(df)} rows, calling generate_all_crosses()", flush=True)
         # Set symbol attribute so output files include symbol in name
         # (v2_crosses_BTC_{tf}.npz, not v2_crosses_{tf}.npz)
         # pd.read_parquet doesn't preserve custom attributes
         df._v2_symbol = args.symbol
         df = generate_all_crosses(df, tf=tf, gpu_id=args.gpu,
                                    save_sparse=args.save_sparse,
-                                   output_dir=V2_DIR)
+                                   output_dir=V2_DIR,
+                                   daemon_handles=_main_daemon_handles)
 
         # Save expanded parquet
         out_path = os.path.join(V2_DIR, f'features_{args.symbol}_{tf}_v2.parquet')
         df.to_parquet(out_path)
         log(f"Saved: {out_path}")
+
+    # Shutdown daemons after all TFs processed
+    if _main_daemon_handles is not None:
+        try:
+            from gpu_daemon import shutdown_daemons
+            print(f"[XGEN-DEBUG] __main__: Shutting down daemons after all TFs...", flush=True)
+            shutdown_daemons(_main_daemon_handles, timeout=60)
+        except Exception:
+            pass

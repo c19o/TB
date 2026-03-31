@@ -97,16 +97,23 @@ def prestage_gpu_daemons(n_gpus, available_gpu_ids=None, vram_limit_pct=0.85):
         available_gpu_ids = list(range(n_gpus))
 
     handles = []
+    # CRITICAL: Parent process may have already imported CuPy which creates a CUDA
+    # context. Spawned children inherit this and get cudaErrorInitializationError.
+    # Fix: set CUDA_VISIBLE_DEVICES='' in parent env temporarily to prevent CUDA
+    # from initializing in the forkserver, then each child sets its own GPU.
+    _orig_cvd = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''  # hide GPUs from parent during spawn
+    ctx = multiprocessing.get_context('spawn')
     for gpu_id in available_gpu_ids[:n_gpus]:
         parent_conn, child_conn = multiprocessing.Pipe(duplex=True)
-        p = Process(
+        p = ctx.Process(
             target=_gpu_daemon_main,
             args=(child_conn, gpu_id, vram_limit_pct),
-            daemon=True
         )
         p.start()
-        child_conn.close()  # parent doesn't need child end
+        child_conn.close()
         handles.append(DaemonHandle(pipe=parent_conn, process=p, gpu_id=gpu_id))
+    os.environ['CUDA_VISIBLE_DEVICES'] = _orig_cvd  # restore
 
     # Wait for all daemons to signal READY
     for h in handles:
