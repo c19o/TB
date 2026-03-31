@@ -83,7 +83,7 @@ except ImportError:
 
 from config import (
     V3_LGBM_PARAMS, TF_MIN_DATA_IN_LEAF, TF_NUM_LEAVES, V30_DATA_DIR,
-    OPTUNA_SEED,
+    OPTUNA_SEED, OPTUNA_SAMPLER,
     OPTUNA_PHASE1_TRIALS, OPTUNA_PHASE1_CPCV_GROUPS,
     OPTUNA_PHASE1_ROUNDS, OPTUNA_PHASE1_LR, OPTUNA_PHASE1_ES_PATIENCE,
     OPTUNA_PHASE1_N_STARTUP,
@@ -829,10 +829,120 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
 # ============================================================
 # VALIDATION GATE
 # ============================================================
+def _run_single_validation_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
+                                params, rounds, es_patience, is_sparse, use_gpu,
+                                parent_ds, n_gpus, n_total_folds):
+    """Worker: train one validation CPCV fold. Returns (fold_i, mlogloss) or None."""
+    import gc
+
+    if len(train_rel) < 50 or len(test_rel) < 20:
+        return None
+
+    parent_train_idx = train_rel
+
+    val_size = max(int(len(parent_train_idx) * 0.15), 50)
+    if val_size >= len(parent_train_idx):
+        val_size = max(len(parent_train_idx) // 5, 20)
+
+    train_subset_idx = parent_train_idx[:-val_size].tolist()
+    val_subset_idx = parent_train_idx[-val_size:].tolist()
+
+    dtrain = parent_ds.subset(train_subset_idx)
+    dval = parent_ds.subset(val_subset_idx)
+
+    abs_test = valid_indices[test_rel]
+    X_test = X_all[abs_test]
+    y_test = y[abs_test].astype(int)
+
+    # Per-fold GPU assignment + thread capping
+    fold_params = params.copy()
+    if n_gpus > 1:
+        fold_params['num_threads'] = max(1, (get_cpu_count() or 8) // n_gpus)
+
+    if use_gpu and is_sparse and _HAS_GPU_FORK:
+        # GPU fork path — cuda_sparse with set_external_csr
+        _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
+        gpu_params = fold_params.copy()
+        gpu_params['device_type'] = _detect_lgbm_device_type()
+        gpu_params.pop('force_col_wise', None)
+        gpu_params.pop('force_row_wise', None)
+        gpu_params.pop('device', None)
+        gpu_params['histogram_pool_size'] = 512
+        if n_gpus > 0:
+            gpu_params['gpu_device_id'] = fold_i % n_gpus
+
+        dtrain.construct()
+        dval.construct()
+        booster = lgb.Booster(gpu_params, dtrain)
+        booster.add_valid(dval, 'val')
+        booster.set_external_csr(_gpu_train_data)
+
+        best_score = float('inf')
+        best_iter = 0
+        no_improve = 0
+        for rnd in range(rounds):
+            booster.update()
+            val_result = booster.eval_valid()[0]
+            val_score = val_result[2]
+            if val_score < best_score:
+                best_score = val_score
+                best_iter = rnd + 1
+                no_improve = 0
+            else:
+                no_improve += 1
+            if no_improve >= es_patience:
+                break
+        model = booster
+    elif (use_gpu or n_gpus > 0) and is_sparse:
+        # Standard LightGBM GPU (OpenCL) — fork not available or multi-GPU
+        gpu_params = fold_params.copy()
+        gpu_params['device_type'] = _detect_lgbm_device_type()
+        if n_gpus > 0:
+            gpu_params['gpu_device_id'] = fold_i % n_gpus
+        gpu_params['histogram_pool_size'] = 512
+        gpu_params.pop('force_col_wise', None)
+        gpu_params.pop('force_row_wise', None)
+        gpu_params.pop('device', None)
+
+        model = lgb.train(
+            gpu_params, dtrain,
+            num_boost_round=rounds,
+            valid_sets=[dval],
+            valid_names=['val'],
+            callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
+        )
+    else:
+        model = lgb.train(
+            fold_params, dtrain,
+            num_boost_round=rounds,
+            valid_sets=[dval],
+            valid_names=['val'],
+            callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
+        )
+
+    _best_it = getattr(model, 'best_iteration', None)
+    preds = model.predict(X_test, num_iteration=_best_it) if _best_it else model.predict(X_test)
+    _is_binary_obj = (params.get('objective') == 'binary')
+    if _is_binary_obj:
+        preds_2d = np.column_stack([1 - preds, preds])
+        mlogloss = log_loss(y_test, preds_2d, labels=[0, 1])
+    else:
+        mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
+
+    _n_trees = getattr(model, 'best_iteration', None) or getattr(model, 'current_iteration', lambda: '?')()
+    _gpu_tag = f" [GPU {fold_i % n_gpus}]" if n_gpus > 0 else ""
+    log.info(f"      Val fold {fold_i+1}/{n_total_folds}{_gpu_tag}: mlogloss={mlogloss:.4f} trees={_n_trees}")
+
+    del model, dtrain, dval
+    gc.collect()
+    return (fold_i, mlogloss)
+
+
 def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
                     max_hold, parent_ds, use_gpu=False, n_val_workers=1):
     """Validate a single config with 4-fold CPCV, 200 rounds, LR=0.08.
 
+    Folds are distributed across GPUs when n_gpus > 1 (round-robin by fold_i).
     Returns mean OOS mlogloss (lower = better). No pruning — full evaluation.
     """
     n_groups = OPTUNA_VALIDATION_CPCV_GROUPS
@@ -873,102 +983,41 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
             params[k] = params_dict[k]
     params['max_bin'] = 7  # LOCKED — binary features need 2 bins, 4-tier needs ~5
 
+    # Detect GPU count for per-fold distribution
+    n_gpus = _detect_n_gpus()
+    n_parallel = max(1, n_gpus) if n_gpus > 1 else 1
+
     fold_scores = []
 
-    for fold_i, (train_rel, test_rel) in enumerate(splits):
-        if len(train_rel) < 50 or len(test_rel) < 20:
-            continue
+    if n_parallel > 1:
+        # Parallel fold execution across GPUs (LightGBM releases GIL during training)
+        from concurrent.futures import ThreadPoolExecutor
+        log.info(f"      Distributing {len(splits)} validation folds across {n_gpus} GPUs")
+        futures = {}
+        with ThreadPoolExecutor(max_workers=n_parallel) as pool:
+            for fold_i, (train_rel, test_rel) in enumerate(splits):
+                fut = pool.submit(
+                    _run_single_validation_fold,
+                    fold_i, train_rel, test_rel, valid_indices, X_all, y,
+                    params, rounds, es_patience, is_sparse, use_gpu,
+                    parent_ds, n_gpus, len(splits),
+                )
+                futures[fut] = fold_i
 
-        # splits are on range(n_valid), parent rows = 0..n_valid-1
-        parent_train_idx = train_rel
-
-        val_size = max(int(len(parent_train_idx) * 0.15), 50)
-        if val_size >= len(parent_train_idx):
-            val_size = max(len(parent_train_idx) // 5, 20)
-
-        train_subset_idx = parent_train_idx[:-val_size].tolist()
-        val_subset_idx = parent_train_idx[-val_size:].tolist()
-
-        dtrain = parent_ds.subset(train_subset_idx)
-        dval = parent_ds.subset(val_subset_idx)
-
-        abs_test = valid_indices[test_rel]
-        X_test = X_all[abs_test]
-        y_test = y[abs_test].astype(int)
-
-        if use_gpu and is_sparse and _HAS_GPU_FORK:
-            # GPU fork path — cuda_sparse with set_external_csr
-            _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
-            gpu_params = params.copy()
-            gpu_params['device_type'] = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else _detect_lgbm_device_type()
-            gpu_params.pop('force_col_wise', None)
-            gpu_params.pop('force_row_wise', None)
-            gpu_params.pop('device', None)
-            gpu_params['histogram_pool_size'] = 512
-
-            dtrain.construct()
-            dval.construct()
-            booster = lgb.Booster(gpu_params, dtrain)
-            booster.add_valid(dval, 'val')
-            booster.set_external_csr(_gpu_train_data)
-
-            best_score = float('inf')
-            best_iter = 0
-            no_improve = 0
-            for rnd in range(rounds):
-                booster.update()
-                val_result = booster.eval_valid()[0]
-                val_score = val_result[2]
-                if val_score < best_score:
-                    best_score = val_score
-                    best_iter = rnd + 1
-                    no_improve = 0
-                else:
-                    no_improve += 1
-                if no_improve >= es_patience:
-                    break
-            model = booster
-        elif use_gpu and is_sparse:
-            # Standard LightGBM GPU (OpenCL) — fork not available
-            gpu_params = params.copy()
-            gpu_params['device_type'] = gpu_cfg.device_type if (gpu_cfg and gpu_cfg.enabled) else _detect_lgbm_device_type()
-            gpu_params.pop('force_col_wise', None)
-            gpu_params.pop('force_row_wise', None)
-            gpu_params.pop('device', None)
-            gpu_params['histogram_pool_size'] = 512
-
-            model = lgb.train(
-                gpu_params, dtrain,
-                num_boost_round=rounds,
-                valid_sets=[dval],
-                valid_names=['val'],
-                callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
+            for fut in futures:
+                result = fut.result()
+                if result is not None:
+                    fold_scores.append(result[1])  # result = (fold_i, mlogloss)
+    else:
+        # Sequential fallback (1 GPU or CPU-only)
+        for fold_i, (train_rel, test_rel) in enumerate(splits):
+            result = _run_single_validation_fold(
+                fold_i, train_rel, test_rel, valid_indices, X_all, y,
+                params, rounds, es_patience, is_sparse, use_gpu,
+                parent_ds, n_gpus, len(splits),
             )
-        else:
-            model = lgb.train(
-                params, dtrain,
-                num_boost_round=rounds,
-                valid_sets=[dval],
-                valid_names=['val'],
-                callbacks=[lgb.early_stopping(es_patience), lgb.log_evaluation(0)],
-            )
-
-        _best_it = getattr(model, 'best_iteration', None)
-        preds = model.predict(X_test, num_iteration=_best_it) if _best_it else model.predict(X_test)
-        _is_binary_obj = (params.get('objective') == 'binary')
-        if _is_binary_obj:
-            preds_2d = np.column_stack([1 - preds, preds])
-            mlogloss = log_loss(y_test, preds_2d, labels=[0, 1])
-        else:
-            mlogloss = log_loss(y_test, preds, labels=[0, 1, 2])
-        fold_scores.append(mlogloss)
-
-        _n_trees = getattr(model, 'best_iteration', None) or getattr(model, 'current_iteration', lambda: '?')()
-        log.info(f"      Val fold {fold_i+1}/{len(splits)}: mlogloss={mlogloss:.4f} trees={_n_trees}")
-
-        del model, dtrain, dval
-        import gc
-        gc.collect()
+            if result is not None:
+                fold_scores.append(result[1])
 
     if not fold_scores:
         return float('inf')
@@ -1247,9 +1296,19 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
 
     # Detect GPU count for parallel fold distribution
     n_gpus = _detect_n_gpus()
-    n_parallel = max(1, n_gpus) if n_gpus > 1 else 1
-    if n_parallel > 1:
-        log.info(f"  FIX #5: Distributing {len(splits)} folds across {n_gpus} GPUs in parallel")
+    # Parallelize when: multiple GPUs available AND enough data (>2000 rows).
+    # Small datasets (e.g. 1w) train so fast that thread overhead dominates.
+    _use_parallel = n_gpus > 1 and n_valid > 2000
+    n_parallel = min(n_gpus, len(splits)) if _use_parallel else 1
+    if _use_parallel:
+        # Partition CPU threads across concurrent folds so they don't over-subscribe
+        _threads_per_fold = max(1, (get_cpu_count() or 8) // n_parallel)
+        params['num_threads'] = _threads_per_fold
+        log.info(f"  PARALLEL FINAL RETRAIN: {len(splits)} folds across {n_gpus} GPUs "
+                 f"({n_parallel} concurrent, {_threads_per_fold} threads/fold)")
+    else:
+        _reason = "single GPU" if n_gpus <= 1 else f"small dataset ({n_valid} rows <= 2000)"
+        log.info(f"  SEQUENTIAL FINAL RETRAIN: {len(splits)} folds ({_reason})")
 
     oos_predictions = []
     fold_accs = []
@@ -1257,9 +1316,12 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
     best_model_obj = None
     best_acc = 0
 
-    if n_parallel > 1:
-        # Parallel fold execution across GPUs
-        from concurrent.futures import ThreadPoolExecutor
+    if _use_parallel:
+        # Parallel fold execution across GPUs using ThreadPoolExecutor.
+        # ThreadPool is correct here: LightGBM releases GIL during C++ training,
+        # and we avoid serializing the large Dataset/sparse matrix across processes.
+        # GPU assignment is handled by gpu_device_id = fold_i % n_gpus in each fold.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         futures = {}
         with ThreadPoolExecutor(max_workers=n_parallel) as pool:
             for fold_i, (train_rel, test_rel) in enumerate(splits):
@@ -1271,18 +1333,27 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
                 )
                 futures[fut] = fold_i
 
-            for fut in futures:
-                result = fut.result()
+            # Process results as they complete for faster feedback
+            n_done = 0
+            for fut in as_completed(futures):
+                fold_idx = futures[fut]
+                try:
+                    result = fut.result()
+                except Exception:
+                    log.exception(f"    Fold {fold_idx+1} FAILED — skipping")
+                    continue
                 if result is None:
                     continue
+                n_done += 1
                 fold_accs.append(result['acc'])
                 fold_sortinos.append(result['sortino'])
                 oos_predictions.append(result['oos'])
                 if result['acc'] > best_acc:
                     best_acc = result['acc']
                     best_model_obj = result['model']
+            log.info(f"  Parallel final retrain: {n_done}/{len(splits)} folds completed")
     else:
-        # Sequential fallback (1 GPU or CPU-only)
+        # Sequential fallback (1 GPU, CPU-only, or small dataset)
         for fold_i, (train_rel, test_rel) in enumerate(splits):
             result = _run_single_final_fold(
                 fold_i, train_rel, test_rel, valid_indices, X_all, y,
@@ -1610,18 +1681,40 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         )
         pruner = _median
 
-    # Sampler with fixed seed, multivariate TPE
-    # Multi-GPU: use constant_liar=True for thread-safe parallel sampling
-    if gpu_cfg.enabled and gpu_cfg.num_gpus > 1:
-        sampler = create_gpu_safe_sampler(OPTUNA_SEED, OPTUNA_PHASE1_N_STARTUP)
-        log.info(f"  Using TPESampler with constant_liar=True (multi-GPU parallel sampling)")
-    else:
-        sampler = optuna.samplers.TPESampler(
-            seed=OPTUNA_SEED,
-            n_startup_trials=OPTUNA_PHASE1_N_STARTUP,
-            multivariate=True,
-            group=True,
-        )
+    # Sampler selection: TPE (default) or CMA-ES (better for continuous spaces)
+    # Multi-GPU: use constant_liar=True for thread-safe parallel sampling (TPE only)
+    _use_cmaes = OPTUNA_SAMPLER.lower() == 'cmaes'
+    if _use_cmaes:
+        try:
+            from optuna.samplers import CmaEsSampler
+            # CMA-ES doesn't support categorical params natively.
+            # Use TPESampler as independent_sampler for categoricals (extra_trees).
+            _tpe_fallback = optuna.samplers.TPESampler(
+                seed=OPTUNA_SEED,
+                n_startup_trials=OPTUNA_PHASE1_N_STARTUP,
+                multivariate=True,
+            )
+            sampler = CmaEsSampler(
+                seed=OPTUNA_SEED,
+                n_startup_trials=OPTUNA_PHASE1_N_STARTUP,
+                independent_sampler=_tpe_fallback,
+            )
+            log.info("  Using CmaEsSampler (TPE fallback for categoricals)")
+        except (ImportError, AttributeError):
+            log.warning("  CMA-ES sampler unavailable, falling back to TPESampler")
+            _use_cmaes = False
+
+    if not _use_cmaes:
+        if gpu_cfg.enabled and gpu_cfg.num_gpus > 1:
+            sampler = create_gpu_safe_sampler(OPTUNA_SEED, OPTUNA_PHASE1_N_STARTUP)
+            log.info(f"  Using TPESampler with constant_liar=True (multi-GPU parallel sampling)")
+        else:
+            sampler = optuna.samplers.TPESampler(
+                seed=OPTUNA_SEED,
+                n_startup_trials=OPTUNA_PHASE1_N_STARTUP,
+                multivariate=True,
+                group=True,
+            )
 
     study_name = f'lgbm_{tf_name}_v33'
 

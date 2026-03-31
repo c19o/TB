@@ -21,7 +21,7 @@ Steps:
   6-10. Optimizer, meta, LSTM, PBO, audit, SHAP
   11. Verify all artifacts exist
 """
-import os, sys, subprocess, time, json, glob, sqlite3
+import os, sys, subprocess, time, json, glob, sqlite3, threading
 
 os.environ['PYTHONUNBUFFERED'] = '1'
 # FIX #43: PyTorch expandable segments — reduces fragmentation-induced OOM on LSTM/meta steps
@@ -37,6 +37,32 @@ os.chdir('/workspace')
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = _SCRIPT_DIR  # v3.3 directory
 
+# ── OPT: Transparent Huge Pages — reduces TLB misses for large sparse matrices ──
+try:
+    with open('/sys/kernel/mm/transparent_hugepage/enabled', 'w') as f:
+        f.write('always')
+except (PermissionError, FileNotFoundError, OSError):
+    pass  # container may not have permission
+
+# ── OPT: jemalloc — better malloc for sparse alloc/free patterns (reduces fragmentation) ──
+_jemalloc_paths = [
+    '/usr/lib/x86_64-linux-gnu/libjemalloc.so.2',
+    '/usr/lib/x86_64-linux-gnu/libjemalloc.so',
+    '/usr/lib/libjemalloc.so.2',
+    '/usr/lib/libjemalloc.so',
+]
+_jemalloc_found = None
+for _jp in _jemalloc_paths:
+    if os.path.exists(_jp):
+        _jemalloc_found = _jp
+        break
+if _jemalloc_found:
+    _existing_preload = os.environ.get('LD_PRELOAD', '')
+    if 'jemalloc' not in _existing_preload:
+        os.environ['LD_PRELOAD'] = f"{_jemalloc_found}:{_existing_preload}" if _existing_preload else _jemalloc_found
+else:
+    _jemalloc_found = None  # will log warning after log() is defined
+
 def _script(name):
     """Resolve script path — check CWD first, then script directory."""
     if os.path.exists(name):
@@ -47,6 +73,12 @@ def _script(name):
     return name  # let it fail with clear error
 
 TF = sys.argv[sys.argv.index('--tf') + 1] if '--tf' in sys.argv else '1d'
+ASSEMBLY_LINE = '--assembly-line' in sys.argv
+
+# ── Assembly-line: TF sequence for prefetching next TF's features ──
+_TF_SEQUENCE = ['1w', '1d', '4h', '1h', '15m']
+_next_tf_build_thread = None  # Background thread handle for assembly-line overlap
+_next_tf_build_ok = None      # Result of background feature build
 
 # --- 15m-specific env vars to prevent OOM during cross gen ---
 if TF == '15m':
@@ -130,6 +162,13 @@ def _print_summary():
     else:
         print(f"  PIPELINE COMPLETE: {TF} ({elapsed_total:.0f}s / {elapsed_total/60:.1f} min)", flush=True)
     print(f"{'='*60}", flush=True)
+    # Assembly-line: report background build status if active
+    if _next_tf_build_thread is not None:
+        if _next_tf_build_thread.is_alive():
+            print(f"  [ASSEMBLY-LINE] Background feature build still running for next TF", flush=True)
+        elif _next_tf_build_ok is not None:
+            _status = 'OK' if _next_tf_build_ok else 'FAILED'
+            print(f"  [ASSEMBLY-LINE] Next TF feature build: {_status}", flush=True)
     # List all artifacts
     artifacts = [
         f'model_{TF}.json', f'model_{TF}_cpcv_backup.json',
@@ -193,6 +232,10 @@ print(f"  CLOUD PIPELINE: {TF}", flush=True)
 print(f"  Cores: {cpu_count} (cgroup-aware)", flush=True)
 print(f"  RAM:   {ram_gb:.0f} GB (cgroup-aware)", flush=True)
 print(f"  CWD:   {os.getcwd()}", flush=True)
+if _jemalloc_found:
+    print(f"  jemalloc: {_jemalloc_found} (LD_PRELOAD active)", flush=True)
+else:
+    print(f"  jemalloc: NOT FOUND — using system malloc (install libjemalloc-dev for less fragmentation)", flush=True)
 print(f"{'='*60}", flush=True)
 
 # --- RAM validation per TF ---
@@ -493,8 +536,9 @@ if TF in SKIP_CROSSES_TFS:
 os.environ['OMP_NUM_THREADS'] = str(cpu_count)
 os.environ['NUMBA_NUM_THREADS'] = str(cpu_count)
 os.environ['MKL_DYNAMIC'] = 'FALSE'
-os.environ.setdefault('OMP_PROC_BIND', 'close')
+os.environ.setdefault('OMP_PROC_BIND', 'spread')
 os.environ.setdefault('OMP_PLACES', 'cores')
+os.environ.setdefault('OMP_SCHEDULE', 'static')
 log(f"Cross gen phase: OMP_NUM_THREADS={cpu_count}, NUMBA_NUM_THREADS={cpu_count}, MKL_DYNAMIC=FALSE (all {cpu_count} cores active)")
 
 npz_path = f'v2_crosses_BTC_{TF}.npz'
@@ -579,11 +623,16 @@ os.environ.pop('NUMBA_NUM_THREADS', None)
 os.environ.pop('MKL_DYNAMIC', None)
 os.environ.pop('OMP_PROC_BIND', None)
 os.environ.pop('OMP_PLACES', None)
+os.environ.pop('OMP_SCHEDULE', None)
+# OPT: Re-set OpenMP tuning for training phase (spread threads across cores for LightGBM)
+os.environ.setdefault('OMP_PROC_BIND', 'spread')
+os.environ.setdefault('OMP_PLACES', 'cores')
+os.environ.setdefault('OMP_SCHEDULE', 'static')
 try:
     from threadpoolctl import threadpool_limits
     threadpool_limits(limits=cpu_count, user_api='blas')
     threadpool_limits(limits=cpu_count, user_api='openmp')
-    log(f"Training phase: thread pools reset to {cpu_count} cores (blas+openmp)")
+    log(f"Training phase: thread pools reset to {cpu_count} cores (blas+openmp), OMP_PROC_BIND=spread")
 except ImportError:
     log(f"Training phase: threadpoolctl not available, env vars cleared")
 
@@ -611,6 +660,104 @@ try:
         log(f"NUMA: numactl not available or failed")
 except (FileNotFoundError, subprocess.TimeoutExpired):
     log(f"NUMA: numactl not installed — skipping NUMA binding")
+
+# ============================================================
+# ASSEMBLY-LINE: Prefetch next TF's features in background thread
+# Feature builds are CPU-bound, Optuna/training are GPU-bound — no contention.
+# Only overlaps feature BUILD (not cross gen, which needs GPU).
+# ============================================================
+def _assembly_line_build_next_tf():
+    """Build features for the next TF in a background thread.
+    Sets global _next_tf_build_ok with the result."""
+    global _next_tf_build_ok
+    try:
+        _idx = _TF_SEQUENCE.index(TF)
+    except ValueError:
+        _next_tf_build_ok = False
+        return
+    if _idx + 1 >= len(_TF_SEQUENCE):
+        return  # Last TF, nothing to prefetch
+    next_tf = _TF_SEQUENCE[_idx + 1]
+    next_parquet = f'features_BTC_{next_tf}.parquet'
+
+    # Check if already built
+    if os.path.exists(next_parquet):
+        import pandas as _pd_check
+        try:
+            _ncols = _pd_check.read_parquet(next_parquet, columns=None).shape[1]
+            if _ncols >= MIN_BASE_FEATURES:
+                log(f"  [ASSEMBLY-LINE] {next_tf} features already exist ({_ncols} cols) — skip prefetch")
+                _next_tf_build_ok = True
+                return
+            else:
+                log(f"  [ASSEMBLY-LINE] {next_tf} parquet stale ({_ncols} cols) — rebuilding")
+        except Exception:
+            log(f"  [ASSEMBLY-LINE] {next_tf} parquet unreadable — rebuilding")
+
+    # Find the build script
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    def _find(name):
+        if os.path.exists(name):
+            return name
+        alt = os.path.join(_script_dir, name)
+        if os.path.exists(alt):
+            return alt
+        return None
+
+    _v2 = _find('build_features_v2.py')
+    if _v2:
+        cmd = f'python -X utf8 -u {_v2} --symbol BTC --tf {next_tf}'
+    else:
+        _alt = _find(f'build_{next_tf}_features.py') or _find('build_features_complete.py')
+        if not _alt:
+            log(f"  [ASSEMBLY-LINE] No build script for {next_tf} — cannot prefetch")
+            _next_tf_build_ok = False
+            return
+        cmd = f'python -X utf8 -u {_alt}'
+
+    log(f"  [ASSEMBLY-LINE] Starting background feature build: {next_tf}")
+    t0 = time.time()
+    logfile = f'assembly_build_{next_tf}.log'
+    try:
+        with open(logfile, 'w') as lf:
+            proc = subprocess.Popen(
+                cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cwd=os.getcwd(),
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+                bufsize=1, universal_newlines=True,
+            )
+            for line in proc.stdout:
+                lf.write(line)
+                lf.flush()
+            proc.wait()
+        dt = time.time() - t0
+        if proc.returncode == 0:
+            log(f"  [ASSEMBLY-LINE] {next_tf} feature build OK ({dt:.0f}s) — see {logfile}")
+            _next_tf_build_ok = True
+        else:
+            log(f"  [ASSEMBLY-LINE] {next_tf} feature build FAILED (exit {proc.returncode}, {dt:.0f}s) — see {logfile}")
+            _next_tf_build_ok = False
+    except Exception as e:
+        log(f"  [ASSEMBLY-LINE] {next_tf} feature build ERROR: {e}")
+        _next_tf_build_ok = False
+
+if ASSEMBLY_LINE:
+    try:
+        _idx = _TF_SEQUENCE.index(TF)
+        if _idx + 1 < len(_TF_SEQUENCE):
+            _next_tf_name = _TF_SEQUENCE[_idx + 1]
+            log(f"[ASSEMBLY-LINE] Will prefetch {_next_tf_name} features while Optuna/training runs")
+            _next_tf_build_thread = threading.Thread(
+                target=_assembly_line_build_next_tf,
+                name=f'assembly-build-{_next_tf_name}',
+                daemon=True,
+            )
+            _next_tf_build_thread.start()
+        else:
+            log(f"[ASSEMBLY-LINE] {TF} is the last TF in sequence — nothing to prefetch")
+    except ValueError:
+        log(f"[ASSEMBLY-LINE] {TF} not in sequence {_TF_SEQUENCE} — skipping prefetch")
 
 optuna_config_path = f'optuna_configs_{TF}.json'
 if os.path.exists(optuna_config_path):
@@ -804,6 +951,20 @@ try:
 
 except Exception as e:
     log(f"  SHAP analysis error (non-fatal): {e}")
+
+# ============================================================
+# ASSEMBLY-LINE: Wait for background feature build to finish
+# ============================================================
+if _next_tf_build_thread is not None and _next_tf_build_thread.is_alive():
+    _next_tf_name = _TF_SEQUENCE[_TF_SEQUENCE.index(TF) + 1]
+    log(f"[ASSEMBLY-LINE] Waiting for {_next_tf_name} feature build to finish...")
+    _next_tf_build_thread.join(timeout=7200)  # 2 hour max wait
+    if _next_tf_build_thread.is_alive():
+        log(f"[ASSEMBLY-LINE] WARNING: {_next_tf_name} build still running after 2h timeout — proceeding")
+    elif _next_tf_build_ok:
+        log(f"[ASSEMBLY-LINE] {_next_tf_name} features ready for next pipeline run")
+    else:
+        log(f"[ASSEMBLY-LINE] {_next_tf_name} feature build failed — next run will rebuild")
 
 # ============================================================
 # FINAL SUMMARY

@@ -503,7 +503,7 @@ V3_LGBM_PARAMS = {
     "feature_pre_filter": False,      # CRITICAL: True silently kills rare esoteric features at Dataset construction
     "is_enable_sparse": True,
     "min_data_in_bin": 1,              # allow bins with 1 sample (rare esoteric signals)
-    "bin_construct_sample_cnt": 5000,  # default 200K is 40x overkill for binary features → 10-30% construction speedup
+    "bin_construct_sample_cnt": 5000,   # binary features need minimal samples for bin thresholds
     "path_smooth": 0.5,                # regularization: smooths leaf toward parent — 0.5 = 3.2% dampening at n=15 (was 2.0 = 21%)
     "min_data_in_leaf": 3,
     "min_sum_hessian_in_leaf": 1.5,    # adaptive guard — shrinks as model overfits
@@ -626,6 +626,7 @@ SHAP_CROSS_PREFIXES = ('dx_', 'ax_', 'ax2_', 'ta2_', 'ex2_', 'sw_', 'hod_', 'mx_
 # Validation Gate: top-3 re-evaluated with 4-fold CPCV, longer rounds
 # Final retrain: unchanged (full CPCV K=2, 800 rounds, LR=0.03)
 OPTUNA_SEED = 42
+OPTUNA_SAMPLER = os.environ.get('OPTUNA_SAMPLER', 'tpe')  # 'tpe' or 'cmaes'
 
 OPTUNA_PHASE1_TRIALS = 25              # 2 seeded + 8 random + 15 TPE
 OPTUNA_PHASE1_CPCV_GROUPS = 2          # 2-fold for speed

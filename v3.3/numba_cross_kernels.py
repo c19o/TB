@@ -8,6 +8,8 @@ Enable with: USE_NUMBA_CROSS=1 environment variable.
 
 Binary features (0/1) — cross = AND = sorted-index intersection on CSC columns.
 Eliminates dense allocation + np.nonzero overhead from _process_cross_block.
+
+Single-pass fusion: upper-bound pre-allocate + one parallel kernel (no count pass).
 """
 
 import numpy as np
@@ -32,130 +34,33 @@ def _llvm_ctpop_i64(typingctx, x):
 
 
 # ============================================================
-# CORE KERNEL: Two-pointer sorted intersection on CSC columns
-# ============================================================
-
-@njit(cache=True)
-def _intersect_sorted(a_indices, a_start, a_end, b_indices, b_start, b_end):
-    """
-    Two-pointer intersection of two sorted index arrays.
-    Returns the count of common elements.
-
-    a_indices/b_indices: CSC indices arrays
-    a_start..a_end, b_start..b_end: slice bounds within those arrays
-    """
-    count = 0
-    i = a_start
-    j = b_start
-    while i < a_end and j < b_end:
-        ai = a_indices[i]
-        bj = b_indices[j]
-        if ai == bj:
-            count += 1
-            i += 1
-            j += 1
-        elif ai < bj:
-            i += 1
-        else:
-            j += 1
-    return count
-
-
-@njit(cache=True)
-def _intersect_sorted_fill(a_indices, a_start, a_end,
-                           b_indices, b_start, b_end,
-                           out, out_start):
-    """
-    Two-pointer intersection that fills output array with matching row indices.
-    Returns number of elements written.
-    """
-    count = 0
-    i = a_start
-    j = b_start
-    while i < a_end and j < b_end:
-        ai = a_indices[i]
-        bj = b_indices[j]
-        if ai == bj:
-            out[out_start + count] = ai
-            count += 1
-            i += 1
-            j += 1
-        elif ai < bj:
-            i += 1
-        else:
-            j += 1
-    return count
-
-
-# ============================================================
-# PASS 1: Count intersection sizes for all pairs (parallel)
+# SINGLE-PASS KERNEL: Two-pointer merge writes matches directly
 # ============================================================
 
 @njit(parallel=True, cache=True)
-def _count_intersections(left_indptr, left_indices,
-                         right_indptr, right_indices,
-                         pair_left, pair_right):
-    """
-    Pass 1: For each pair, count how many rows have both left AND right nonzero.
-    Uses prange for outer pair loop — each pair is independent.
-
-    Parameters
-    ----------
-    left_indptr, left_indices : CSC format arrays for left matrix
-    right_indptr, right_indices : CSC format arrays for right matrix
-    pair_left : int32 array of left column indices (sorted by left for L2 reuse)
-    pair_right : int32 array of right column indices
-
-    Returns
-    -------
-    counts : int64 array, intersection size per pair
-    """
+def _intersect_single_pass(left_indptr, left_indices, right_indptr, right_indices,
+                            pair_left, pair_right, offsets, out_rows, counts):
+    """Single-pass: for each pair, two-pointer merge writes matches directly."""
     n_pairs = len(pair_left)
-    counts = np.empty(n_pairs, dtype=np.int64)
-
     for p in prange(n_pairs):
-        lc = pair_left[p]
-        rc = pair_right[p]
-        l_start = left_indptr[lc]
-        l_end = left_indptr[lc + 1]
-        r_start = right_indptr[rc]
-        r_end = right_indptr[rc + 1]
-        counts[p] = _intersect_sorted(left_indices, l_start, l_end,
-                                       right_indices, r_start, r_end)
-
-    return counts
-
-
-# ============================================================
-# PASS 2: Fill pre-allocated output with intersection row indices
-# ============================================================
-
-@njit(parallel=True, cache=True)
-def _fill_intersections(left_indptr, left_indices,
-                        right_indptr, right_indices,
-                        pair_left, pair_right,
-                        offsets, out_rows):
-    """
-    Pass 2: Fill pre-allocated array with intersection row indices.
-
-    Parameters
-    ----------
-    offsets : int64 array, cumulative sum of counts (exclusive prefix sum)
-             offsets[p] = where pair p starts writing in out_rows
-    out_rows : int32 array, pre-allocated to total intersection size
-    """
-    n_pairs = len(pair_left)
-
-    for p in prange(n_pairs):
-        lc = pair_left[p]
-        rc = pair_right[p]
-        l_start = left_indptr[lc]
-        l_end = left_indptr[lc + 1]
-        r_start = right_indptr[rc]
-        r_end = right_indptr[rc + 1]
-        _intersect_sorted_fill(left_indices, l_start, l_end,
-                               right_indices, r_start, r_end,
-                               out_rows, offsets[p])
+        li = pair_left[p]
+        ri = pair_right[p]
+        a_start, a_end = left_indptr[li], left_indptr[li + 1]
+        b_start, b_end = right_indptr[ri], right_indptr[ri + 1]
+        write_pos = offsets[p]
+        i, j = a_start, b_start
+        c = 0
+        while i < a_end and j < b_end:
+            if left_indices[i] == right_indices[j]:
+                out_rows[write_pos + c] = left_indices[i]
+                c += 1
+                i += 1
+                j += 1
+            elif left_indices[i] < right_indices[j]:
+                i += 1
+            else:
+                j += 1
+        counts[p] = c
 
 
 # ============================================================
@@ -258,36 +163,43 @@ def numba_csc_cross(left_mat, right_mat, valid_pairs, all_names,
     # Free dense matrices from caller's perspective (CSC holds the data now)
     del left_csc, right_csc
 
-    # ── Pass 1: Count intersection sizes (parallel) ──
-    counts = _count_intersections(l_indptr, l_indices, r_indptr, r_indices,
-                                  sorted_left, sorted_right)
+    # ── Single-pass fusion: upper-bound allocate + intersect in one kernel ──
+    # Compute upper bounds per pair: min(nnz_left, nnz_right)
+    nnz_left = np.empty(n_pairs, dtype=np.int64)
+    nnz_right = np.empty(n_pairs, dtype=np.int64)
+    for p in range(n_pairs):
+        nnz_left[p] = l_indptr[sorted_left[p] + 1] - l_indptr[sorted_left[p]]
+        nnz_right[p] = r_indptr[sorted_right[p] + 1] - r_indptr[sorted_right[p]]
+    ub = np.minimum(nnz_left, nnz_right)
 
-    if progress:
-        t_count = time.time()
-        n_nonempty = np.count_nonzero(counts)
-        total_nnz = counts.sum()
-        print(f"[numba_cross] Pass 1 (count): {t_count - t_csc:.2f}s — "
-              f"{n_nonempty:,}/{n_pairs:,} non-empty, {total_nnz:,} total NNZ",
-              flush=True)
+    # Compute offsets from upper bounds
+    offsets = np.zeros(n_pairs + 1, dtype=np.int64)
+    offsets[1:] = np.cumsum(ub)
+    total_ub = int(offsets[n_pairs])
 
-    # ── Build prefix sum for output offsets ──
-    offsets = np.empty(n_pairs + 1, dtype=np.int64)
-    offsets[0] = 0
-    np.cumsum(counts, out=offsets[1:])
-    total_nnz_val = int(offsets[n_pairs])
-
-    if total_nnz_val == 0:
+    if total_ub == 0:
         return [], [], 0
 
-    # ── Pass 2: Fill intersection row indices (parallel) ──
-    out_rows = np.empty(total_nnz_val, dtype=np.int32)
-    _fill_intersections(l_indptr, l_indices, r_indptr, r_indices,
-                        sorted_left, sorted_right, offsets, out_rows)
+    # Pre-allocate to upper bound and run single-pass kernel
+    out_rows = np.empty(total_ub, dtype=np.int32)
+    counts = np.empty(n_pairs, dtype=np.int64)
+    _intersect_single_pass(l_indptr, l_indices, r_indptr, r_indices,
+                           sorted_left, sorted_right, offsets, out_rows, counts)
 
     if progress:
         t_fill = time.time()
-        print(f"[numba_cross] Pass 2 (fill): {t_fill - t_count:.2f}s — "
-              f"{total_nnz_val:,} entries filled", flush=True)
+        n_nonempty = np.count_nonzero(counts)
+        total_nnz_val = int(counts.sum())
+        print(f"[numba_cross] Single-pass intersect: {t_fill - t_csc:.2f}s — "
+              f"{n_nonempty:,}/{n_pairs:,} non-empty, {total_nnz_val:,} NNZ "
+              f"(upper-bound alloc: {total_ub:,})", flush=True)
+    else:
+        total_nnz_val = int(counts.sum())
+
+    if total_nnz_val == 0:
+        del out_rows, offsets, counts, ub, nnz_left, nnz_right
+        gc.collect()
+        return [], [], 0
 
     # ── Build CSR output in chunks to bound memory ──
     # Process in chunks of CHUNK_SIZE features to avoid a single massive COO
@@ -314,7 +226,7 @@ def numba_csc_cross(left_mat, right_mat, valid_pairs, all_names,
 
         for local_col, p_idx in enumerate(chunk_pairs):
             p_start = int(offsets[p_idx])
-            p_end = int(offsets[p_idx + 1])
+            p_end = p_start + int(counts[p_idx])
             if p_end > p_start:
                 rows_slice = out_rows[p_start:p_end]
                 chunk_rows_list.append(rows_slice)
@@ -346,7 +258,7 @@ def numba_csc_cross(left_mat, right_mat, valid_pairs, all_names,
         print(f"[numba_cross] Total: {t_end - t0:.2f}s "
               f"(was dense multiply + np.nonzero)", flush=True)
 
-    del out_rows, offsets, counts
+    del out_rows, offsets, counts, ub, nnz_left, nnz_right
     gc.collect()
 
     return names, csr_chunks, n_features
@@ -359,13 +271,12 @@ def warmup_numba_kernels():
     pair_l = np.array([0, 1], dtype=np.int32)
     pair_r = np.array([1, 0], dtype=np.int32)
 
-    # Trigger compilation
-    _count_intersections(dummy_indptr, dummy_indices,
-                         dummy_indptr, dummy_indices,
-                         pair_l, pair_r)
+    # Upper bounds: min(nnz_left, nnz_right) for each pair
+    offsets = np.array([0, 2, 4], dtype=np.int64)
+    out = np.empty(4, dtype=np.int32)
+    counts = np.empty(2, dtype=np.int64)
 
-    offsets = np.array([0, 1, 1], dtype=np.int64)
-    out = np.empty(2, dtype=np.int32)
-    _fill_intersections(dummy_indptr, dummy_indices,
-                        dummy_indptr, dummy_indices,
-                        pair_l, pair_r, offsets, out)
+    # Trigger compilation of single-pass kernel
+    _intersect_single_pass(dummy_indptr, dummy_indices,
+                           dummy_indptr, dummy_indices,
+                           pair_l, pair_r, offsets, out, counts)

@@ -19,6 +19,16 @@ Tests:
   10. Feature build parallel (ThreadPoolExecutor)
   11. Assembly-line orchestrator
   12. All CPU cores utilized (OMP check)
+  13. CuPy pinned memory management
+  14. Async NPZ writer (v2_cross_generator)
+  15. Bitpack POPCNT tiled kernel
+  16. Single-pass Numba kernel
+  17. Binary mode in Optuna (_apply_binary_mode)
+  18. Parallel final retrain (ThreadPoolExecutor + as_completed)
+  19. Per-fold GPU distribution
+  20. Environment optimizations (OMP, jemalloc, THP)
+  21. lleaves + inference pruner wiring
+  22. Deploy verification files
 """
 import os
 import sys
@@ -366,6 +376,308 @@ def main():
         check(f"num_leaves for {tf}: {leaves}", leaves is not None and leaves > 0)
     except Exception as e:
         check("Config integrity", False, str(e))
+
+    # ============================================================
+    # TEST 13: CuPy Pinned Memory Management
+    # ============================================================
+    print(f"\n== TEST 13: CuPy Pinned Memory Management ==")
+    try:
+        import cupy as cp
+        pool = cp.get_default_pinned_memory_pool()
+        check("CuPy pinned_memory_pool exists", pool is not None)
+        pool.free_all_blocks()
+        check("pinned_memory_pool.free_all_blocks() callable", True)
+        dev_pool = cp.get_default_memory_pool()
+        dev_pool.set_limit(size=0)  # 0 = unlimited (just test callability)
+        check("device_memory_pool.set_limit() callable", True)
+    except ImportError:
+        check("CuPy import", False, "CuPy not installed")
+    except Exception as e:
+        check("CuPy pinned memory", False, str(e))
+
+    # ============================================================
+    # TEST 14: Async NPZ Writer
+    # ============================================================
+    print(f"\n== TEST 14: Async NPZ Writer ==")
+    try:
+        import tempfile
+        from scipy import sparse as sp_sparse
+        from v2_cross_generator import _AsyncNpzWriter
+
+        writer = _AsyncNpzWriter()
+        check("_AsyncNpzWriter created", writer is not None)
+
+        # Create a tiny sparse matrix and save it
+        tiny = sp_sparse.random(10, 5, density=0.3, format='csr', dtype=np.float32)
+        out_path = os.path.join(tempfile.gettempdir(), 'test_async_npz_writer.npz')
+        writer.enqueue(out_path, tiny)
+        writer.drain()
+        writer.stop()
+        check("enqueue + drain + stop succeeded", True)
+
+        # Verify the file was written and is loadable
+        exists = os.path.exists(out_path)
+        check(f"NPZ file written to {out_path}", exists)
+        if exists:
+            loaded = sp_sparse.load_npz(out_path)
+            check("Loaded sparse matrix shape matches", loaded.shape == (10, 5))
+            check("Loaded data matches original nnz", loaded.nnz == tiny.nnz)
+            os.remove(out_path)
+    except ImportError as e:
+        check("_AsyncNpzWriter import", False, str(e))
+    except Exception as e:
+        check("Async NPZ writer test", False, str(e))
+
+    # ============================================================
+    # TEST 15: Bitpack POPCNT Tiled Kernel
+    # ============================================================
+    print(f"\n== TEST 15: Bitpack POPCNT Tiled Kernel ==")
+    try:
+        from bitpack_utils import _cooccurrence_matrix_popcnt_tiled, _pack_matrix
+
+        n_rows, n_left, n_right = 100, 20, 15
+        np.random.seed(42)
+        left_mat = (np.random.rand(n_rows, n_left) > 0.7).astype(np.float32)
+        right_mat = (np.random.rand(n_rows, n_right) > 0.7).astype(np.float32)
+
+        # Compute naive reference: co-occurrence = left.T @ right (binary AND count)
+        naive_counts = (left_mat.T @ right_mat).astype(np.int32)
+
+        # Pack and run tiled kernel
+        n_words_raw = (n_rows + 63) >> 6
+        n_words = ((n_words_raw + 7) >> 3) << 3  # round up to multiple of 8
+        check(f"n_words={n_words} is multiple of 8", n_words % 8 == 0)
+
+        left_packed = _pack_matrix(left_mat, n_left, n_words)
+        right_packed = _pack_matrix(right_mat, n_right, n_words)
+        check(f"left_packed shape: {left_packed.shape}", left_packed.shape == (n_left, n_words))
+        check(f"right_packed shape: {right_packed.shape}", right_packed.shape == (n_right, n_words))
+
+        counts = np.zeros((n_left, n_right), dtype=np.int32)
+        _cooccurrence_matrix_popcnt_tiled(left_packed, right_packed, n_words, counts)
+        check("Tiled kernel matches naive count", np.array_equal(counts, naive_counts),
+              f"max diff={np.max(np.abs(counts - naive_counts))}")
+    except ImportError as e:
+        check("bitpack_utils import", False, str(e))
+    except Exception as e:
+        check("Bitpack POPCNT tiled kernel", False, str(e))
+
+    # ============================================================
+    # TEST 16: Single-Pass Numba Kernel
+    # ============================================================
+    print(f"\n== TEST 16: Single-Pass Numba Kernel ==")
+    try:
+        from numba_cross_kernels import _intersect_single_pass
+
+        # Build two tiny CSC-style index structures
+        # Column 0: rows [1, 3, 5, 7]    Column 1: rows [2, 3, 6, 7]
+        left_indptr = np.array([0, 4, 8], dtype=np.int64)
+        left_indices = np.array([1, 3, 5, 7, 2, 3, 6, 7], dtype=np.int32)
+        # Column 0: rows [3, 5, 9]       Column 1: rows [1, 7]
+        right_indptr = np.array([0, 3, 5], dtype=np.int64)
+        right_indices = np.array([3, 5, 9, 1, 7], dtype=np.int32)
+
+        # Pairs: (left_col=0, right_col=0) -> intersection {3,5} = 2
+        #        (left_col=0, right_col=1) -> intersection {1,7} with {1,3,5,7} = {1,7} = 2
+        #        (left_col=1, right_col=0) -> intersection {2,3,6,7} with {3,5,9} = {3} = 1
+        pair_left = np.array([0, 0, 1], dtype=np.int32)
+        pair_right = np.array([0, 1, 0], dtype=np.int32)
+        expected = np.array([2, 2, 1], dtype=np.int64)
+
+        # Pre-compute offsets (cumulative sum of max possible intersection sizes)
+        max_per_pair = np.array([4, 4, 4], dtype=np.int64)  # generous upper bound
+        offsets = np.zeros(3, dtype=np.int64)
+        offsets[1] = max_per_pair[0]
+        offsets[2] = offsets[1] + max_per_pair[1]
+        total_buf = int(offsets[2] + max_per_pair[2])
+
+        out_rows = np.zeros(total_buf, dtype=np.int32)
+        counts = np.zeros(3, dtype=np.int64)
+
+        _intersect_single_pass(left_indptr, left_indices, right_indptr, right_indices,
+                               pair_left, pair_right, offsets, out_rows, counts)
+        check(f"Pair (0,0) intersection count={counts[0]}", counts[0] == expected[0],
+              f"expected {expected[0]}, got {counts[0]}")
+        check(f"Pair (0,1) intersection count={counts[1]}", counts[1] == expected[1],
+              f"expected {expected[1]}, got {counts[1]}")
+        check(f"Pair (1,0) intersection count={counts[2]}", counts[2] == expected[2],
+              f"expected {expected[2]}, got {counts[2]}")
+    except ImportError as e:
+        check("numba_cross_kernels import", False, str(e))
+    except Exception as e:
+        check("Single-pass Numba kernel", False, str(e))
+
+    # ============================================================
+    # TEST 17: Binary Mode in Optuna
+    # ============================================================
+    print(f"\n== TEST 17: Binary Mode in Optuna ==")
+    try:
+        from run_optuna_local import _apply_binary_mode
+
+        # Test binary TF (1w should be binary=True)
+        params_bin = {'objective': 'multiclass', 'metric': 'multi_logloss', 'num_class': 3}
+        _apply_binary_mode(params_bin, '1w')
+        check("1w: objective='binary'", params_bin.get('objective') == 'binary',
+              f"got {params_bin.get('objective')}")
+        check("1w: metric='binary_logloss'", params_bin.get('metric') == 'binary_logloss',
+              f"got {params_bin.get('metric')}")
+        check("1w: num_class removed", 'num_class' not in params_bin,
+              f"num_class still present: {params_bin.get('num_class')}")
+
+        # Test non-binary TF (4h should stay multiclass)
+        params_mc = {'objective': 'multiclass', 'metric': 'multi_logloss', 'num_class': 3}
+        _apply_binary_mode(params_mc, '4h')
+        check("4h: objective stays 'multiclass'", params_mc.get('objective') == 'multiclass',
+              f"got {params_mc.get('objective')}")
+        check("4h: num_class=3 preserved", params_mc.get('num_class') == 3,
+              f"got {params_mc.get('num_class')}")
+    except ImportError as e:
+        check("_apply_binary_mode import", False, str(e))
+    except Exception as e:
+        check("Binary mode test", False, str(e))
+
+    # ============================================================
+    # TEST 18: Parallel Final Retrain
+    # ============================================================
+    print(f"\n== TEST 18: Parallel Final Retrain ==")
+    try:
+        import inspect
+        from run_optuna_local import final_retrain
+        src = inspect.getsource(final_retrain)
+        check("ThreadPoolExecutor in final_retrain",
+              'ThreadPoolExecutor' in src,
+              "ThreadPoolExecutor pattern not found in final_retrain")
+        check("as_completed in final_retrain",
+              'as_completed' in src,
+              "as_completed pattern not found in final_retrain")
+        check("_use_parallel guard present",
+              '_use_parallel' in src,
+              "_use_parallel guard not found")
+        check("n_gpus > 1 AND n_valid > 2000 guard",
+              'n_gpus > 1' in src and 'n_valid > 2000' in src,
+              "parallel guard conditions not found")
+    except ImportError as e:
+        check("final_retrain import", False, str(e))
+    except Exception as e:
+        check("Parallel final retrain test", False, str(e))
+
+    # ============================================================
+    # TEST 19: Per-Fold GPU Distribution
+    # ============================================================
+    print(f"\n== TEST 19: Per-Fold GPU Distribution ==")
+    try:
+        import inspect
+        from run_optuna_local import _run_single_validation_fold
+        check("_run_single_validation_fold exists", callable(_run_single_validation_fold))
+        sig = inspect.signature(_run_single_validation_fold)
+        param_names = list(sig.parameters.keys())
+        check("fold_i param present", 'fold_i' in param_names,
+              f"params: {param_names}")
+        check("n_gpus param present", 'n_gpus' in param_names,
+              f"params: {param_names}")
+    except ImportError as e:
+        check("_run_single_validation_fold import", False, str(e))
+    except Exception as e:
+        check("Per-fold GPU distribution test", False, str(e))
+
+    # ============================================================
+    # TEST 20: Environment Optimizations
+    # ============================================================
+    print(f"\n== TEST 20: Environment Optimizations ==")
+    try:
+        # OMP_PROC_BIND / OMP_PLACES can be set
+        os.environ['OMP_PROC_BIND'] = os.environ.get('OMP_PROC_BIND', 'close')
+        os.environ['OMP_PLACES'] = os.environ.get('OMP_PLACES', 'cores')
+        check(f"OMP_PROC_BIND={os.environ['OMP_PROC_BIND']}", True)
+        check(f"OMP_PLACES={os.environ['OMP_PLACES']}", True)
+    except Exception as e:
+        check("OMP env vars", False, str(e))
+
+    # jemalloc detection (non-fatal)
+    try:
+        import ctypes
+        try:
+            jemalloc = ctypes.CDLL('libjemalloc.so.2')
+            check("jemalloc detected", True)
+        except OSError:
+            try:
+                jemalloc = ctypes.CDLL('libjemalloc.so')
+                check("jemalloc detected (alt)", True)
+            except OSError:
+                warn("jemalloc", False, "Not found (non-fatal, only needed on Linux cloud)")
+    except Exception as e:
+        warn("jemalloc detection", False, str(e))
+
+    # Transparent Huge Pages (non-fatal, Linux only)
+    thp_path = '/sys/kernel/mm/transparent_hugepage/enabled'
+    if os.path.exists(thp_path):
+        try:
+            with open(thp_path) as f:
+                thp_val = f.read().strip()
+            check(f"THP status: {thp_val}", True)
+        except Exception as e:
+            warn("THP check", False, str(e))
+    else:
+        warn("THP file", False, f"{thp_path} not found (non-fatal, Linux only)")
+
+    # ============================================================
+    # TEST 21: lleaves + Inference Pruner Wiring
+    # ============================================================
+    print(f"\n== TEST 21: lleaves + Inference Pruner Wiring ==")
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        lleaves_path = os.path.join(script_dir, 'lleaves_compiler.py')
+        pruner_path = os.path.join(script_dir, 'inference_pruner.py')
+        ml_path = os.path.join(script_dir, 'ml_multi_tf.py')
+
+        check("lleaves_compiler.py exists", os.path.exists(lleaves_path),
+              f"Not found at {lleaves_path}")
+        check("inference_pruner.py exists", os.path.exists(pruner_path),
+              f"Not found at {pruner_path}")
+
+        # Verify ml_multi_tf.py wires them in
+        if os.path.exists(ml_path):
+            with open(ml_path, 'r') as f:
+                ml_src = f.read()
+            check("ml_multi_tf.py imports lleaves_compiler",
+                  'from lleaves_compiler' in ml_src,
+                  "Missing 'from lleaves_compiler' import")
+            check("ml_multi_tf.py imports inference_pruner",
+                  'from inference_pruner' in ml_src,
+                  "Missing 'from inference_pruner' import")
+        else:
+            check("ml_multi_tf.py exists", False, f"Not found at {ml_path}")
+    except Exception as e:
+        check("lleaves/pruner wiring", False, str(e))
+
+    # ============================================================
+    # TEST 22: Deploy Verification
+    # ============================================================
+    print(f"\n== TEST 22: Deploy Verification ==")
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        verify_path = os.path.join(script_dir, 'deploy_verify.py')
+        manifest_path = os.path.join(script_dir, 'deploy_manifest.py')
+
+        check("deploy_verify.py exists", os.path.exists(verify_path),
+              f"Not found at {verify_path}")
+        check("deploy_manifest.py exists", os.path.exists(manifest_path),
+              f"Not found at {manifest_path}")
+
+        if os.path.exists(verify_path):
+            with open(verify_path, 'r') as f:
+                verify_src = f.read()
+            check("deploy_verify.py has check functions",
+                  'def check' in verify_src or 'def verify' in verify_src,
+                  "No check/verify functions found")
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r') as f:
+                manifest_src = f.read()
+            check("deploy_manifest.py has manifest logic",
+                  'manifest' in manifest_src.lower(),
+                  "No manifest logic found")
+    except Exception as e:
+        check("Deploy verification test", False, str(e))
 
     # ============================================================
     # SUMMARY

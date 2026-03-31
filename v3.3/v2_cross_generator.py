@@ -26,7 +26,7 @@ Usage:
   python v2_cross_generator.py --tf 1h --save-sparse
 """
 
-import os, time, argparse, warnings, gc, glob, tempfile
+import os, time, argparse, warnings, gc, glob, tempfile, queue, threading
 import ctypes
 try:
     _libc = ctypes.cdll.LoadLibrary("libc.so.6")
@@ -850,6 +850,7 @@ def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
     import cupy as cp
     import cupyx.scipy.sparse as cusp
     cp.cuda.Device(0).use()  # always device 0 (remapped by CUDA_VISIBLE_DEVICES)
+    cp.get_default_memory_pool().set_limit(size=28 * 1024**3)  # 28GB cap, leave ~3GB for CUDA context
 
     def _log(msg):
         print(f"[{time.strftime('%H:%M:%S')}] [GPU-{gpu_id}] {msg}", flush=True)
@@ -922,8 +923,9 @@ def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
         nz_cols_all = cp.asnumpy(nz_cols_gpu)
         del nz_rows_gpu, nz_cols_gpu
 
-        crosses = cp.asnumpy(crosses_gpu)
         del crosses_gpu
+        cp.cuda.Stream.null.synchronize()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
         cp.get_default_memory_pool().free_all_blocks()
 
         if len(nz_rows_all) > 0:
@@ -938,7 +940,7 @@ def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
                 global_pair_idx = pair_start + b_start + c
                 coo_names.append(all_names[global_pair_idx])
                 coo_rows.append(nz)
-                coo_data.append(crosses[nz, c].astype(np.float32))
+                coo_data.append(np.ones(len(nz), dtype=np.float32))
                 coo_col_local += 1
                 col_idx += 1
 
@@ -950,6 +952,8 @@ def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
     _flush_coo()
 
     del left_gpu, right_gpu
+    cp.cuda.Stream.null.synchronize()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
     cp.get_default_memory_pool().free_all_blocks()
 
     # Merge all CSR chunks and save to disk
@@ -979,6 +983,58 @@ def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
 
     _log(f"Worker done: {col_idx:,} features saved")
     gc.collect()
+
+
+# ============================================================
+# ASYNC NPZ WRITER (double-buffer pattern for non-blocking disk I/O)
+# ============================================================
+
+class _AsyncNpzWriter:
+    """Background thread for non-blocking NPZ writes. Double-buffer pattern.
+
+    maxsize=2 means the caller blocks on the 3rd enqueue until the writer
+    finishes one, giving natural back-pressure (at most 2 CSR matrices
+    queued in RAM beyond what the caller holds).
+    """
+    def __init__(self):
+        self._queue = queue.Queue(maxsize=2)
+        self._error = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while True:
+            item = self._queue.get()
+            if item is None:
+                break
+            path, csr_mat = item
+            try:
+                _tmp = path + '.tmp'
+                sparse.save_npz(_tmp, csr_mat, compressed=False)
+                # scipy may append .npz to the filename
+                if not _tmp.endswith('.npz'):
+                    os.rename(_tmp + '.npz', _tmp)
+                os.replace(_tmp, path)
+            except Exception as e:
+                self._error = e
+            finally:
+                del csr_mat
+            self._queue.task_done()
+
+    def enqueue(self, path, csr_mat):
+        if self._error:
+            raise self._error
+        self._queue.put((path, csr_mat))
+
+    def drain(self):
+        self._queue.join()
+        if self._error:
+            raise self._error
+
+    def stop(self):
+        self.drain()
+        self._queue.put(None)
+        self._thread.join(timeout=60)
 
 
 # ============================================================
@@ -1034,7 +1090,7 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
     _last_time_flush = time.time()
 
     def _flush_chunks_to_disk():
-        """Hstack accumulated CSR chunks, save to temp NPZ, clear from RAM."""
+        """Hstack accumulated CSR chunks, enqueue async NPZ write, clear from RAM."""
         nonlocal _local_csr_chunks
         if not _local_csr_chunks:
             return
@@ -1044,18 +1100,17 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
         else:
             _merged = sparse.hstack(_local_csr_chunks, format='csr')
         _npz_path = os.path.join(_tmp_dir, f'sub_{len(_disk_npz_files):04d}.npz')
-        _tmp_npz = _npz_path + '.tmp'
-        sparse.save_npz(_tmp_npz, _merged, compressed=False)
-        if not _tmp_npz.endswith('.npz'):
-            os.rename(_tmp_npz + '.npz', _tmp_npz)
-        os.replace(_tmp_npz, _npz_path)
         _disk_npz_files.append(_npz_path)
         _n_flushed = sum(c.shape[1] for c in _local_csr_chunks)
         _local_csr_chunks.clear()
-        del _merged
+        # Async write — writer thread owns _merged from here
+        _writer.enqueue(_npz_path, _merged)
         gc.collect()
         _malloc_trim()
-        log(f"      Sub-flush #{len(_disk_npz_files)}: {_n_flushed:,} cols to disk, RAM freed")
+        log(f"      Sub-flush #{len(_disk_npz_files)}: {_n_flushed:,} cols to disk (async), RAM freed")
+
+    # Async NPZ writer — overlaps disk I/O with next chunk's compute
+    _writer = _AsyncNpzWriter()
 
     # Process right-side in adaptive chunks (was static RIGHT_CHUNK)
     _chunk_ctrl = AdaptiveChunkController(max_cap=RIGHT_CHUNK, target_pct=_RAM_CEILING_PCT)
@@ -1196,6 +1251,10 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
     if _disk_npz_files and _local_csr_chunks:
         _flush_chunks_to_disk()
 
+    # Wait for all async NPZ writes to complete before returning disk paths
+    _writer.drain()
+    _writer.stop()
+
     n_total_cols = current_offset - col_offset
 
     if _disk_npz_files:
@@ -1289,6 +1348,8 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             )
             p.start()
             workers.append((g_id, p))
+            if len(workers) < len(slices):
+                time.sleep(2)  # stagger to avoid simultaneous cudaMallocHost storms
 
         # Wait for all workers — crash if any fail
         for g_id, p in workers:
@@ -1366,8 +1427,11 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     _gpu_tmp_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
                                 f'_gpu_csr_{prefix}_{os.getpid()}')
 
+    # Async NPZ writer for GPU cross chunk — overlaps disk I/O with GPU compute
+    _gpu_writer = _AsyncNpzWriter()
+
     def _flush_csr_to_disk():
-        """Save accumulated CSR chunks to disk NPZ, clear from RAM."""
+        """Save accumulated CSR chunks to disk NPZ (async), clear from RAM."""
         if not _csr_out:
             return
         os.makedirs(_gpu_tmp_dir, exist_ok=True)
@@ -1376,17 +1440,13 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
         else:
             _merged = sparse.hstack(_csr_out, format='csr')
         _path = os.path.join(_gpu_tmp_dir, f'gpu_csr_{len(_disk_csr_files):04d}.npz')
-        _tmp_path = _path + '.tmp'
-        sparse.save_npz(_tmp_path, _merged, compressed=False)
-        if not _tmp_path.endswith('.npz'):
-            os.rename(_tmp_path + '.npz', _tmp_path)
-        os.replace(_tmp_path, _path)
         _disk_csr_files.append(_path)
         _csr_out.clear()
-        del _merged
+        # Async write — writer thread owns _merged from here
+        _gpu_writer.enqueue(_path, _merged)
         gc.collect()
         _malloc_trim()
-        log(f"      CSR disk flush #{len(_disk_csr_files)}: {col_idx:,} feats total, RAM freed")
+        log(f"      CSR disk flush #{len(_disk_csr_files)}: {col_idx:,} feats total, RAM freed (async)")
 
     def _flush_coo_to_csr():
         """Convert accumulated COO arrays to CSR, append to _csr_out, clear COO."""
@@ -1429,8 +1489,9 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
         nz_cols_all = cp.asnumpy(nz_cols_gpu)
         del nz_rows_gpu, nz_cols_gpu
 
-        crosses = cp.asnumpy(crosses_gpu)
         del crosses_gpu
+        cp.cuda.Stream.null.synchronize()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
         cp.get_default_memory_pool().free_all_blocks()
 
         if len(nz_rows_all) > 0:
@@ -1443,7 +1504,7 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                 nz = nz_rows_all[s:e]
                 _coo_names.append(all_names[b_start + c])
                 _coo_rows.append(nz)
-                _coo_data.append(crosses[nz, c].astype(np.float32))
+                _coo_data.append(np.ones(len(nz), dtype=np.float32))
                 _coo_col_local += 1
                 col_idx += 1
 
@@ -1459,6 +1520,10 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     _flush_coo_to_csr()
     if _csr_out:
         _flush_csr_to_disk()
+
+    # Wait for all async GPU NPZ writes to complete before returning
+    _gpu_writer.drain()
+    _gpu_writer.stop()
 
     del left_gpu, right_gpu
     cp.get_default_memory_pool().free_all_blocks()
@@ -1563,6 +1628,7 @@ def _process_cross_block(left_mat, right_mat, valid_pairs, all_names,
     _parallel_cross_multiply(left_cols, right_cols, crosses)       # Numba parallel prange
 
     nz_rows_all, nz_cols_all = np.nonzero(crosses)
+    del crosses  # free dense array early
 
     names = []
     rows_list = []
@@ -1580,7 +1646,7 @@ def _process_cross_block(left_mat, right_mat, valid_pairs, all_names,
             names.append(all_names[b_start + c])
             rows_list.append(nz)
             # col indices assigned later during merge to ensure correct global ordering
-            data_list.append(crosses[nz, c].astype(np.float32))
+            data_list.append(np.ones(len(nz), dtype=np.float32))
 
     return names, rows_list, data_list
 
@@ -1960,6 +2026,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     Returns base DataFrame (crosses are in sparse .npz file, not in df).
     """
+    global PARALLEL_CROSS_STEPS
     t0 = time.time()
     N = len(df)
     out_dir = output_dir or V2_DIR

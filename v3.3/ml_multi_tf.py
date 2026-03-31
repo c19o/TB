@@ -3084,6 +3084,26 @@ if __name__ == '__main__':
               os.replace(_feat_tmp, _feat_path)
               log(f"  Model saved: {_model_path} (accuracy: {final_acc:.3f})")
 
+              # --- lleaves compilation (optional, speeds up inference) ---
+              try:
+                  from lleaves_compiler import compile_model
+                  compile_model(_model_path)
+                  log(f"  lleaves compiled: {_model_path.replace('.json', '.lleaves')}")
+              except ImportError:
+                  pass  # lleaves not installed
+              except Exception as _e:
+                  log(f"  lleaves compilation skipped: {_e}")
+
+              # --- Inference pruner (optional, prunes model for deployment) ---
+              try:
+                  from inference_pruner import prune_model
+                  prune_model(_model_path, tf_name=tf_name, output_dir=DB_DIR)
+                  log(f"  Inference pruner: model pruned for deployment")
+              except ImportError:
+                  pass
+              except Exception as _e:
+                  log(f"  Inference pruner skipped: {_e}")
+
           # ============================================================
           # CALIBRATION PIPELINE (Platt + per-sample averaging + diagnostics)
           # ============================================================
