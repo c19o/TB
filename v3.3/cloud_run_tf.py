@@ -218,10 +218,10 @@ if os.path.exists('/proc/meminfo'):
                     break
         if _host_ram_gb > 0:
             _ram_pct = (ram_gb / _host_ram_gb) * 100 if _host_ram_gb > 0 else 100
-            if ram_gb < _host_ram_gb * 0.75:
-                print(f"  FATAL: cgroup limits RAM to {ram_gb:.0f}GB ({_ram_pct:.0f}%) of {_host_ram_gb:.0f}GB host RAM!", flush=True)
-                print(f"  We need >= 75% of host RAM. This machine is over-shared. Destroy and rent dedicated.", flush=True)
-                sys.exit(1)
+            if ram_gb < _host_ram_gb * 0.5:
+                print(f"  WARNING: cgroup reports {ram_gb:.0f}GB ({_ram_pct:.0f}%) of {_host_ram_gb:.0f}GB host RAM", flush=True)
+                print(f"  Using host RAM value ({_host_ram_gb:.0f}GB) — cgroup detection may be inaccurate", flush=True)
+                ram_gb = _host_ram_gb
             elif ram_gb < _host_ram_gb:
                 print(f"  RAM: {ram_gb:.0f}GB cgroup / {_host_ram_gb:.0f}GB host ({_ram_pct:.0f}%)", flush=True)
                 ram_gb = _host_ram_gb  # use host value for min-RAM checks

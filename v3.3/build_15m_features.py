@@ -147,7 +147,8 @@ print(f"  News: {len(news_df)}")
 conn = sqlite3.connect(f'{DB_DIR}/tweets.db')
 tweets_df = pd.read_sql_query("""
     SELECT created_at, ts_unix, user_handle, full_text, has_gold, has_red, has_green, dominant_colors,
-           gematria_simple, gematria_english, favorite_count, retweet_count, reply_count
+           gematria_simple, gematria_english, favorite_count, retweet_count, reply_count,
+           sentiment_bull, sentiment_bear
     FROM tweets ORDER BY created_at
 """, conn)
 conn.close()
@@ -193,6 +194,26 @@ funding_df = funding_df.dropna(subset=['date'])
 funding_df['date'] = pd.to_datetime(funding_df['date'])
 funding_daily = funding_df.groupby('date')['funding_rate'].mean().to_frame('avg_funding_rate')
 print(f"  Funding: {len(funding_daily)}")
+
+# Open Interest
+oi_daily = pd.DataFrame()
+oi_db_path = f'{DB_DIR}/open_interest.db'
+if os.path.exists(oi_db_path):
+    try:
+        conn = sqlite3.connect(oi_db_path)
+        oi_raw = pd.read_sql_query("SELECT timestamp, oi_contracts, oi_usd FROM open_interest ORDER BY timestamp", conn)
+        conn.close()
+        if len(oi_raw) > 0:
+            oi_raw['date'] = pd.to_datetime(oi_raw['timestamp'], errors='coerce').dt.normalize()
+            oi_raw = oi_raw.dropna(subset=['date'])
+            oi_raw['oi_usd'] = pd.to_numeric(oi_raw['oi_usd'], errors='coerce')
+            oi_raw['oi_contracts'] = pd.to_numeric(oi_raw['oi_contracts'], errors='coerce')
+            oi_daily = oi_raw.groupby('date').agg(oi_usd=('oi_usd', 'last'), oi_contracts=('oi_contracts', 'last'))
+            print(f"  Open Interest: {len(oi_daily)}")
+    except Exception as e:
+        print(f"  Open Interest load failed: {e}")
+else:
+    print(f"  open_interest.db not found at {oi_db_path}")
 
 # Sports
 print(f"{elapsed()} Loading sports data...")
@@ -325,6 +346,7 @@ astro_cache = {
     'fear_greed': fg_df,
     'google_trends': gtrends_df,
     'funding_daily': funding_daily,
+    'open_interest': oi_daily,
 }
 
 htf_data = {

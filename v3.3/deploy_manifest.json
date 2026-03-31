@@ -1,0 +1,453 @@
+{
+  "generated_at": "2026-03-31 05:50:58 UTC",
+  "generated_on": "DESKTOP-GG75I1X",
+  "python_version": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
+  "files": {
+    "api_bridge.py": {
+      "sha256": "6e593439824a782212c0076227178598d518817acf78a69de5a76f1c8d3964f3",
+      "size": 8004
+    },
+    "astrology_engine.py": {
+      "sha256": "0c5ac582b59a8ebb62827a8e5c1bcbafa32ff32046f6b7a9383605a35cfc3ca6",
+      "size": 59676
+    },
+    "atomic_io.py": {
+      "sha256": "bdbd7aaf05b2d5b70fa497555444b9e1b1bfb7e50ac1861fcf2e98a75ed73c89",
+      "size": 7335
+    },
+    "backfill_15m.py": {
+      "sha256": "6318cada67da74c2e3b0771f494060066c08293f21ca46752c8650463202b606",
+      "size": 2571
+    },
+    "backfill_multi_asset.py": {
+      "sha256": "b47bb54e044ef34ef680e624d9d0778ce6634e193c4eff9cad15569af4595132",
+      "size": 5636
+    },
+    "backfill_oi_funding.py": {
+      "sha256": "638410a47dcb54e693bf6faf1bdfa62ca5d98c78490fc2d70dd336137b9c1f42",
+      "size": 8195
+    },
+    "backfill_taker_volume.py": {
+      "sha256": "75f62a608daadf2a1872dc1e2b198cd2bfd4f85ec0c260503458e4ba471a427a",
+      "size": 6002
+    },
+    "backtest_validation.py": {
+      "sha256": "a3d4ba2510ecd367df70a52827cf588b8a57675edabc3c577779891a2e167a1e",
+      "size": 17044
+    },
+    "backtesting_audit.py": {
+      "sha256": "ef9a12e8160e838a25864683f7253ffdbd0449f16f7b7142c1501e3e97ed3029",
+      "size": 101523
+    },
+    "bench_trial.py": {
+      "sha256": "bd669fcc9feacac5fb7afc9cfe1bbcf4b288c296675ab8d195f407831155e50e",
+      "size": 3932
+    },
+    "bitget_api.py": {
+      "sha256": "ffea51cf150da5f0af777faa3bbfeac01d23fd5e2f958c8a8b9f9ac6a0654aff",
+      "size": 17322
+    },
+    "bitpack_utils.py": {
+      "sha256": "fb60993596bf9f5cd9bbf2021185d2cd309b773266ecaebf5b09f05e025e709c",
+      "size": 6121
+    },
+    "build_15m_features.py": {
+      "sha256": "3f97b2abbb59129aa1e095779553ae77b1d222d4f79ee42ee5c15af8cf84fa20",
+      "size": 18138
+    },
+    "build_1d_features.py": {
+      "sha256": "8334e5e0730df884777a720cdd60a8df05d1e77c7ad61721ee27f8945c5cc239",
+      "size": 17786
+    },
+    "build_1h_features.py": {
+      "sha256": "ad6d1b0915111d9ed7b907621fefc9b2766d6526773cb5b00002eaf38f152c99",
+      "size": 20231
+    },
+    "build_1w_features.py": {
+      "sha256": "f865efe8f7c0c73c6bc41f56769c7b353e4b7f469609c58ebb9138fac1326ae6",
+      "size": 18014
+    },
+    "build_4h_features.py": {
+      "sha256": "e1217e3d28f34310df1ace1813b2cb6e002e66b1d9cc19d890d4ed19b5055acf",
+      "size": 40761
+    },
+    "build_features_complete.py": {
+      "sha256": "b4380d3ba2dacb0f06f612f33b4cc746bc42acebbeb156a00e7d2ad427b25b8d",
+      "size": 17256
+    },
+    "build_features_v2.py": {
+      "sha256": "bed9e77b663f4e6a4631cf05d4d06db35366f3155130701726257f26bb5d6b51",
+      "size": 16967
+    },
+    "build_sports_features.py": {
+      "sha256": "6b8553a89d96ac5d305aaa502b2ca832574289f81619c4707afaa83fbca84491",
+      "size": 23709
+    },
+    "cloud_auto.py": {
+      "sha256": "a561e434c0bf2a45cc2f97bdf5cbdd8ab16bf2639951d3644a40216099f440b7",
+      "size": 48678
+    },
+    "cloud_run_optuna.py": {
+      "sha256": "d18295b833443360354d4769139204f2e8ec0c7ecd8c3a20eeed514018d85104",
+      "size": 3931
+    },
+    "cloud_run_tf.py": {
+      "sha256": "69bf1d5c3a0cda9976a8b32517411a8e85688ed98216e52bfad2f791a285c6a2",
+      "size": 45168
+    },
+    "cloud_runner.py": {
+      "sha256": "d00e858d7410fd696674f77d23602bbfc3e36eea8ac78a4286866ef2e9de5dad",
+      "size": 16429
+    },
+    "config.py": {
+      "sha256": "9726417f2372df1504511ddd97d1c73b100f500acbd3aafee0ae5daf52b11b78",
+      "size": 40809
+    },
+    "cost_sensitive_obj.py": {
+      "sha256": "a69f95d359c2fd2c1a7e0edd67b5730346e5998f53b6b60ca072be05db480052",
+      "size": 12994
+    },
+    "crypto_streamer.py": {
+      "sha256": "cff317b016c24ea7b7b377372654dba0e2e81ee6879157f545427ea49a91de89",
+      "size": 16216
+    },
+    "data_access.py": {
+      "sha256": "0e693a141a2a13f5e6ce44222411b094349083f7f2b78a6e96290d4efa6218e8",
+      "size": 34838
+    },
+    "data_access_v2.py": {
+      "sha256": "f7061623e2940334ab10010b8d546cc2cc7f918bcfca390da16e2a37f3cb7447",
+      "size": 23165
+    },
+    "deploy_manifest.py": {
+      "sha256": "2243ccbf894961d377d0151d7cae62fa369044a13bba3b6402dfeec486a68295",
+      "size": 3806
+    },
+    "deploy_verify.py": {
+      "sha256": "13e57958124a31dc5880364634cdb7c28e6375fe93e771887aab5e4cc8dfb431",
+      "size": 25744
+    },
+    "download_all_free_data.py": {
+      "sha256": "e3ccdd079e8f91f1bcf6abe392f40adae617daeb238570a5e06b4c57f2d02dec",
+      "size": 21797
+    },
+    "download_btc.py": {
+      "sha256": "9c4b3ba35f3ab60a839be8e55acf096f89445c06744750724c7c07396861370d",
+      "size": 5866
+    },
+    "download_funding_rates.py": {
+      "sha256": "c570340b4ae1f9a05fd9cde3135e83be14dfdfcea58cd024cf12389bb087c065",
+      "size": 11113
+    },
+    "download_intraday.py": {
+      "sha256": "50f0c1c24b8cd69b254c52ff10041229b45139a3b8ad228fe159640d6cc6bcbc",
+      "size": 7914
+    },
+    "download_multi_asset.py": {
+      "sha256": "b0e475cc51027557386f4e5cfd16c3f522e401cd0e5cab59b8f5125269bab1d4",
+      "size": 27621
+    },
+    "download_oi_history.py": {
+      "sha256": "f8512897c94783a90aa11ccca07fe72008a10aaa17b01ec0b5cf69585266b2b8",
+      "size": 4190
+    },
+    "efb_prebundler.py": {
+      "sha256": "cc870c0233ffc99719d77ed281c081c95a8bc3ac208e3ae7efb317ebe5b6cceb",
+      "size": 18770
+    },
+    "exhaustive_optimizer.py": {
+      "sha256": "d498eae1c4e423e18a6bc041fa1a8ea2778eb05f5ab69584e555ce105d1a1c19",
+      "size": 86380
+    },
+    "feature_classifier.py": {
+      "sha256": "e9b6316fcd53659d16d11c289d58ec90f2292126ad82ebaf28e43e18d532bbeb",
+      "size": 20323
+    },
+    "feature_importance_pipeline.py": {
+      "sha256": "de8f5b0dc10edb59bf57110f84ed1351663bf73b5c29849c4c8c1e29161f2644",
+      "size": 50132
+    },
+    "feature_library.py": {
+      "sha256": "20e3cab4356422c9a8510b978e83ac8aff63d783d05c94cc06cc242a9f418423",
+      "size": 346225
+    },
+    "gcp_feature_builder.py": {
+      "sha256": "e11b1dd8b05effbd7c1c4d64a946b7f0d2f622c939ae79ba01b08614bd5e9e99",
+      "size": 4437
+    },
+    "generate_feature_report.py": {
+      "sha256": "9bc3f2a7d2e13813bd9f055c9d33adb092ae8f319395eca0a2a085b971e1ba0f",
+      "size": 7786
+    },
+    "generate_report.py": {
+      "sha256": "81c9455b3e9e64b455d34fd51528d617dd39b7ccff143177b198ba1685d26ed9",
+      "size": 11134
+    },
+    "gpu_cross_builder.py": {
+      "sha256": "befa2e108932e293f960599389657362cb657358e3d570d44a5d6b729593f411",
+      "size": 14910
+    },
+    "hardware_detect.py": {
+      "sha256": "a2c89d424a74f2d0e36da4cc98f63eea5eff2c0a8ac615d036bfb53a4c79c7c7",
+      "size": 8705
+    },
+    "heartbeat_download.py": {
+      "sha256": "8ad57ad706bc499620fc459d87146c9483a26d7691b80dc4b055a63c337884c3",
+      "size": 23286
+    },
+    "inference_crosses.py": {
+      "sha256": "b557b5aa8c946a42361d15f528e38a7dc436a677dc45d90722359eb672e15c6a",
+      "size": 19057
+    },
+    "inference_pruner.py": {
+      "sha256": "d1787b4430e707cdc2d662be4fa4eaf03df49c96f4f76739c2cca0401acf0474",
+      "size": 9876
+    },
+    "knn_feature_engine.py": {
+      "sha256": "0086b5e94247409625d56786be3f5fe5a343f5651a34fad538522f75d9934d02",
+      "size": 21277
+    },
+    "leakage_check.py": {
+      "sha256": "17a0e0c6ac7df2317e8e641bd4ece4c6b610c079804ecf9a320464cd83f1a73d",
+      "size": 14196
+    },
+    "live_trader.py": {
+      "sha256": "db1be07d8687076dbbd84d55b7cc44ec18d468e8155444c596a4ff3ad5547d1b",
+      "size": 92507
+    },
+    "lleaves_compiler.py": {
+      "sha256": "b80d868f0d29faf3bcb6a899e4094551a8ad7b86f2a6b9040ebb4b386d2e9569",
+      "size": 6156
+    },
+    "llm_features.py": {
+      "sha256": "1c9d7711c79ba5f4458e554e141668bc1662d1e9bce9e43d4c8edc44a1f485a2",
+      "size": 37145
+    },
+    "lstm_precursor_model.py": {
+      "sha256": "6bd292487db26ceb213f613e0cf81a0ed92047d7905667dcb69d1337004323f1",
+      "size": 18336
+    },
+    "lstm_sequence_model.py": {
+      "sha256": "283d108ae121f8a36469a1203dd59469c72b70f502b86bdf0e0611b19c9337ac",
+      "size": 34454
+    },
+    "macro_streamer.py": {
+      "sha256": "18ab2ab9424e1e0640289345e861455041ff54d75441a059c1b9f4b188e65007",
+      "size": 11268
+    },
+    "memmap_merge.py": {
+      "sha256": "637ab5570e9a2d1c2ed648d16023b4bbf98b9814c0ae739e2046dd410fe00147",
+      "size": 9003
+    },
+    "meta_labeling.py": {
+      "sha256": "abb8dff1acfab72c3fe0183638fa7a1f467b64c6d81e802627ae0c0579f173a2",
+      "size": 12027
+    },
+    "mini_train.py": {
+      "sha256": "48c5a3fa93da03d349d90762aeab11a2631b0a886ada58ae8764cac808c23bf4",
+      "size": 15007
+    },
+    "ml_multi_tf.py": {
+      "sha256": "5d73eac28550ecf70429d6227093b1131c8d7b2ff10b71f2b71a4f90d84785fc",
+      "size": 179697
+    },
+    "multi_gpu_optuna.py": {
+      "sha256": "b22d6da798301791b23bc6c35d26b6942b82f8a521fe7351256d45e0bcbf42b0",
+      "size": 10916
+    },
+    "news_streamer.py": {
+      "sha256": "e1bd33bfdb5131ff4ee5d6607d49f30c17dca1d43b9548261e7649c6dd6a2917",
+      "size": 15890
+    },
+    "numba_cross_kernels.py": {
+      "sha256": "80741823ecbb22172732e121ca495432866f6436961461e0ce99a1a2f8dc58db",
+      "size": 11557
+    },
+    "patch_flush.py": {
+      "sha256": "00d772ce6049b35fb2f98415f5c384ce2c3e7076f844c2e8ad6f6a774996e297",
+      "size": 6645
+    },
+    "pipeline_orchestrator.py": {
+      "sha256": "f3a5cf8f2420d11bfb63a4a4259b1401037271af0514670724c87b4f6100151a",
+      "size": 31642
+    },
+    "portfolio_aggregator.py": {
+      "sha256": "4e1044088ed22b445c98793b350fb570fcc88bbb2de7ccd81fff10df3e6f6796",
+      "size": 19166
+    },
+    "pyfix.py": {
+      "sha256": "87ed1807bcc01441de406a34c9cf285088627c4acdb30d76340b4a13ee211c0c",
+      "size": 453
+    },
+    "run.py": {
+      "sha256": "fdbc7087d008fe8a81cb8735b49e9af0c075cef234da7f2f87473b4567099db9",
+      "size": 448
+    },
+    "run_cross.py": {
+      "sha256": "5ef338777cf9504f98dc5b86dc1c386adb296482e7922e21d1968809d8cbc4b4",
+      "size": 470
+    },
+    "run_cross_1d.py": {
+      "sha256": "8e4a0e92e2dda33067b33bd7dea761dce56b29c749fb710d4c7807db029329d5",
+      "size": 432
+    },
+    "run_fixed.py": {
+      "sha256": "22b753fad50953596feeabfc05248df9731327342450c70b479effe416d84c96",
+      "size": 771
+    },
+    "run_optimizer.py": {
+      "sha256": "d14aaf304851ea6a21acce8d5fe032d687d6c14e6c1b9efb4836a152b1965ab6",
+      "size": 8511
+    },
+    "run_optuna_local.py": {
+      "sha256": "c0048cb54ce4d55232c5967160450762357c0d71a2b7864c6cacbc4c1ea74fb3",
+      "size": 96596
+    },
+    "runpod_optimize.py": {
+      "sha256": "038b82b73955379b29847f89844aca89ba6fd970674ced51a64f38ed7b4eeb8c",
+      "size": 7949
+    },
+    "runpod_train.py": {
+      "sha256": "74f5d8c16960b03f657b3b2f8fc82d4960892dd0b25f96e275c8c3956d522c47",
+      "size": 32472
+    },
+    "runtime_checks.py": {
+      "sha256": "8f1b54b1214d53a952d8b0a29ff6202b223f81ab6788d7a0bf67cc6396af3d25",
+      "size": 21621
+    },
+    "scrape_tw.py": {
+      "sha256": "b2c3649a54b84166857e149f87615cc3340634665a9a04b53c0f02e450a78b2e",
+      "size": 5200
+    },
+    "smoke_test_pipeline.py": {
+      "sha256": "ee9a7f224018e70706726ed6d46d75bb3d34eaf3130f23d53ad627f85a58e2fd",
+      "size": 27643
+    },
+    "smoke_test_v3.py": {
+      "sha256": "d8267430f03be07a0b82fc5b568f85d1aa710e6d181a84ad4ab4cc875d8fae45",
+      "size": 25304
+    },
+    "space_weather_streamer.py": {
+      "sha256": "04e99df3666cb774eb7403b999405aabf0a249150da79af42ae4e6eee324f584",
+      "size": 17475
+    },
+    "sports_streamer.py": {
+      "sha256": "a2ff280de16cb60da3e46201ca0382d4d8cec5b28529cef2da563684fd57996f",
+      "size": 35615
+    },
+    "streamer_supervisor.py": {
+      "sha256": "28b979663cd76ad7a24a7a93ce0e3eed5677c9691085e32840232e2431d59bfc",
+      "size": 19706
+    },
+    "synthetic_pipeline_test.py": {
+      "sha256": "7cb51414e9523fc08af3c7ae1e4ffa915e1fbe3b125625a3d4e43efbeb0089cf",
+      "size": 14048
+    },
+    "test_cuda_lgbm.py": {
+      "sha256": "0648b94f4ba41ddba5b32a84206e9b5517a73e8bec6866d2c28b028b26f0d471",
+      "size": 12124
+    },
+    "test_cusparse_crossgen.py": {
+      "sha256": "f4eb66782e110cc17a35b59dfd1e88c6106e07150222fc7b1f44e0eae8ed59a1",
+      "size": 6068
+    },
+    "test_pipeline_plumbing.py": {
+      "sha256": "53def5912cf9ca5ae23e0ebc8371b95bc633c142a855311cbfcebad0480e9ffb",
+      "size": 31076
+    },
+    "test_sk.py": {
+      "sha256": "b22e3c6e31700eeca77508e75072a8befdaee80bd05d8c2e0a12c8bf1eec193b",
+      "size": 59
+    },
+    "trade_journal.py": {
+      "sha256": "4296000ad73a8c9dd7e1c7998e3517edc7c16ebb6f08812f7f8ef112132eb04a",
+      "size": 33367
+    },
+    "tweet_streamer.py": {
+      "sha256": "daa3655012b8a3b995960d89130ec6e6b39323175a2b9f181cb51e0caf33d475",
+      "size": 12544
+    },
+    "universal_astro.py": {
+      "sha256": "c92e977ca661265bed63c9256a33c67ab432378660e46a1a9f5ab4e2c026b6ac",
+      "size": 15868
+    },
+    "universal_gematria.py": {
+      "sha256": "b55d6d7c2039ec32bffb5ae8636561e3f3a7397cab762fdabb274a61eb355e09",
+      "size": 22738
+    },
+    "universal_numerology.py": {
+      "sha256": "ce0fc3a4dd627ab98604bf78e15c304e1cdf4c7a9cf3b80cfcadf7b47fb83808",
+      "size": 15189
+    },
+    "universal_sentiment.py": {
+      "sha256": "7f0ec3eabf9f4ff8c53a79078c851e82c593dabc11549b5c6619c803a2a9baf4",
+      "size": 13118
+    },
+    "v2_cloud_runner.py": {
+      "sha256": "e17c74de5e11c5ab94d76b411d0aeddcedcd53c076c257d8a510002a1e78a95b",
+      "size": 53957
+    },
+    "v2_cross_generator.py": {
+      "sha256": "29b3c8326f1d324db5ab89e7ab09af8e897499cdc748fbb2a6abe352f2dc7612",
+      "size": 122580
+    },
+    "v2_easy_streamers.py": {
+      "sha256": "0046f4a4899fbdf21e49688da3072b7472774d8708a25b0c24e8c5555bf714c7",
+      "size": 15584
+    },
+    "v2_feature_layers.py": {
+      "sha256": "6844fc44b1d6bfa9aab224d00704c7d332eeb31b5ae81dc24ce4831c5b493be7",
+      "size": 53596
+    },
+    "v2_lstm_trainer.py": {
+      "sha256": "15f4f47b3f80c7d31985dfbe96e5577b131a02c09ae700fedf63143b91353b1c",
+      "size": 30963
+    },
+    "v2_multi_asset_trainer.py": {
+      "sha256": "d9e1974635ca7c27bae56c78b469e301a12031992884c2b96f0a5da86c60b960",
+      "size": 40915
+    },
+    "validate.py": {
+      "sha256": "a7936cbbfaae1fadf655252ef2f169fdbdbd4eeca207e76068e0c9fa84e1f731",
+      "size": 69113
+    },
+    "vast_launch.py": {
+      "sha256": "7e7186bcb0eed058847886e11ccf88ce09eb349e376806cfb46d487f65254d64",
+      "size": 14285
+    },
+    "verify_gpu_features.py": {
+      "sha256": "69796598aa6a1fb0be17a02b91e4f1e34c8185a18a86b0163bfada2969f961d6",
+      "size": 15837
+    },
+    "verify_rebuild.py": {
+      "sha256": "344c7bd777eafb4320ee80ee61785e2b3cd452cd488946f169889b80f6bcf7b1",
+      "size": 6285
+    }
+  },
+  "critical_files": [
+    "config.py",
+    "feature_library.py",
+    "ml_multi_tf.py",
+    "run_optuna_local.py",
+    "cloud_run_tf.py",
+    "validate.py",
+    "runtime_checks.py",
+    "v2_cross_generator.py",
+    "multi_gpu_optuna.py",
+    "data_access.py",
+    "v2_feature_layers.py",
+    "meta_labeling.py",
+    "lstm_sequence_model.py",
+    "exhaustive_optimizer.py",
+    "memmap_merge.py",
+    "efb_prebundler.py",
+    "deploy_verify.py",
+    "test_pipeline_plumbing.py",
+    "backtest_validation.py",
+    "inference_crosses.py",
+    "live_trader.py",
+    "hardware_detect.py",
+    "bitpack_utils.py"
+  ],
+  "total_files": 105
+}

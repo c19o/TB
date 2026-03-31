@@ -851,6 +851,7 @@ def _multi_gpu_cross_worker(gpu_id, left_npy_path, right_npy_path,
     import cupyx.scipy.sparse as cusp
     cp.cuda.Device(0).use()  # always device 0 (remapped by CUDA_VISIBLE_DEVICES)
     cp.get_default_memory_pool().set_limit(size=28 * 1024**3)  # 28GB cap, leave ~3GB for CUDA context
+    cp.cuda.set_pinned_memory_allocator(None)  # use pageable memory, saves ~40-80GB host RAM across 8 workers
 
     def _log(msg):
         print(f"[{time.strftime('%H:%M:%S')}] [GPU-{gpu_id}] {msg}", flush=True)
@@ -1404,6 +1405,7 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
     # Without this, 1.38M features accumulate ~16GB+ of COO arrays before returning.
     _dev = 0 if os.environ.get('CUDA_VISIBLE_DEVICES') else gpu_id
     cp.cuda.Device(_dev).use()
+    cp.cuda.set_pinned_memory_allocator(None)  # use pageable memory, saves host RAM on single-GPU path
     left_gpu = cp.asarray(np.ascontiguousarray(left_mat))
     right_gpu = cp.asarray(np.ascontiguousarray(right_mat))
 

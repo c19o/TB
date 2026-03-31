@@ -311,6 +311,19 @@ class OfflineDataLoader:
                 daily = df.groupby('date')['funding_rate'].mean().to_frame('avg_funding_rate')
                 cache['funding_daily'] = daily
 
+        # Open Interest
+        conn = _connect('open_interest.db', self.db_dir)
+        if conn:
+            df = _safe_read_sql(conn, "SELECT timestamp, oi_contracts, oi_usd FROM open_interest ORDER BY timestamp")
+            conn.close()
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['timestamp'], errors='coerce').dt.normalize()
+                df = df.dropna(subset=['date'])
+                df['oi_usd'] = pd.to_numeric(df['oi_usd'], errors='coerce')
+                df['oi_contracts'] = pd.to_numeric(df['oi_contracts'], errors='coerce')
+                oi_daily = df.groupby('date').agg(oi_usd=('oi_usd', 'last'), oi_contracts=('oi_contracts', 'last'))
+                cache['open_interest'] = oi_daily
+
         return cache
 
 
