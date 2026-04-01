@@ -1,7 +1,24 @@
-# V3.3 Session Resume — 2026-03-31
+# V3.3 Session Resume — 2026-04-01
 
 ## INSTRUCTION TO NEW SESSION
 Read this file completely. Then read v3.3/CLAUDE.md. Resume from "Next Steps" below.
+
+---
+
+## Recent Feature Additions (2026-04-01)
+
+### SAV-15: Soft Labels + AFML + Optuna 30 Trials — COMPLETE
+- **Soft label smoothing**: y_soft = (1-epsilon)y + epsilon/2
+  - Default epsilon=0.10, 1w uses 0.15 (more smoothing for tiny dataset)
+  - LightGBM objective switches to 'cross_entropy' when smoothing enabled
+  - Reduces overconfidence, improves calibration
+- **AFML feature elimination**: Iterative SHAP-based pruning
+  - Protects esoteric prefixes (gematria, numerology, astrology, space weather)
+  - 80/20 train/val split for elimination before CPCV
+  - Optional via ENABLE_AFML_ELIMINATION config flag (defaults False)
+- **Optuna trials**: 1w bumped from 15 to 30 trials for more thorough search
+- **Status**: Implementation complete, validation passed (93/94)
+- **Pending**: Config variables (SAV-32, Chief Engineer)
 
 ---
 

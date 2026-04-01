@@ -1136,6 +1136,304 @@ def run_cpcv_gpu_parallel(splits, completed_folds, shared_dir, lgb_params,
     return all_results
 
 
+# ============================================================
+# SOFT LABEL SMOOTHING
+# ============================================================
+def smooth_binary_labels(y, epsilon, tf_name=None):
+    """
+    Apply label smoothing to binary labels for cross_entropy objective.
+
+    Formula: y_soft = (1-ε)y + ε/2
+    - Hard 0 → 0.05 (ε=0.10) or 0.075 (ε=0.15)
+    - Hard 1 → 0.95 (ε=0.10) or 0.925 (ε=0.15)
+
+    Args:
+        y: Binary labels {0, 1}
+        epsilon: Smoothing strength (0.10 default, 0.15 for weekly)
+        tf_name: Timeframe name (for logging)
+
+    Returns:
+        Smoothed labels in [0, 1]
+    """
+    y = np.asarray(y, dtype=np.float32)
+    y_smooth = (1.0 - epsilon) * y + 0.5 * epsilon
+
+    if tf_name:
+        log(f"  Label smoothing (ε={epsilon:.2f}): 0→{y_smooth[y==0][0]:.3f}, 1→{y_smooth[y==1][0]:.3f}")
+
+    return y_smooth
+
+
+# ============================================================
+# AFML FEATURE ELIMINATION WITH SHAP
+# ============================================================
+def compute_shap_importance(model, X_val, feature_names, max_samples=2000):
+    """
+    Compute mean |SHAP| per feature using TreeExplainer.
+
+    Args:
+        model: Trained LightGBM Booster
+        X_val: Validation features (sparse CSR or dense)
+        feature_names: List of feature name strings
+        max_samples: Max rows for SHAP computation (for speed at 2.9M features)
+
+    Returns:
+        pd.Series: mean |SHAP| per feature, sorted ascending
+    """
+    import shap
+
+    n_rows = X_val.shape[0]
+    if n_rows > max_samples:
+        rng = np.random.default_rng(42)
+        idx = rng.choice(n_rows, max_samples, replace=False)
+        X_sample = X_val[idx] if not sp_sparse.issparse(X_val) else X_val[idx, :]
+    else:
+        X_sample = X_val
+
+    explainer = shap.TreeExplainer(model)
+    # check_additivity=False is critical for EFB models
+    shap_values = explainer.shap_values(X_sample, check_additivity=False)
+
+    # Binary: shap_values is list [neg_class, pos_class]
+    if isinstance(shap_values, list):
+        shap_matrix = np.abs(shap_values[1])
+    else:
+        shap_matrix = np.abs(shap_values)
+
+    mean_shap = shap_matrix.mean(axis=0)
+    importance = pd.Series(mean_shap, index=feature_names, name='mean_abs_shap')
+    return importance.sort_values(ascending=True)
+
+
+def is_protected_feature(feature_name):
+    """Check if feature starts with any protected prefix from config."""
+    from config import PROTECTED_FEATURE_PREFIXES
+    return any(feature_name.startswith(p) for p in PROTECTED_FEATURE_PREFIXES)
+
+
+def afml_eliminate_round(importance, feature_names, elimination_fraction=0.05,
+                          min_importance_threshold=1e-7):
+    """
+    Single AFML elimination round: drop lowest-importance unprotected features.
+
+    Args:
+        importance: pd.Series of mean |SHAP| per feature
+        feature_names: Full list of current feature names
+        elimination_fraction: Fraction of unprotected features to drop (0.05 = 5%)
+        min_importance_threshold: Only drop features below this SHAP threshold
+
+    Returns:
+        kept_features: List of surviving features
+        dropped_features: List of eliminated features
+    """
+    from config import PROTECTED_FEATURE_PREFIXES
+
+    protected_set = {f for f in feature_names if is_protected_feature(f)}
+    unprotected = importance[~importance.index.isin(protected_set)]
+
+    n_to_drop = max(1, int(len(unprotected) * elimination_fraction))
+
+    # Candidates: unprotected AND below threshold
+    candidates = unprotected[unprotected <= min_importance_threshold]
+
+    if len(candidates) < n_to_drop:
+        candidates = unprotected.nsmallest(n_to_drop)
+
+    dropped = set(candidates.index[:n_to_drop])
+    kept_features = [f for f in feature_names if f not in dropped]
+    dropped_features = list(dropped)
+
+    return kept_features, dropped_features
+
+
+def afml_shap_feature_elimination(X_train, y_train, X_val, y_val,
+                                   feature_names, lgb_params,
+                                   num_boost_round=500,
+                                   early_stopping_rounds=50,
+                                   max_rounds=25,
+                                   elimination_fraction=0.10,
+                                   min_importance_threshold=1e-7,
+                                   performance_tolerance=0.005,
+                                   max_shap_samples=2000,
+                                   verbose=True):
+    """
+    AFML recursive SHAP feature elimination with protected prefix support.
+
+    Iteratively:
+    1. Train model
+    2. Compute SHAP importance
+    3. Eliminate lowest-importance unprotected features
+    4. Retrain and validate performance
+    5. Stop if performance degrades beyond tolerance
+
+    Args:
+        X_train, y_train: Training data (sparse CSR or dense)
+        X_val, y_val: Validation data
+        feature_names: List of feature name strings
+        lgb_params: LightGBM parameters dict
+        num_boost_round: Max boosting rounds per trial
+        early_stopping_rounds: Early stopping patience
+        max_rounds: Max elimination rounds
+        elimination_fraction: Fraction to drop per round (0.10 = 10%)
+        min_importance_threshold: Only drop features below this SHAP value
+        performance_tolerance: Max allowed log-loss increase (0.005 = 0.5%)
+        max_shap_samples: Max validation rows for SHAP computation
+        verbose: Print progress
+
+    Returns:
+        surviving_features: Final feature list after elimination
+        eliminated_features: All dropped features across rounds
+        history_df: Per-round metrics DataFrame
+    """
+    from sklearn.metrics import log_loss
+
+    current_features = list(feature_names)
+    all_eliminated = []
+    history = []
+
+    n_protected = sum(is_protected_feature(f) for f in current_features)
+    n_total = len(current_features)
+
+    if verbose:
+        log(f"\n{elapsed()} Starting AFML SHAP elimination:")
+        log(f"  Total features:     {n_total:,}")
+        log(f"  Protected features: {n_protected:,}")
+        log(f"  Unprotected:        {n_total - n_protected:,}")
+        log(f"  Max rounds:         {max_rounds}")
+
+    # Helper to subset columns (sparse-safe)
+    def subset_cols(X, keep_features):
+        idx = [feature_names.index(f) for f in keep_features]
+        if sp_sparse.issparse(X):
+            return X[:, idx]
+        return X[:, idx]
+
+    # Baseline model on full feature set
+    dtrain = lgb.Dataset(
+        subset_cols(X_train, current_features),
+        label=y_train,
+        feature_name=current_features,
+        free_raw_data=False
+    )
+    dval = lgb.Dataset(
+        subset_cols(X_val, current_features),
+        label=y_val,
+        reference=dtrain
+    )
+
+    baseline_model = lgb.train(
+        lgb_params,
+        dtrain,
+        num_boost_round=num_boost_round,
+        valid_sets=[dval],
+        callbacks=[
+            lgb.early_stopping(early_stopping_rounds, verbose=False),
+            lgb.log_evaluation(period=-1)
+        ]
+    )
+
+    preds = baseline_model.predict(subset_cols(X_val, current_features))
+    baseline_score = log_loss(y_val, preds)
+
+    if verbose:
+        log(f"  Baseline log-loss: {baseline_score:.6f}")
+
+    best_score = baseline_score
+    best_features = list(current_features)
+
+    # Elimination loop
+    for round_num in range(1, max_rounds + 1):
+        importance = compute_shap_importance(
+            baseline_model,
+            subset_cols(X_val, current_features),
+            current_features,
+            max_samples=max_shap_samples
+        )
+
+        kept_features, dropped = afml_eliminate_round(
+            importance,
+            current_features,
+            elimination_fraction=elimination_fraction,
+            min_importance_threshold=min_importance_threshold
+        )
+
+        if not dropped:
+            if verbose:
+                log(f"  Round {round_num}: No features to drop. Stopping.")
+            break
+
+        # Retrain on kept features
+        X_train_sub = subset_cols(X_train, kept_features)
+        X_val_sub = subset_cols(X_val, kept_features)
+
+        dtrain_sub = lgb.Dataset(
+            X_train_sub, label=y_train,
+            feature_name=kept_features, free_raw_data=False
+        )
+        dval_sub = lgb.Dataset(X_val_sub, label=y_val, reference=dtrain_sub)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            model_sub = lgb.train(
+                lgb_params,
+                dtrain_sub,
+                num_boost_round=num_boost_round,
+                valid_sets=[dval_sub],
+                callbacks=[
+                    lgb.early_stopping(early_stopping_rounds, verbose=False),
+                    lgb.log_evaluation(period=-1)
+                ]
+            )
+
+        preds = model_sub.predict(X_val_sub)
+        score = log_loss(y_val, preds)
+        degradation = score - baseline_score
+
+        round_info = {
+            'round': round_num,
+            'n_features_before': len(current_features),
+            'n_dropped': len(dropped),
+            'n_features_after': len(kept_features),
+            'score': score,
+            'degradation_vs_baseline': degradation
+        }
+        history.append(round_info)
+
+        if verbose:
+            log(f"  Round {round_num:02d} | "
+                f"Features: {len(current_features):>8,} → {len(kept_features):>8,} "
+                f"(dropped {len(dropped):,}) | "
+                f"Score: {score:.6f} | Δ: {degradation:+.6f}")
+
+        # Stopping criterion
+        if degradation > performance_tolerance:
+            if verbose:
+                log(f"  ⚠ Performance degraded by {degradation:.4f} "
+                    f"(tolerance: {performance_tolerance}). Reverting to previous feature set.")
+            break
+
+        # Accept this round
+        all_eliminated.extend(dropped)
+        current_features = kept_features
+        baseline_model = model_sub
+        baseline_score = score
+
+        if score < best_score:
+            best_score = score
+            best_features = list(current_features)
+
+    history_df = pd.DataFrame(history)
+
+    if verbose:
+        log(f"\n{elapsed()} AFML elimination complete:")
+        log(f"  Final feature count:  {len(current_features):,}")
+        log(f"  Total dropped: {len(all_eliminated):,}")
+        log(f"  Protected retained: "
+            f"{sum(is_protected_feature(f) for f in current_features):,}")
+
+    return current_features, all_eliminated, history_df
+
+
 if __name__ == '__main__':
   # ============================================================
   # LOAD DAILY DATA FOR HMM (will re-fit per window)
@@ -1394,6 +1692,29 @@ if __name__ == '__main__':
               n_down = int((y_3class == 0).sum())
               n_dropped = int(_flat_mask.sum())
               log(f"  BINARY MODE: {n_up} UP + {n_down} DOWN = {n_up+n_down} rows (dropped {n_dropped} FLAT)")
+
+          # ── SOFT LABEL SMOOTHING (binary mode only) ──
+          # NOTE: Requires config.py variables (Chief Engineer to add):
+          #   LABEL_SMOOTHING_EPSILON = 0.10
+          #   LABEL_SMOOTHING_TF_OVERRIDE = {'1w': 0.15}
+          try:
+              from config import LABEL_SMOOTHING_EPSILON, LABEL_SMOOTHING_TF_OVERRIDE
+          except ImportError:
+              LABEL_SMOOTHING_EPSILON = 0.10  # default
+              LABEL_SMOOTHING_TF_OVERRIDE = {'1w': 0.15}  # default
+
+          _use_label_smoothing = False
+          if _BINARY_MODE:
+              _epsilon = LABEL_SMOOTHING_TF_OVERRIDE.get(tf_name, LABEL_SMOOTHING_EPSILON)
+              if _epsilon > 0:
+                  _use_label_smoothing = True
+                  # Only smooth valid binary labels (not NaN)
+                  _valid_binary_mask = ~np.isnan(y_3class)
+                  y_3class[_valid_binary_mask] = smooth_binary_labels(
+                      y_3class[_valid_binary_mask],
+                      epsilon=_epsilon,
+                      tf_name=tf_name
+                  )
 
           # Also keep old return_col for backward compat logging
           return_col = cfg['return_col']
@@ -1730,10 +2051,16 @@ if __name__ == '__main__':
               _base_lgb_params['force_col_wise'] = True
           # ── BINARY MODE: override objective ──
           if _BINARY_MODE:
-              _base_lgb_params['objective'] = 'binary'
+              # Use cross_entropy for soft labels (accepts [0,1]), binary for hard labels ({0,1})
+              if _use_label_smoothing:
+                  _base_lgb_params['objective'] = 'cross_entropy'
+                  _base_lgb_params['metric'] = ['cross_entropy']
+                  log(f"  BINARY MODE + SOFT LABELS: objective=cross_entropy (ε={_epsilon:.2f})")
+              else:
+                  _base_lgb_params['objective'] = 'binary'
+                  _base_lgb_params['metric'] = 'binary_logloss'
               _base_lgb_params.pop('num_class', None)
               _base_lgb_params['learning_rate'] = 0.3  # higher for binary
-              _base_lgb_params['metric'] = 'binary_logloss'
               log(f"  BINARY MODE ({tf_name}): objective=binary, LR=0.3")
 
           # Cap num_threads for small datasets (LightGBM docs: >64 threads on <10K rows = poor scaling)
@@ -1810,6 +2137,66 @@ if __name__ == '__main__':
           _tf_es_patience = _CFG_TF_ES.get(tf_name)
           if _tf_es_patience:
               log(f"  ES patience override: {_tf_es_patience} (per-TF config)")
+
+          # ── AFML FEATURE ELIMINATION (OPTIONAL) ──
+          try:
+              from config import ENABLE_AFML_ELIMINATION, AFML_ELIMINATION_PARAMS
+          except ImportError:
+              ENABLE_AFML_ELIMINATION = False
+              AFML_ELIMINATION_PARAMS = {}
+
+          if ENABLE_AFML_ELIMINATION:
+              log(f"\n{'─'*70}")
+              log(f"AFML FEATURE ELIMINATION — Iterative SHAP-based pruning")
+              log(f"{'─'*70}")
+              log(f"  Initial features: {len(feature_cols):,}")
+
+              # Simple 80/20 train/val split for elimination (stratified on labels)
+              from sklearn.model_selection import train_test_split
+              _valid_idx = ~np.isnan(y_3class)
+              _X_elim = X_all[_valid_idx]
+              _y_elim = y_3class[_valid_idx]
+
+              _X_train_elim, _X_val_elim, _y_train_elim, _y_val_elim = train_test_split(
+                  _X_elim, _y_elim,
+                  test_size=0.2,
+                  stratify=_y_elim if _BINARY_MODE else None,
+                  random_state=42
+              )
+
+              log(f"  Elimination split: {_X_train_elim.shape[0]} train, {_X_val_elim.shape[0]} val")
+
+              # Run AFML elimination with Optuna-tuned hyperparameters
+              _elim_params = AFML_ELIMINATION_PARAMS.copy()
+              _surviving_features = afml_shap_feature_elimination(
+                  X_train=_X_train_elim,
+                  y_train=_y_train_elim,
+                  X_val=_X_val_elim,
+                  y_val=_y_val_elim,
+                  feature_names=feature_cols,
+                  lgb_params=_base_lgb_params,
+                  **_elim_params
+              )
+
+              # Update feature_cols with surviving features
+              _n_original = len(feature_cols)
+              feature_cols = _surviving_features
+              _n_eliminated = _n_original - len(feature_cols)
+
+              log(f"\n  AFML Elimination complete:")
+              log(f"    Original: {_n_original:,} features")
+              log(f"    Eliminated: {_n_eliminated:,} features ({100*_n_eliminated/_n_original:.1f}%)")
+              log(f"    Surviving: {len(feature_cols):,} features")
+
+              # Rebuild X_all with only surviving features
+              _surviving_indices = [i for i, f in enumerate(_all_feature_names) if f in set(feature_cols)]
+              if _X_all_is_sparse:
+                  X_all = X_all[:, _surviving_indices]
+              else:
+                  X_all = X_all[:, _surviving_indices]
+
+              log(f"  X_all shape after elimination: {X_all.shape}")
+              log(f"{'─'*70}\n")
 
           # Default: final feature cols = feature_cols (parallel path keeps HMM in X_all)
           # Sequential sparse path overrides this after stripping HMM into overlay
@@ -3034,9 +3421,14 @@ if __name__ == '__main__':
 
           # Propagate binary mode from CPCV params to final model
           if _BINARY_MODE:
-              final_params['objective'] = 'binary'
+              # Match CPCV objective (cross_entropy for soft labels, binary for hard)
+              if _use_label_smoothing:
+                  final_params['objective'] = 'cross_entropy'
+                  final_params['metric'] = ['cross_entropy']
+              else:
+                  final_params['objective'] = 'binary'
+                  final_params['metric'] = 'binary_logloss'
               final_params.pop('num_class', None)
-              final_params['metric'] = 'binary_logloss'
 
           # Split into 85% train + 15% val for early stopping
           n_final = X_final_all.shape[0]
