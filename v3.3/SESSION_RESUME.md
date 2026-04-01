@@ -82,6 +82,7 @@ Non-blocking resolved items:
 9. Follow-up `smoke_test_pipeline.py --tf 1w` passed 10/10.
 10. Paperclip SAV-38 heartbeat sync complete: KB gap download list remains current (4 papers), no new `kb_gap` deltas; task moved to BLOCKED pending user PDF download into Orgonite `drop_here/` and ingest via SAV-9.
 11. SAV-38 KB-first compliance probe (retry-after-skill-sync) completed via KB-only path: three Orgonite queries returned sufficient results, `KB_QUERY` and `KB_SOURCE` were logged to ops_kb, and tracker issue returned to TODO for ongoing sweeps. Probe bug logged: hyphenated query text can trigger SQLite `no such column` in `kb.py smart`.
+12. Documentation Lead DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL due cuDF unavailable on CUDA13 path when `ALLOW_CPU` is not set.
 
 ---
 
