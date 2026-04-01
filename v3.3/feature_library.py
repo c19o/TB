@@ -2924,7 +2924,8 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
             # Engagement per tweet (for influence weighting)
             for _ec in ['favorite_count', 'retweet_count', 'reply_count']:
                 if _ec in tw.columns:
-                    tw[_ec] = pd.to_numeric(tw[_ec], errors='coerce').fillna(0)
+                    tw[_ec] = pd.to_numeric(tw[_ec], errors='coerce')
+                    tw[_ec] = tw[_ec].where(tw[_ec].notna(), 0)  # engagement: missing = 0 (no engagement)
             tw['_engagement'] = (tw.get('retweet_count', 0) + tw.get('favorite_count', 0)).clip(lower=1)
             tw['_influence_bull'] = tw['tweet_is_bull'].astype(float) * tw['_engagement']
             tw['_influence_bear'] = tw['tweet_is_bear'].astype(float) * tw['_engagement']
@@ -3094,7 +3095,7 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                                        ('chal', 'headline_gem_chal'), ('alb', 'headline_gem_alb')]:
                 _gem_vals = nw[_gem_col].values
                 _gem_mask = pd.notna(_gem_vals)
-                _gem_safe = np.where(_gem_mask, np.nan_to_num(_gem_vals, nan=0), 0).astype(np.int64)
+                _gem_safe = np.where(_gem_mask, _gem_vals, 0).astype(np.int64)  # NaN→0 only for int cast; NaN restored on line below
                 _gem_dr = digital_root_vec(_gem_safe)
                 nw[f'headline_gem_dr_{_gem_sfx}'] = np.where(_gem_mask, _gem_dr, np.nan)
 
@@ -3268,7 +3269,7 @@ def compute_esoteric_features(df: pd.DataFrame, tweets_df: pd.DataFrame,
                     if dr_col not in gm.columns:
                         _sc_vals = gm[sc_col].values
                         _sc_notna = pd.notna(_sc_vals)
-                        _sc_int = np.where(_sc_notna & (_sc_vals > 0), np.nan_to_num(_sc_vals, nan=0).astype(np.int64), 0)
+                        _sc_int = np.where(_sc_notna & (_sc_vals > 0), _sc_vals, 0).astype(np.int64)  # NaN→0 only for int cast; NaN restored below
                         _sc_dr = np.where(_sc_int > 0, digital_root_vec(_sc_int), 0)
                         gm[dr_col] = np.where(_sc_notna, _sc_dr, np.nan)
                     else:
