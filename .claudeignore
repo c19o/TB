@@ -1,0 +1,56 @@
+# Claude Code ignore — reduce token usage by skipping non-code files
+
+# Data files (large, binary)
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.bin
+*.pt
+*.pth
+*.arrow
+*.feather
+
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+dist/
+build/
+*.egg-info/
+
+# Artifact directories
+v3.3/1w_cloud_artifacts*/
+v3.3/OPTIMIZATION_REPORTS/
+news_data/
+ops_kb/db/
+
+# Large JSON data
+heartmath_power_data.json
+portfolio_backtest_results.json
+fi_pipeline_*.json
+kp_*.json
+solar_*.json
+geomag_storms.json
+dst_index.json
+
+# Log files
+*.log
+build_15m_log.txt
+
+# HTML scrapes
+*.html
+
+# Lock files
+package-lock.json
+
+# Credentials
+twitter_cookies.json
+.env

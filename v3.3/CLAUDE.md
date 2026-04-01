@@ -134,6 +134,16 @@ After ANY fix, BEFORE moving to next item:
 - Check first 30s of log for "WARNING: DB missing" -> STOP if any
 - CHECK ALL CONFIG PATHS IN FIRST 10 LOG LINES (DB_DIR, V30_DATA_DIR, etc.)
 
+## 7. ANTI-LAZINESS OVERRIDES
+
+- FORCED VERIFICATION: A file write succeeding does NOT mean the code works. After EVERY file modification, run `python validate.py` before reporting success. NEVER say "Done" without validation proof.
+- CONTEXT DECAY: After 10+ messages, RE-READ any file before editing it. Your memory of file contents may be stale from compaction. Edit against stale state = silent corruption.
+- FILE READ BUDGET: Files >500 lines MUST be read in chunks with offset/limit. Never assume a single read captured the full file.
+- TOOL RESULT TRUNCATION: If any search returns suspiciously few results, re-run with narrower scope. Grep results >50K chars get silently truncated to a preview.
+- RENAME SAFETY: When renaming any function/variable, search separately for: direct calls, type references, string literals, dynamic imports, re-exports, test mocks. A single grep WILL miss some.
+- NO "SIMPLEST APPROACH" ON ARCHITECTURE: If architecture is flawed, state is duplicated, or patterns are inconsistent — propose and implement structural fixes. Ask: "What would a senior perfectionist reject in code review?" Fix it.
+- PHASED EXECUTION: Multi-file refactors happen in explicit phases (≤5 files per phase). Complete phase → verify → wait for approval → next phase.
+
 ## Codebase Intelligence (Socraticode)
 
 - `codebase_search` — Semantic search across source files

@@ -1,0 +1,40 @@
+# Savage22 V3.3 — File Ownership
+# Each file has ONE owner. Changes by non-owners require owner approval.
+# Format: <pattern> <owner>
+
+# Chief Engineer (architecture, config)
+v3.3/config.py                    @chief-engineer
+v3.3/CLAUDE.md                    @chief-engineer
+
+# ML Pipeline Engineer (training, optimization)
+v3.3/ml_multi_tf.py               @ml-pipeline-engineer
+v3.3/run_optuna_local.py          @ml-pipeline-engineer
+v3.3/backtest_validation.py       @ml-pipeline-engineer
+v3.3/portfolio_aggregator.py      @ml-pipeline-engineer
+
+# Matrix Thesis Scientist (features, signals)
+v3.3/feature_library.py           @matrix-thesis-scientist
+
+# GPU/RAM Specialist (sparse, CUDA, memory)
+v3.3/v2_cross_generator.py        @gpu-ram-specialist
+v3.3/cross_feature_generator_v4.py @gpu-ram-specialist
+v3.3/gpu_histogram_fork/          @gpu-ram-specialist
+
+# Daemon Bug Engineer (GPU daemon)
+v3.3/gpu_daemon.py                @daemon-bug-engineer
+
+# DevOps (cloud, deploy, notifications)
+v3.3/cloud_run_tf.py              @devops
+v3.3/deploy_manifest.py           @devops
+v3.3/discord_gate.py              @devops
+v3.3/discord_ceo_bot.py           @devops
+
+# QA Lead (validation, testing)
+v3.3/validate.py                  @qa-lead
+v3.3/smoke_test_pipeline.py       @qa-lead
+v3.3/runtime_checks.py            @qa-lead
+
+# Documentation Lead (session state, memory)
+v3.3/SESSION_RESUME.md            @documentation-lead
+v3.3/ETA_CHART.md                 @documentation-lead
+v3.3/ops_kb.py                    @documentation-lead
