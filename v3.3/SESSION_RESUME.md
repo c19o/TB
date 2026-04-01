@@ -13,7 +13,7 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 - Training: PASS (all steps)
 - Metrics: CPCV AUC 57.5%, model AUC 79.3%
 - Artifacts: `v3.3/1w_cloud_artifacts_v3/`
-- Latest smoke test: default path still fails without `ALLOW_CPU=1` on local CUDA13+ due cuDF gate; latest gated run passed 10/10 (`smoke_test_1w.json`, total_time=6.5s).
+- Latest smoke test: default path still fails without `ALLOW_CPU=1` on local CUDA13+ due cuDF gate; latest gated run passed 10/10 (`smoke_test_1w.json`, total_time=5.4s).
 
 ### 1d
 - Status: BLOCKED (partial progress)
@@ -96,6 +96,9 @@ Non-blocking resolved items:
 21. GPU/RAM safety defaults enforced in `v2_cross_generator.py`: `OMP_NUM_THREADS` default set to 4 and `RIGHT_CHUNK` default fixed at 500 (env override retained) to prevent RAM-driven oversized chunks and non-1w OOM risk.
 22. New smoke artifacts observed after SAV-43/GPU-RAM updates: `smoke_test_1w.json` PASS (`total_time=6.5s`) and `smoke_test_15m.json` PASS (`total_time=8.9s`), both aligned with `ALLOW_CPU=1` fallback context on local CUDA13 environment.
 23. Documentation Lead DoD rerun after SAV-43/GPU-RAM doc sync: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL again on CUDA13 cuDF gate without `ALLOW_CPU=1`.
+24. `gpu_daemon.py` CUDA sparse-and-batch path patched for NNZ safety (ops_kb ID 64): CSC `indptr` now preserved as int64 end-to-end (`cp.int64`, kernel pointer/loop variables migrated to `long long`) to avoid >2^31 overflow risk.
+25. New `smoke_test_1w.json` artifact after daemon int64 patch: PASS 10/10 (`total_time=5.4s`) with `ALLOW_CPU=1` fallback context on local CUDA13 environment.
+26. Documentation Lead DoD rerun after daemon-int64 documentation sync: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL again on default CUDA13 cuDF gate without `ALLOW_CPU=1`.
 
 ---
 

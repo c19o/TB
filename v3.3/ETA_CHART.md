@@ -50,6 +50,9 @@ Notes:
 | 2026-04-01 | 1w | smoke test artifact refresh (`smoke_test_1w.json`) | ~2-5m | pass (10/10, 6.5s) | New artifact timestamp 12:12 local; aligns with ALLOW_CPU fallback context on CUDA13 local env |
 | 2026-04-01 | 15m | smoke test artifact refresh (`smoke_test_15m.json`) | ~2-5m | pass (10/10, 8.9s) | Artifact timestamp 12:10 local; PASS with ALLOW_CPU fallback context |
 | 2026-04-01 | 1w | smoke test pipeline (post-SAV-43 doc-sync DoD rerun) | ~2-5m | fail | Same CUDA13 cuDF gate on default path; requires `ALLOW_CPU=1` or cuDF install |
+| 2026-04-01 | all | pipeline code change (gpu_daemon int64 CSC safety) | n/a | complete | `gpu_daemon.py` sparse-and-batch path now keeps CSC `indptr` int64 end-to-end for NNZ > 2^31 safety |
+| 2026-04-01 | 1w | smoke test artifact refresh (`smoke_test_1w.json`) | ~2-5m | pass (10/10, 5.4s) | New artifact timestamp 12:18 local; PASS with ALLOW_CPU fallback context |
+| 2026-04-01 | 1w | smoke test pipeline (post-daemon-int64 doc-sync DoD rerun) | ~2-5m | fail | Same default-path CUDA13 cuDF gate; requires `ALLOW_CPU=1` or cuDF install |
 
 ---
 
