@@ -80,6 +80,7 @@ Non-blocking resolved items:
 7. Documentation Lead DoD checks executed: `import ops_kb` PASS, `validate.py` PASS (96/96), `smoke_test_pipeline.py --tf 1w` FAIL due cuDF/`ALLOW_CPU` environment requirement.
 8. SAV-8 parity fix landed in `feature_library.py`: added `px_pc213_x_rsi_os` and `px_pc213_x_macd_high`.
 9. Follow-up `smoke_test_pipeline.py --tf 1w` passed 10/10.
+10. Paperclip SAV-38 heartbeat sync complete: KB gap download list remains current (4 papers), no new `kb_gap` deltas; task moved to BLOCKED pending user PDF download into Orgonite `drop_here/` and ingest via SAV-9.
 
 ---
 
