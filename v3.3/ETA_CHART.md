@@ -35,8 +35,9 @@ Notes:
 | Date | TF | Step | ETA | Actual | Notes |
 |------|----|------|-----|--------|-------|
 | 2026-03-28 | 1w | Full | ~6h | ~6h | All steps PASS. CPCV AUC 57.5% |
-| 2026-04-01 | all | validate + convention gate | ~30s | pass | validate.py 95/95 PASS, convention gate ALL PASS |
+| 2026-04-01 | all | validate + convention gate | ~30s | pass | validate.py 96/96 PASS (2 warnings), convention gate ALL PASS |
 | 2026-04-01 | 1d | Step 2 cross-gen V4 | ~45m | partial | First two cross steps run; step 3+ blocked by remaining cross-supervisor bugs |
+| 2026-04-01 | 1w | smoke test pipeline | ~2-5m | fail | Feature build failed on cuDF import; requires cuDF install or `ALLOW_CPU=1` |
 
 ---
 
