@@ -372,7 +372,7 @@ def train_gpu(X_train, y_train, X_test, y_test, num_rounds=200):
         'num_threads': 0,
         'verbosity': 1,
         'seed': 42,
-        'histogram_pool_size': 512,
+        'histogram_pool_size': 1024,
     }
 
     log('=' * 60)

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-31 05:50:58 UTC",
+  "generated_at": "2026-03-31 23:02:42 UTC",
   "generated_on": "DESKTOP-GG75I1X",
   "python_version": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
   "files": {
@@ -40,8 +40,8 @@
       "size": 101523
     },
     "bench_trial.py": {
-      "sha256": "bd669fcc9feacac5fb7afc9cfe1bbcf4b288c296675ab8d195f407831155e50e",
-      "size": 3932
+      "sha256": "0e64a1c2d1ed45399d5b6fcaf23a3f07e9ba7c0265446da957e1f4a5b4579324",
+      "size": 3933
     },
     "bitget_api.py": {
       "sha256": "ffea51cf150da5f0af777faa3bbfeac01d23fd5e2f958c8a8b9f9ac6a0654aff",
@@ -92,20 +92,24 @@
       "size": 3931
     },
     "cloud_run_tf.py": {
-      "sha256": "69bf1d5c3a0cda9976a8b32517411a8e85688ed98216e52bfad2f791a285c6a2",
-      "size": 45168
+      "sha256": "3addc6a90288e0a1fdc6ef218cf242faa4ae531850a115276cb344cd739559de",
+      "size": 46329
     },
     "cloud_runner.py": {
       "sha256": "d00e858d7410fd696674f77d23602bbfc3e36eea8ac78a4286866ef2e9de5dad",
       "size": 16429
     },
     "config.py": {
-      "sha256": "9726417f2372df1504511ddd97d1c73b100f500acbd3aafee0ae5daf52b11b78",
-      "size": 40809
+      "sha256": "45101e79ded00acf3de19c39b1449d46027be94047dbf7646e9de60bb2b47b9f",
+      "size": 41164
     },
     "cost_sensitive_obj.py": {
       "sha256": "a69f95d359c2fd2c1a7e0edd67b5730346e5998f53b6b60ca072be05db480052",
       "size": 12994
+    },
+    "cross_supervisor.py": {
+      "sha256": "56a2996fc3add8af0d4f2132b24e65aab7f31961a5dad43cba679611d79c7772",
+      "size": 37945
     },
     "crypto_streamer.py": {
       "sha256": "cff317b016c24ea7b7b377372654dba0e2e81ee6879157f545427ea49a91de89",
@@ -168,8 +172,8 @@
       "size": 50132
     },
     "feature_library.py": {
-      "sha256": "20e3cab4356422c9a8510b978e83ac8aff63d783d05c94cc06cc242a9f418423",
-      "size": 346225
+      "sha256": "a5081f3ff05a4a04fbb4b0efe0f1c2c9b8a94e667d204e1f56b90494aa39dd06",
+      "size": 349023
     },
     "gcp_feature_builder.py": {
       "sha256": "e11b1dd8b05effbd7c1c4d64a946b7f0d2f622c939ae79ba01b08614bd5e9e99",
@@ -186,6 +190,14 @@
     "gpu_cross_builder.py": {
       "sha256": "befa2e108932e293f960599389657362cb657358e3d570d44a5d6b729593f411",
       "size": 14910
+    },
+    "gpu_daemon.py": {
+      "sha256": "9d0aa474142e7fd0c52b9530ccabb7441c262674611eac41e5d952f5690e4668",
+      "size": 14842
+    },
+    "gpu_worker_estimator.py": {
+      "sha256": "750bfc2de4c7b8a37a5431ed29a9c2f999bd2ea28a471f05a12a27cc17624656",
+      "size": 5023
     },
     "hardware_detect.py": {
       "sha256": "a2c89d424a74f2d0e36da4cc98f63eea5eff2c0a8ac615d036bfb53a4c79c7c7",
@@ -212,8 +224,8 @@
       "size": 14196
     },
     "live_trader.py": {
-      "sha256": "db1be07d8687076dbbd84d55b7cc44ec18d468e8155444c596a4ff3ad5547d1b",
-      "size": 92507
+      "sha256": "3b56156cd00d2599d270cd74500b762a965d85eb3fcf1aa712341fd4ec4fb0a7",
+      "size": 96544
     },
     "lleaves_compiler.py": {
       "sha256": "b80d868f0d29faf3bcb6a899e4094551a8ad7b86f2a6b9040ebb4b386d2e9569",
@@ -248,12 +260,12 @@
       "size": 15007
     },
     "ml_multi_tf.py": {
-      "sha256": "5d73eac28550ecf70429d6227093b1131c8d7b2ff10b71f2b71a4f90d84785fc",
-      "size": 179697
+      "sha256": "8510064d98baf3453e6d2a65ce30a3d049d3acc7ad49957baf912be66098fd31",
+      "size": 182740
     },
     "multi_gpu_optuna.py": {
-      "sha256": "b22d6da798301791b23bc6c35d26b6942b82f8a521fe7351256d45e0bcbf42b0",
-      "size": 10916
+      "sha256": "e87c16e53a7163156090d51977976cf1fd92901dba15865db90001fef34debae",
+      "size": 11600
     },
     "news_streamer.py": {
       "sha256": "e1bd33bfdb5131ff4ee5d6607d49f30c17dca1d43b9548261e7649c6dd6a2917",
@@ -300,8 +312,8 @@
       "size": 8511
     },
     "run_optuna_local.py": {
-      "sha256": "c0048cb54ce4d55232c5967160450762357c0d71a2b7864c6cacbc4c1ea74fb3",
-      "size": 96596
+      "sha256": "24514756e48114d1569f2405ba4d2f7b2bbd934c633fc6942c15def9960d819c",
+      "size": 100810
     },
     "runpod_optimize.py": {
       "sha256": "038b82b73955379b29847f89844aca89ba6fd970674ced51a64f38ed7b4eeb8c",
@@ -388,8 +400,8 @@
       "size": 53957
     },
     "v2_cross_generator.py": {
-      "sha256": "29b3c8326f1d324db5ab89e7ab09af8e897499cdc748fbb2a6abe352f2dc7612",
-      "size": 122580
+      "sha256": "3449b51aae8a96bdef23b9a2a8884b7076cf20cac8a890f344d2e5e743b6071b",
+      "size": 155223
     },
     "v2_easy_streamers.py": {
       "sha256": "0046f4a4899fbdf21e49688da3072b7472774d8708a25b0c24e8c5555bf714c7",
@@ -408,8 +420,8 @@
       "size": 40915
     },
     "validate.py": {
-      "sha256": "a7936cbbfaae1fadf655252ef2f169fdbdbd4eeca207e76068e0c9fa84e1f731",
-      "size": 69113
+      "sha256": "eadcea990a0a9887a4f72485c6a63fbc8ba803f56747e228b623a8848dd61d56",
+      "size": 69503
     },
     "vast_launch.py": {
       "sha256": "7e7186bcb0eed058847886e11ccf88ce09eb349e376806cfb46d487f65254d64",
@@ -449,5 +461,5 @@
     "hardware_detect.py",
     "bitpack_utils.py"
   ],
-  "total_files": 105
+  "total_files": 108
 }

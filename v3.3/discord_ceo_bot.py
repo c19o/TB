@@ -59,6 +59,7 @@ GATEWAY_URL = None  # Fetched dynamically
 POLL_INTERVAL = 2.0  # seconds between message checks
 HEARTBEAT_INTERVAL = 60  # seconds between heartbeat status checks
 BOT_PREFIX = "!"
+CEO_WORKSPACE = Path.home() / "claude-ceo" / "workspace"
 
 SCRIPT_DIR = Path(__file__).parent
 LOG_FILE = SCRIPT_DIR / "discord_gate_log.json"
@@ -196,47 +197,128 @@ class DiscordClient:
 # Command Handlers
 # ---------------------------------------------------------------------------
 
-def cmd_status(state: BotState, args: str) -> dict:
-    """Full training status overview."""
-    lines = ["**SAVAGE22 TRAINING STATUS**\n"]
-    status_emoji = {"COMPLETE": "✅", "BLOCKED": "🔴", "QUEUED": "⏸️", "RUNNING": "🔄"}
+def _read_ceo_live():
+    """Read live data from CEO workspace."""
+    queue_dir = CEO_WORKSPACE / "queue"
+    session_dir = CEO_WORKSPACE / "sessions"
+    tasks = []
+    sessions = {}
 
+    if queue_dir.exists():
+        for f in queue_dir.glob("*.json"):
+            try:
+                tasks.append(json.loads(f.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+    if session_dir.exists():
+        for f in session_dir.glob("*.json"):
+            try:
+                s = json.loads(f.read_text(encoding="utf-8"))
+                sessions[f.stem] = s
+            except Exception:
+                pass
+    return tasks, sessions
+
+
+def cmd_status(state: BotState, args: str) -> dict:
+    """Full live status from CEO system + training state."""
+    tasks, sessions = _read_ceo_live()
+
+    running = [t for t in tasks if t.get("status") == "running"]
+    completed = [t for t in tasks if t.get("status") == "completed"]
+    pending = [t for t in tasks if t.get("status") == "pending"]
+    total_cost = sum(s.get("cost_usd", 0) or 0 for s in sessions.values())
+
+    lines = ["**SAVAGE22 CEO DASHBOARD**\n"]
+
+    # Training status
+    lines.append("**Training Status:**")
     for tf, info in state.training_status.items():
-        emoji = status_emoji.get(info["status"], "❓")
+        emoji = {"COMPLETE": "✅", "BLOCKED": "🔴", "QUEUED": "⏸️", "RUNNING": "🔄"}.get(info["status"], "❓")
         line = f"{emoji} **{tf}**: {info['status']}"
         if info.get("accuracy"):
-            line += f" | Acc: {info['accuracy']}"
-        if info.get("binary"):
-            line += f" | Binary: {info['binary']}"
+            line += f" | {info['accuracy']}"
         if info.get("blocker"):
-            line += f" | Blocker: {info['blocker']}"
-        if info.get("progress"):
-            line += f" | Progress: {info['progress']}"
+            line += f" | {info['blocker']}"
         lines.append(line)
 
-    lines.append(f"\n**Cloud Spend**: ${state.cloud_spend_usd:.2f}")
-    lines.append(f"**Active Machines**: {len(state.active_machines)}")
-    lines.append(f"**Autonomous Mode**: {'PAUSED ⏸️' if state.paused else 'RUNNING ▶️'}")
-    lines.append(f"**Loop Events**: {', '.join(state.loop_events) if state.loop_events else 'none (fully autonomous)'}")
+    # Live agent activity
+    lines.append(f"\n**Agents:** {len(running)} running | {len(completed)} done | {len(pending)} queued")
+
+    if running:
+        lines.append("\n**🔄 RUNNING NOW:**")
+        for t in running:
+            name = t.get("task_name", "?")
+            role = t.get("role", "?")
+            sid = t.get("session_id", "")
+            elapsed = ""
+            if sid and sid in sessions:
+                s = sessions[sid]
+                if s.get("started_at"):
+                    try:
+                        from datetime import datetime, timezone
+                        started = datetime.fromisoformat(s["started_at"].replace("Z", "+00:00"))
+                        elapsed_s = (datetime.now(timezone.utc) - started).total_seconds()
+                        elapsed = f" ({int(elapsed_s)}s)"
+                    except Exception:
+                        pass
+            lines.append(f"  ⚡ **{name}** [{role}]{elapsed}")
+
+    if completed:
+        recent = sorted(completed, key=lambda t: t.get("completed_at", ""), reverse=True)[:5]
+        lines.append("\n**✅ RECENTLY COMPLETED:**")
+        for t in recent:
+            name = t.get("task_name", "?")
+            sid = t.get("session_id", "")
+            cost = ""
+            if sid and sid in sessions:
+                c = sessions[sid].get("cost_usd")
+                if c:
+                    cost = f" ${c:.2f}"
+            lines.append(f"  ✅ {name}{cost}")
+
+    lines.append(f"\n**Total CEO Cost**: ${total_cost:.2f}")
+    lines.append(f"**Max Concurrent**: {state.max_concurrent_agents}")
+    lines.append(f"**Mode**: {'PAUSED ⏸️' if state.paused else 'RUNNING ▶️'}")
 
     return {"content": "\n".join(lines)}
 
 
 def cmd_agents(state: BotState, args: str) -> dict:
-    """List active agents."""
-    if not state.agents:
-        return {"content": "No agents currently registered."}
+    """List active agents from live CEO data."""
+    tasks, sessions = _read_ceo_live()
+
+    running = [t for t in tasks if t.get("status") == "running"]
+    if not running:
+        return {"content": "No agents currently running. Queue may be empty or paused."}
 
     lines = ["**ACTIVE AGENTS**\n"]
-    for aid, info in state.agents.items():
-        status_emoji = {"idle": "💤", "working": "⚡", "error": "❌", "waiting": "⏳"}.get(info.get("status", ""), "❓")
-        line = f"{status_emoji} **{info.get('role', 'unknown')}** ({aid[:8]})"
-        if info.get("task"):
-            line += f" — {info['task']}"
-        if info.get("last_heartbeat"):
-            line += f" | Last seen: {info['last_heartbeat']}"
-        lines.append(line)
+    for t in running:
+        name = t.get("task_name", "?")
+        role = t.get("role", "?")
+        sid = t.get("session_id", "")
+        elapsed = ""
+        pid = ""
+        if sid and sid in sessions:
+            s = sessions[sid]
+            if s.get("pid"):
+                pid = f" PID:{s['pid']}"
+            if s.get("started_at"):
+                try:
+                    from datetime import datetime, timezone
+                    started = datetime.fromisoformat(s["started_at"].replace("Z", "+00:00"))
+                    elapsed_s = (datetime.now(timezone.utc) - started).total_seconds()
+                    if elapsed_s > 3600:
+                        elapsed = f" ({int(elapsed_s/3600)}h{int(elapsed_s%3600/60)}m)"
+                    elif elapsed_s > 60:
+                        elapsed = f" ({int(elapsed_s/60)}m{int(elapsed_s%60)}s)"
+                    else:
+                        elapsed = f" ({int(elapsed_s)}s)"
+                except Exception:
+                    pass
+        lines.append(f"⚡ **{role}** — {name}{elapsed}{pid}")
 
+    lines.append(f"\n**Total running**: {len(running)}")
     return {"content": "\n".join(lines)}
 
 
@@ -358,6 +440,7 @@ def cmd_help(state: BotState, args: str) -> dict:
 **Control**
 `!pause` — Pause all autonomous operations
 `!resume` — Resume autonomous operations
+`!killswitch [on|off|status]` — Emergency halt for live trader (SAV-19)
 `!approve <id>` — Approve a pending gate
 `!deny <id>` — Deny a pending gate
 `!concurrent [N]` — Get/set max concurrent agents (1-20)
@@ -422,6 +505,46 @@ def cmd_concurrent(state: BotState, args: str) -> dict:
     return {"content": f"\u2705 Max concurrent agents set to {n}"}
 
 
+def cmd_killswitch(state: BotState, args: str) -> dict:
+    """Emergency kill switch for live trader. Creates/removes KILL_SWITCH file."""
+    killswitch_path = SCRIPT_DIR / "KILL_SWITCH"
+    args_lower = args.strip().lower()
+
+    # Status check
+    if args_lower in ("status", "check", ""):
+        is_active = killswitch_path.exists()
+        if is_active:
+            mtime = killswitch_path.stat().st_mtime
+            from datetime import datetime
+            activated_at = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+            return {"content": f"🔴 **KILL SWITCH ACTIVE**\nActivated: {activated_at}\nLive trading is **HALTED**.\nUse `!killswitch off` to resume."}
+        else:
+            return {"content": "✅ **KILL SWITCH INACTIVE**\nLive trading is **RUNNING**.\nUse `!killswitch on` to halt all trading immediately."}
+
+    # Enable kill switch
+    if args_lower in ("on", "enable", "activate", "halt", "stop"):
+        if killswitch_path.exists():
+            return {"content": "⚠️ Kill switch is already active."}
+        try:
+            killswitch_path.write_text(f"HALT - Activated via Discord at {datetime.now(timezone.utc).isoformat()}\n", encoding="utf-8")
+            return {"content": "🔴 **KILL SWITCH ACTIVATED**\n\nAll live trading is now **HALTED**.\nThe trader will:\n- Stop opening new positions immediately\n- Keep existing positions open (you can close manually)\n- Check every 10 seconds and wait\n\nUse `!killswitch off` to resume trading."}
+        except Exception as e:
+            return {"content": f"❌ Failed to activate kill switch: {e}"}
+
+    # Disable kill switch
+    if args_lower in ("off", "disable", "deactivate", "resume", "go"):
+        if not killswitch_path.exists():
+            return {"content": "⚠️ Kill switch is not active."}
+        try:
+            killswitch_path.unlink()
+            return {"content": "✅ **KILL SWITCH DEACTIVATED**\n\nLive trading has **RESUMED**.\nThe trader will pick up on the next 15-minute cycle."}
+        except Exception as e:
+            return {"content": f"❌ Failed to deactivate kill switch: {e}"}
+
+    # Unknown argument
+    return {"content": f"❓ Unknown argument: `{args}`\n\nUsage:\n`!killswitch` or `!killswitch status` — Check status\n`!killswitch on` — Halt all trading\n`!killswitch off` — Resume trading"}
+
+
 # Command registry
 COMMANDS: dict[str, Callable] = {
     "status": cmd_status,
@@ -437,6 +560,7 @@ COMMANDS: dict[str, Callable] = {
     "help": cmd_help,
     "artifact": cmd_artifact,
     "concurrent": cmd_concurrent,
+    "killswitch": cmd_killswitch,
 }
 
 

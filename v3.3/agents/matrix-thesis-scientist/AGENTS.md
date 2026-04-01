@@ -46,12 +46,13 @@ More diverse signals = stronger predictions. The edge IS the matrix of millions 
 4. Present findings to user for approval
 5. Implement approved additions
 6. Run validate.py
-## Research Protocol — MANDATORY ORDER
+## KB-First Research Protocol — MANDATORY ORDER
+Perplexity is fallback only, never the first research step.
 
 **KB-FIRST**: When any bug, question, or decision arises — ALWAYS query the Orgonite Master KB first.
 ```bash
 cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
-python kb.py smart "<your question here>" --limit 10
+python kb.py smart "<your question here>" -n 10
 ```
 Only if the KB returns no definitive answer → use `mcp__perplexity-browser__perplexity_search`.
 Deep research (`perplexity_deep_research`) = last resort only, limited credits.
@@ -72,7 +73,7 @@ READ-ONLY (everything else):
 ## 2. PROTECTED ZONES — NEVER MODIFY ALONE
 ```
 These require DUAL SIGN-OFF (two agents or agent + user):
-- validate.py (74 checks) — QA Lead + User only
+- validate.py (96 checks) — QA Lead + User only
 - CPCV fold logic in ml_multi_tf.py — ML Pipeline + QA Lead
 - Label generation (triple-barrier) — ML Pipeline + Chief Engineer
 - PROTECTED_FEATURE_PREFIXES in config — Matrix Thesis + User
@@ -119,7 +120,7 @@ ALWAYS escalate to Discord (stop work, notify user) when:
 ```
 Before starting any task:
   cd "C:/Users/C/Documents/Savage22 Server/v3.3"
-  python ops_kb.py smart "<what you're about to work on>" --limit 5
+  python ops_kb.py smart "<what you're about to work on>" -n 5
 
 After completing any task:
   python ops_kb.py add "FACT: <what you did and the result>" --topic <tag>
@@ -136,7 +137,7 @@ Next session reads ops_kb + SESSION_RESUME.md to resume exactly where you stoppe
 ## 8. DEFINITION OF DONE — EVERY TASK
 Before marking ANY task complete, run this checklist:
 1. CODE COMPILES: `python -c "import <modified_module>"` — no errors
-2. VALIDATE PASSES: `python validate.py` — all 74 checks green
+2. VALIDATE PASSES: `python validate.py` — all 96 checks green
 3. SMOKE TEST: `python smoke_test_pipeline.py --tf 1w` — full pipeline runs
 4. NO REGRESSIONS: `git diff` shows ONLY files in your ownership zone
 5. KB WAS CONSULTED: Log which KB queries you ran and what you found
@@ -148,15 +149,15 @@ Before marking ANY task complete, run this checklist:
 Before any code change, you MUST gather enough information:
 
 Step 1: ops_kb — "Has this been tried before?"
-  python ops_kb.py smart "<what you're about to do>" --limit 5
+  python ops_kb.py smart "<what you're about to do>" -n 5
   → If YES with clear outcome: STOP research, use that outcome
   → If NO or inconclusive: continue
 
 Step 2: Orgonite Master KB — query 3 DIFFERENT phrasings minimum
   cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
-  python kb.py smart "<phrasing 1>" --limit 10
-  python kb.py smart "<phrasing 2>" --limit 10
-  python kb.py smart "<phrasing 3>" --limit 10
+  python kb.py smart "<phrasing 1>" -n 10
+  python kb.py smart "<phrasing 2>" -n 10
+  python kb.py smart "<phrasing 3>" -n 10
   → Log all queries and result counts
   → If any query returns >5 relevant results: READ the top 5
   → If total relevant results across 3 queries < 3: continue to Step 3

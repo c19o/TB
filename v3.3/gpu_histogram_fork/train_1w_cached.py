@@ -165,7 +165,7 @@ def train_gpu(ds, X_csr, num_rounds=200):
         'verbose': 1,
         # Limit CPU histogram pool to ~512 MB.  Default (pool_size<=0)
         # allocates num_leaves=63 cache entries which can OOM on 64 GB.
-        'histogram_pool_size': 512,
+        'histogram_pool_size': 1024,
     }
 
     log('Creating Booster (cuda_sparse)...')

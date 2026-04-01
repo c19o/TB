@@ -51,6 +51,24 @@ Injected into every agent session. These are non-negotiable.
 - killall python before launching new training
 - NEVER use nohup bash wrappers — use cloud_run_tf.py directly
 
+## OWNER APPROVAL GATES
+
+- The user is the company owner, not the runtime manager. Keep them out of the loop unless escalation is required.
+- Escalate to the owner BEFORE any production change that can materially affect training speed, throughput, or runtime behavior.
+- Examples that REQUIRE owner approval before production use:
+  - RIGHT_CHUNK / batch sizing / fold parallelism / num_threads changes
+  - dense vs sparse execution-path changes
+  - GPU vs CPU execution-path changes
+  - daemon / supervisor scheduling or retry behavior changes
+  - histogram pool / memory pool / cache / checkpoint / I/O-path changes
+  - machine-selection changes that alter speed, throughput, or cost profile
+- Also escalate for:
+  - renting or destroying cloud machines
+  - Matrix Thesis / protected-feature policy changes
+  - rollback decisions after a bad run
+- If a change is intended to increase speed, the burden of proof is: faster WITHOUT loss of OOS accuracy, calibration, or rare-signal retention.
+- If owner approval has not been given, limit work to auditing, instrumentation, verification, documentation, and issue escalation.
+
 ## LOGGING FORMAT
 
 - All ops_kb entries: "FACT: <structured description>. Date: YYYY-MM-DD"
@@ -58,7 +76,13 @@ Injected into every agent session. These are non-negotiable.
 - All training logs: tee to disk + unbuffered output
 
 ## MANDATORY KB RESEARCH — NON-NEGOTIABLE
-Any code that touches training or features MUST query the Knowledge Base BEFORE writing code:
+Any non-trivial code task MUST query the Knowledge Base BEFORE writing code.
+There are no exceptions for ML, CUDA, training, feature engineering, deployment/runtime, GPU memory work, or cross-generation work. Those are exactly the kinds of tasks the KB is for.
+Only truly simple tasks are exempt, such as typo fixes, pure formatting, path corrections, or documentation wording that does not change technical meaning.
+
+ML / CUDA / training / feature / deployment-runtime / daemon examples are NEVER "simple tasks" for the purpose of this rule.
+
+At minimum, any code touching training, features, CUDA, GPU memory, cloud runtime, daemons, supervisors, validation gates, or model deployment MUST query the Knowledge Base first:
 ```bash
 cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
 python kb.py smart "<what you're implementing>" --limit 10
@@ -70,6 +94,14 @@ Also query ops_kb for what's been tried before:
 cd "C:/Users/C/Documents/Savage22 Server/v3.3"
 python ops_kb.py smart "<what you're doing>" --limit 5
 ```
+Before the KB search, log the exact task token you are researching so the audit can tie the evidence back to one issue:
+```bash
+python ops_kb.py add "KB_QUERY: Task=[SAV-29 or file path]. Query1=[first KB query]. Query2=[second KB query]. Query3=[third KB query]. ResultCounts=[n1,n2,n3]. Verdict=[definitive|weak]" --topic kb_query
+```
+If the KB gave a definitive answer, log the source you actually used before coding:
+```bash
+python ops_kb.py add "KB_SOURCE: Task=[SAV-29 or file path]. Sources=[book/doc names from KB]. Key finding=[one-line summary]. Confidence=[high/medium/low]" --topic kb_source
+```
 Files that REQUIRE KB research before ANY edit:
 - feature_library.py (features/signals)
 - ml_multi_tf.py (training pipeline)
@@ -77,6 +109,10 @@ Files that REQUIRE KB research before ANY edit:
 - v2_cross_generator.py (cross features)
 - cloud_run_tf.py (deployment)
 - gpu_daemon.py (GPU operations)
+- cross_supervisor.py (daemon/supervisor runtime)
+- run_optuna_local.py (Optuna/training runtime)
+- validate.py (release gates)
+- deploy_manifest.json / deploy_manifest.py (deployment runtime contract)
 
 If you edit these files without KB queries, your work will be REJECTED and REVERTED.
 The KB has 947 docs: AFML full book, LightGBM paper, CUDA guides, 42 academic papers on every signal type. USE THEM.
@@ -85,19 +121,23 @@ The KB has 947 docs: AFML full book, LightGBM paper, CUDA guides, 42 academic pa
 If KB returns <3 relevant results across your 3 queries, you MUST:
 1. Log the gap to ops_kb:
    ```bash
-   python ops_kb.py add "KB_GAP: Queried [your 3 queries]. <3 relevant results. Topic needed: [what's missing]. Suggested text: [paper/book if known]" --topic kb_gap
+   python ops_kb.py add "KB_GAP: Task=[SAV-29 or file path]. Queried [your 3 queries]. <3 relevant results. Topic needed: [what's missing]. Suggested text: [paper/book if known]" --topic kb_gap
    ```
 2. THEN use Perplexity (with matrix thesis context as always)
 3. After Perplexity returns, log its sources to ops_kb:
    ```bash
-   python ops_kb.py add "PERPLEXITY_SOURCE: Query=[what you asked]. Sources=[list URLs/paper names Perplexity cited]. Key finding=[one-line summary]. Confidence=[high/medium/low based on source quality]" --topic perplexity_source
+   python ops_kb.py add "PERPLEXITY_SOURCE: Task=[SAV-29 or file path]. Query=[what you asked]. Sources=[list URLs/paper names Perplexity cited]. Key finding=[one-line summary]. Confidence=[high/medium/low based on source quality]" --topic perplexity_source
    ```
 4. If Perplexity cites a paper/textbook we don't have in KB, add it to the gap log:
    ```bash
-   python ops_kb.py add "KB_GAP_DOWNLOAD: [paper/book title] by [author]. URL: [if available]. Reason: Perplexity cited this for [topic] and we don't have it in KB." --topic kb_gap
+   python ops_kb.py add "KB_GAP_DOWNLOAD: Task=[SAV-29 or file path]. [paper/book title] by [author]. URL: [if available]. Reason: Perplexity cited this for [topic] and we don't have it in KB." --topic kb_gap
    ```
 
 This creates an audit trail: KB gap found -> Perplexity used -> sources logged -> texts identified for download -> user downloads -> KB ingested -> gap closed.
+Run this before declaring the task done:
+```bash
+python convention_gate.py research-audit SAV-29 --hours 72
+```
 
 ## POST-IMPLEMENTATION VERIFICATION — NON-NEGOTIABLE
 After writing ANY code that touches training or features, you MUST verify:
@@ -134,7 +174,7 @@ ALWAYS trust the KB over Perplexity. The KB has OUR books, OUR papers, OUR archi
 cd "C:/Users/C/Documents/Savage22 Server/v3.3"
 python validate.py
 ```
-ALL 74 checks must pass. If any fail → fix BEFORE committing.
+ALL 96 checks must pass. If any fail → fix BEFORE committing.
 
 ### Step 4: Self-Review Checklist
 Before committing, answer YES to ALL:
@@ -167,6 +207,9 @@ See `v3.3/validation_proposals/README.md` for the full YAML schema.
 Before you can finish any task, the Stop hook checks:
 - **Gate 1**: validate.py must pass (all checks green)
 - **Gate 2**: ops_kb must have your log entry
+- **Gate 2A**: training/feature/research tasks must have `KB_QUERY`
+- **Gate 2B**: definitive KB use must have `KB_SOURCE`
+- **Gate 2C**: KB gaps must have `PERPLEXITY_SOURCE` after the gap
 - **Gate 3**: PROTECTED_FEATURE_PREFIXES must cover all feature prefixes in feature_library.py
 - **Gate 4**: Sacred parameter ranges (bagging_fraction >= 0.95, feature_fraction >= 0.7)
 

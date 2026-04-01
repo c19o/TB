@@ -1,0 +1,14 @@
+# Build artifacts
+_build/
+_lgbm_build/
+dist/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Dev files
+.git/
+*.md
+*.ps1
+tests/
+benchmark/
