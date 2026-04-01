@@ -42,6 +42,7 @@ Notes:
 | 2026-04-01 | 1w | smoke test pipeline (retry) | ~2-5m | pass (10/10) | Post-parity-fix rerun succeeded |
 | 2026-04-01 | 1w | smoke test pipeline (DoD rerun) | ~2-5m | fail | cuDF unavailable on CUDA13 path; run requires cuDF or `ALLOW_CPU=1` |
 | 2026-04-01 | 1w | smoke test pipeline (post-fallback DoD rerun) | ~2-5m | fail | Same cuDF CUDA13 gate behavior; requires cuDF or `ALLOW_CPU=1` |
+| 2026-04-01 | 1w | smoke test pipeline (post-repo-probe DoD rerun) | ~2-5m | fail | Reproduced same cuDF CUDA13 gate behavior; requires cuDF or `ALLOW_CPU=1` |
 
 ---
 

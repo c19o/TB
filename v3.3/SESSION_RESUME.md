@@ -86,6 +86,7 @@ Non-blocking resolved items:
 13. SAV-38 forced fallback smoke test completed: ran 3 KB-first phrasings for off-domain local-services query, classified KB output as weak/irrelevant, logged `KB_QUERY` + `KB_GAP` + `PERPLEXITY_SOURCE` (Task=`SAV-38-PERPLEXITY`), captured nearby result for Fairfield Bay (`501 Pressure Washing`), then returned SAV-38 to BLOCKED recurring-tracker state.
 14. Post-fallback DoD rerun completed: `import ops_kb` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL again on cuDF CUDA13 gate unless `ALLOW_CPU=1`.
 15. SAV-38 repo probe completed (read-only environment test): `git rev-parse --show-toplevel` confirms repo root is parent `Savage22 Server` directory (not `v3.3`), `git remote -v` confirms `tb33` remote exists (`https://github.com/c19o/TB-3.3.git`), and issue returned to BLOCKED recurring-tracker state.
+16. Post-repo-probe DoD rerun completed: `import ops_kb` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL again with same cuDF CUDA13 gate (`ALLOW_CPU=1` needed for fallback).
 
 ---
 
