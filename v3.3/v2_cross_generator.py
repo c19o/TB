@@ -71,11 +71,8 @@ if 'NUMBA_NUM_THREADS' not in os.environ:
     _numba_threads = max(4, _ncpu)  # Full cores for Numba prange kernels
     os.environ['NUMBA_NUM_THREADS'] = str(_numba_threads)
 if 'OMP_NUM_THREADS' not in os.environ:
-    try:
-        _ncpu_omp = len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        _ncpu_omp = os.cpu_count() or 1
-    os.environ['OMP_NUM_THREADS'] = str(_ncpu_omp)
+    # Matrix convention: cap OMP threads to avoid thread exhaustion.
+    os.environ['OMP_NUM_THREADS'] = '4'
 os.environ.setdefault('MKL_DYNAMIC', 'FALSE')
 
 # Module-level CPU count for MKL threadpoolctl — resolves after NUMBA env, before Numba import
@@ -179,41 +176,8 @@ def _get_available_ram_gb():
 
 # ── Adaptive batch sizing based on available RAM ──
 def _get_right_chunk():
-    """Auto-detect RAM and set chunk size accordingly."""
-    try:
-        import psutil
-        ram_gb = psutil.virtual_memory().total / (1024**3)
-    except (ImportError, Exception):
-        try:
-            with open('/proc/meminfo') as f:
-                for line in f:
-                    if 'MemTotal' in line:
-                        ram_gb = int(line.split()[1]) / (1024**2)
-                        break
-                else:
-                    ram_gb = 64.0
-        except (FileNotFoundError, Exception):
-            ram_gb = 64.0  # conservative default
-
-    if ram_gb >= 512:
-        RIGHT_CHUNK = 2000   # cloud: 512GB+ RAM, process 2000 contexts at a time
-    elif ram_gb >= 256:
-        RIGHT_CHUNK = 1000   # cloud: 256GB RAM
-    elif ram_gb >= 128:
-        RIGHT_CHUNK = 500    # mid-range
-    elif ram_gb >= 64:
-        RIGHT_CHUNK = 200    # local 64GB
-    else:
-        RIGHT_CHUNK = 100    # low RAM
-
-    # Scale down for high-row-count TFs to prevent memory accumulation
-    # n_rows is not available here, so we check via environment variable or default
-    _env_nrows = os.environ.get('V2_NROWS')
-    if _env_nrows:
-        _nrows = int(_env_nrows)
-        RIGHT_CHUNK = max(200, int(RIGHT_CHUNK * min(1.0, 50000 / _nrows)))
-
-    return RIGHT_CHUNK
+    """Fixed safe default to prevent OOM across TFs."""
+    return 500
 
 
 def _get_cross_batch_size(n_rows):
@@ -245,7 +209,7 @@ def _get_cross_batch_size(n_rows):
 # Env var override for orchestrator OOM retry — now serves as MAX CAP for adaptive controller
 _env_chunk = os.environ.get('V2_RIGHT_CHUNK')
 RIGHT_CHUNK = int(_env_chunk) if _env_chunk else _get_right_chunk()
-log(f"Adaptive RIGHT_CHUNK = {RIGHT_CHUNK} (detected RAM{', env override' if _env_chunk else ''})")
+log(f"RIGHT_CHUNK = {RIGHT_CHUNK} ({'env override' if _env_chunk else 'fixed safe default'})")
 
 # ── Parallel cross steps toggle ──
 PARALLEL_CROSS_STEPS = os.environ.get('PARALLEL_CROSS_STEPS', '0') == '1'
