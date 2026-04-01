@@ -14,7 +14,7 @@ Machine specs: 8x RTX 3090 (24GB each), CPU score reference ~240-453 on candidat
 
 | Step | Description | 1w | 1d | 4h | 1h | 15m |
 |------|-------------|----|----|----|----|-----|
-| 0 | validate.py (95 checks) | DONE | 30s | 30s | 30s | 30s |
+| 0 | validate.py (96 checks) | DONE | 30s | 30s | 30s | 30s |
 | 1 | Feature DB build (local) | DONE | DONE | DONE | DONE | DONE |
 | 2 | Cross-gen V4 (GPU/CPU) | DONE | BLOCKED (step 3+ reload path) | 2h | 4h | 8h (CPU likely) |
 | 3 | Label generation | DONE | 5m | 10m | 20m | 40m |
@@ -38,6 +38,8 @@ Notes:
 | 2026-04-01 | all | validate + convention gate | ~30s | pass | validate.py 96/96 PASS (2 warnings), convention gate ALL PASS |
 | 2026-04-01 | 1d | Step 2 cross-gen V4 | ~45m | partial | First two cross steps run; step 3+ blocked by remaining cross-supervisor bugs |
 | 2026-04-01 | 1w | smoke test pipeline | ~2-5m | fail | Feature build failed on cuDF import; requires cuDF install or `ALLOW_CPU=1` |
+| 2026-04-01 | all | pipeline code change (SAV-8 parity) | n/a | complete | Added `px_pc213_x_rsi_os` and `px_pc213_x_macd_high` for pc213 parity |
+| 2026-04-01 | 1w | smoke test pipeline (retry) | ~2-5m | pass (10/10) | Post-parity-fix rerun succeeded |
 
 ---
 

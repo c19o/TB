@@ -13,7 +13,7 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 - Training: PASS (all steps)
 - Metrics: CPCV AUC 57.5%, model AUC 79.3%
 - Artifacts: `v3.3/1w_cloud_artifacts_v3/`
-- Current smoke-test environment note: `smoke_test_pipeline.py --tf 1w` fails on this host unless cuDF is available or `ALLOW_CPU=1` is set.
+- Latest smoke test: `smoke_test_pipeline.py --tf 1w` passed 10/10 after latest parity fix update.
 
 ### 1d
 - Status: BLOCKED (partial progress)
@@ -62,7 +62,6 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 ## Blocking Issues
 1. 1d cross-gen step 3+ still blocked by remaining `cross_supervisor.py` defects.
 2. Downstream 4h/1h/15m full runs are queued behind 1d stabilization.
-3. Local 1w smoke-test currently fails at feature import unless cuDF is installed or `ALLOW_CPU=1` is exported.
 
 Non-blocking resolved items:
 - LightGBM import failure resolved.
@@ -79,6 +78,8 @@ Non-blocking resolved items:
 5. KB gap analysis completed with 4 missing-paper links captured.
 6. `ops_kb.py` Unicode output hardening applied to prevent Windows cp1252 crash during list/smart output.
 7. Documentation Lead DoD checks executed: `import ops_kb` PASS, `validate.py` PASS (96/96), `smoke_test_pipeline.py --tf 1w` FAIL due cuDF/`ALLOW_CPU` environment requirement.
+8. SAV-8 parity fix landed in `feature_library.py`: added `px_pc213_x_rsi_os` and `px_pc213_x_macd_high`.
+9. Follow-up `smoke_test_pipeline.py --tf 1w` passed 10/10.
 
 ---
 
