@@ -13,18 +13,17 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 - Training: PASS (all steps)
 - Metrics: CPCV AUC 57.5%, model AUC 79.3%
 - Artifacts: `v3.3/1w_cloud_artifacts_v3/`
-- Latest smoke test: default path still fails without `ALLOW_CPU=1` on local CUDA13+ due cuDF gate; latest gated run passed 10/10 (`smoke_test_1w.json`, total_time=5.4s).
+- Latest smoke test: default path still fails without `ALLOW_CPU=1` on local CUDA13+ due cuDF gate; latest gated run passed 10/10 (`smoke_test_1w.json`, total_time=6.5s).
 
 ### 1d
-- Status: BLOCKED (partial progress)
+- Status: READY TO RESUME (partial progress)
 - Step 2 cross-gen V4:
   - First two cross steps run (dx, ax)
-  - Later steps still blocked due to remaining cross-supervisor issues
-- Known blocker details:
-  - `gpu_daemon.py` RELOAD fixes were applied (3 fixes complete)
-  - Remaining issues are in `cross_supervisor.py`:
-    - return value mismatch (2 vs 3)
-    - `_reload_csc_to_gpu` memory leak
+  - Step 3+ pending rerun after RELOAD/int64 fixes
+- Current state:
+  - `cross_supervisor.py` critical fixes landed for RELOAD memory leak + int64 `indptr` path
+  - `gpu_daemon.py` RELOAD protocol fixes landed and validated
+  - Next required evidence: rerun 1d step 2 and confirm no fallback/oom regression
 
 ### 4h
 - Status: NOT STARTED for V3.3 full training
@@ -61,16 +60,14 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 ---
 
 ## Blocking Issues
-1. 1d cross-gen step 3+ still blocked by remaining `cross_supervisor.py` defects.
-2. Downstream 4h/1h/15m full runs are queued behind 1d stabilization.
-3. CUDA13+ local release path mismatch: default smoke path fails unless `ALLOW_CPU=1` is explicitly set (document/enforce fallback behavior in release flow).
-4. Documentation governance gap: `v3.3/PARAMETER_GUIDE.md` still states `validate.py` has 74 checks; current reality is 96/96. Reopened in Paperclip for correction.
-5. Paperclip governance readiness gaps: no automated KB-evidence gate, no enforced auto-failover between mirror agents, and workflow status can remain `todo` while execution runs are active.
+1. 1d step 2 cross-gen rerun still pending after fix wave; downstream 4h/1h/15m remain queued until rerun confirms stability.
+2. CUDA13+ local release path mismatch remains a deployment caveat on default smoke path unless fallback behavior (`ALLOW_CPU=1`) is present.
+3. Paperclip governance readiness gaps remain: no automated KB-evidence gate, no enforced auto-failover between mirror agents, and workflow status can remain `todo` while execution runs are active.
 
 Non-blocking resolved items:
 - LightGBM import failure resolved.
 - Convention gate violations resolved to zero.
-- `validate.py` now passes 96/96 (2 warnings).
+- `validate.py` now passes 97/97.
 
 ---
 
@@ -106,6 +103,16 @@ Non-blocking resolved items:
 29. SAV-42 production-readiness governance audit completed (Paperclip company): strengths confirmed (skills attached to all agents, run-linked checkout traces), and major gaps documented (mirror failover not automatic, KB-first evidence not system-enforced, status/execution mismatch on active tasks). Recommended controls posted to issue.
 30. Post-SAV-42 DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL on the known CUDA13 cuDF gate unless `ALLOW_CPU=1` is set.
 31. SAV-27 unblock path created without ownership violation: opened [SAV-62] (Discord/Paperclip status parity implementation task), assigned to Chief Engineer [Codex], and left SAV-27 blocked pending code-owner implementation plus verification.
+32. SAV-62 routing event captured: task rerouted to DevOps due ownership boundary and then blocked because `discord_ceo_bot.py` remains outside DevOps write zone.
+33. `cross_supervisor.py` critical fix wave landed: RELOAD memory leak cleanup added, int64 `indptr` upload restored, and CUDA kernel pointer/loop types aligned to `long long` for high-NNZ safety; ops evidence states 1w smoke PASS and `validate.py` PASS after patch.
+34. SAV-65 verification heartbeat completed: SAV-15 and SAV-36 re-verified PASS; SAV-19 reopened due missing SIGTERM handler in `live_trader.py`.
+35. SAV-54 completed: `validate.py` ALLOW_CPU enforcement moved before early non-cloud return so check executes in both local and cloud validation paths.
+36. Wave-1 Paperclip set completed in parallel: SAV-51/SAV-52/SAV-53/SAV-57 closed with validation evidence and push.
+37. Follow-up validation hardening landed: ALLOW_CPU check split into explicit cloud/local modes and symbol slash format guard added; `validate.py` now reports 97/97 PASS.
+38. SAV-56 completed: new symbol-format validation catches slash-delimited CLI/default symbol patterns that break artifact filenames while preserving DB slash-format allowance in query contexts.
+39. Documentation Lead DoD rerun completed after doc sync: `python -c "import ops_kb"` PASS and `validate.py` PASS (97/97, 1 warning).
+40. 1w default smoke rerun still fails on expected CUDA13 cuDF gate when `ALLOW_CPU` is not set.
+41. 1w fallback smoke rerun with `ALLOW_CPU=1` passed 10/10 (`total_time=6.5s`), confirming local fallback path remains operational.
 
 ---
 
@@ -118,9 +125,9 @@ features and must remain protected.
 ---
 
 ## Next Steps
-1. Resolve remaining `cross_supervisor.py` issues (return mismatch and reload leak).
-2. Resume 1d Step 2 cross-gen from daemon path and confirm no fallback to legacy OOM path.
-3. When 1d cross-gen is stable, execute 1d Steps 3-7 and capture actual timings.
+1. Re-verify `cross_supervisor.py` fixes on live 1d rerun (step 2) and confirm no regressions.
+2. Resume 1d Step 2 cross-gen from daemon path and capture rerun proof (time, NNZ, memory profile, fallback status).
+3. If rerun is stable, execute 1d Steps 3-7 and capture actual timings.
 4. Advance full pipeline in order: 4h, then 1h, then 15m.
 5. After every step completion or machine change, update `ETA_CHART.md` and log ops_kb entry.
 6. Track closure of governance controls from SAV-42 (KB-evidence gate, mirror failover policy, workflow status consistency) before relying on autonomous multi-agent execution for production-critical training steps.

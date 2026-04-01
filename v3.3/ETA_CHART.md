@@ -14,15 +14,15 @@ Machine specs: 8x RTX 3090 (24GB each), CPU score reference ~240-453 on candidat
 
 | Step | Description | 1w | 1d | 4h | 1h | 15m |
 |------|-------------|----|----|----|----|-----|
-| 0 | validate.py (96 checks) | DONE | 30s | 30s | 30s | 30s |
+| 0 | validate.py (97 checks) | DONE | 30s | 30s | 30s | 30s |
 | 1 | Feature DB build (local) | DONE | DONE | DONE | DONE | DONE |
-| 2 | Cross-gen V4 (GPU/CPU) | DONE | BLOCKED (step 3+ reload path) | 2h | 4h | 8h (CPU likely) |
+| 2 | Cross-gen V4 (GPU/CPU) | DONE | READY TO RETRY (step 3+ rerun pending) | 2h | 4h | 8h (CPU likely) |
 | 3 | Label generation | DONE | 5m | 10m | 20m | 40m |
 | 4 | LightGBM + Optuna (CPCV) | DONE | 3h | 6h | 10h | 20h |
 | 5 | LSTM ensemble | DONE | 1h | 2h | 3h | 5h |
 | 6 | Portfolio optimization | DONE | 20m | 30m | 45m | 1h |
 | 7 | Evaluation + SHAP | DONE | 20m | 30m | 45m | 1h |
-| - | TOTAL | DONE (~6h actual) | ~5h 20m once unblocked | ~11h | ~19h | ~36h |
+| - | TOTAL | DONE (~6h actual) | ~5h 20m once rerun confirms stability | ~11h | ~19h | ~36h |
 
 Notes:
 - 1d ETA assumes cross-supervisor defects are fixed and daemon path remains stable.
@@ -58,6 +58,15 @@ Notes:
 | 2026-04-01 | all | governance audit (SAV-42, Paperclip readiness) | n/a | complete | Confirmed strengths (skill sync + run-trace checkout) and logged gaps (no auto-failover, no automated KB-evidence gate, status/execution mismatch risk) |
 | 2026-04-01 | 1w | smoke test pipeline (post-SAV-42 DoD rerun) | ~2-5m | fail | Same default-path CUDA13 cuDF gate persists; requires `ALLOW_CPU=1` or cuDF install |
 | 2026-04-01 | all | blocker routing (SAV-27 -> SAV-62) | n/a | complete | Created/assigned code-owner implementation task for Discord/Paperclip parity; kept SAV-27 blocked pending implementation and verification |
+| 2026-04-01 | all | pipeline code change (cross_supervisor fix wave) | n/a | complete | Fixed RELOAD memory leak cleanup + int64 `indptr` GPU path + kernel `long long` pointer alignment for high-NNZ reload safety |
+| 2026-04-01 | 1w | smoke test artifact/verification (post-cross_supervisor fixes) | ~2-5m | pass (10/10) | ops_kb evidence indicates 1w smoke PASS and validate PASS after cross_supervisor patch wave |
+| 2026-04-01 | all | SAV-54 validation gate relocation | n/a | complete | ALLOW_CPU enforcement moved before early `--cloud` return; check now executes in both local and cloud modes |
+| 2026-04-01 | all | Wave-1 Paperclip tasks (SAV-51/52/53/57) | n/a | complete | Parallel completion recorded; all tasks validated and pushed |
+| 2026-04-01 | all | pipeline code change (ALLOW_CPU split + symbol slash guard) | n/a | complete | validate.py local/cloud ALLOW_CPU logic split; slash-delimited symbol-format check added |
+| 2026-04-01 | all | validate.py baseline update | ~30s | pass (97/97) | Validation now reports 97/97 all pass after ALLOW_CPU split + SAV-56 symbol format rule |
+| 2026-04-01 | all | Documentation Lead DoD rerun | ~30s | pass (97/97) | `python validate.py` rerun after doc sync: 97/97 PASS, 1 warning |
+| 2026-04-01 | 1w | smoke test pipeline (default path) | ~2-5m | fail | Reproduced expected CUDA13 cuDF gate when `ALLOW_CPU` is not set |
+| 2026-04-01 | 1w | smoke test pipeline (`ALLOW_CPU=1`) | ~2-5m | pass (10/10, 6.5s) | Fallback smoke remains healthy; artifact summary reports all 10 steps PASS |
 
 ---
 
