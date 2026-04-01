@@ -24,24 +24,23 @@ Read this file completely. Then read v3.3/CLAUDE.md. Resume from "Next Steps" be
 
 ## Current State
 
-### 🔴 CRITICAL BLOCKERS (2026-04-01)
+### ⚠️ REMAINING BLOCKER (2026-04-01)
 
-#### 1. LightGBM Import Failure
-- **Error**: `lib_lightgbm.dll` missing from Python312 site-packages
-- **validate.py**: 93/94 checks (only failure: `import lightgbm`)
-- **Owner**: DevOps
+#### ✅ LightGBM Import — FIXED
+- DevOps repaired `lib_lightgbm.dll` 
+- validate.py: 94/94 ✅ PASS
 
-#### 2. Convention Gate Violations (92 total)
-- **SPARSE violations**: `.toarray()`/`.todense()` on cross features
-  - `train_1w_cached.py:259`
-  - `test_gpu_accuracy.py:337, 428`
-  - `v2_cross_generator.py:473, 474`
-- **SACRED violations**: `feature_pre_filter` issues
-  - `run_optuna_local.py:1535, 1692`
-- **Owners**: GPU Specialist + ML Pipeline Engineer + QA Lead
-- **Impact**: Blocks ALL training completion
+#### ⚠️ Convention Gate Violations: 84 remaining (was 92)
+**Progress**: 92 → 89 → 84 (8 violations fixed by other agents)
 
-**Status**: Both blockers escalated via Paperclip. Documentation Lead cannot fix (outside ownership zone).
+**Current violations** (7 BATCH violations in `feature_library.py`):
+- Lines: 142, 259, 270, 272, 364, 1079, 1081
+- **Issue**: One-at-a-time `df[col] = val` inside loops
+- **Fix**: Use dict accumulation + `pd.concat` for batching
+- **Owner**: Matrix Thesis Scientist
+- **Impact**: Blocks completion (stop gate enforced)
+
+**Status**: Documentation updated. Awaiting Matrix Thesis Scientist to fix feature_library.py.
 
 ### 1w Training: COMPLETE (but can't retrain until LightGBM fixed)
 - CPCV: 57.5%, Model: 79.3%, Binary mode, all steps PASS

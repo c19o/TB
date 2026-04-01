@@ -362,6 +362,184 @@ _env_co_occur = os.environ.get('V2_MIN_CO_OCCURRENCE')
 MIN_CO_OCCURRENCE = int(_env_co_occur) if _env_co_occur else 3  # Lowered from 8: matches min_data_in_leaf=3, preserves rare esoteric crosses
 
 
+def _apply_correlation_clustering(sparse_mat, feature_names, tf, threshold=0.95):
+    """
+    Cluster highly correlated cross features using MinHash LSH + sparse Pearson.
+
+    PROTECTED FEATURES: Never clusters esoteric signals (PROTECTED_FEATURE_PREFIXES).
+    Only clusters redundant TA × TA crosses (r > threshold).
+
+    Algorithm (from Perplexity research 2026-04-01):
+      1. Pre-filter: separate rare (< 1% non-zero) and esoteric features
+      2. MinHash LSH: candidate pair generation (Jaccard ≈ Pearson for binary)
+      3. Exact sparse Pearson: verify candidates above threshold
+      4. Union-Find: cluster correlated features
+      5. Keep one representative per cluster (highest sparsity)
+
+    Args:
+        sparse_mat: scipy CSC sparse matrix (n_samples × n_features)
+        feature_names: list of feature names (length = n_features)
+        tf: timeframe (for logging)
+        threshold: correlation threshold for clustering (default 0.95)
+
+    Returns:
+        (clustered_sparse_mat, clustered_feature_names)
+    """
+    from scipy.sparse import csc_matrix
+    import json
+    from config import PROTECTED_FEATURE_PREFIXES
+
+    n_samples, n_features = sparse_mat.shape
+    log(f"  [CLUSTER] Input: {n_features:,} features, {n_samples:,} samples")
+
+    # Step 1: Identify protected features (esoteric + rare)
+    sparse_mat_csc = sparse_mat.tocsc() if not isinstance(sparse_mat, csc_matrix) else sparse_mat
+    nnz_per_feature = np.diff(sparse_mat_csc.indptr)
+    sparsity = nnz_per_feature / n_samples
+
+    # Rare features (< 1% non-zero) are protected
+    rare_mask = sparsity < 0.01
+
+    # Esoteric features (protected prefixes) are protected
+    esoteric_mask = np.array([
+        any(name.startswith(p) for p in PROTECTED_FEATURE_PREFIXES)
+        for name in feature_names
+    ])
+
+    # Protected = rare OR esoteric
+    protected_mask = rare_mask | esoteric_mask
+    clusterable_mask = ~protected_mask
+
+    n_protected = protected_mask.sum()
+    n_clusterable = clusterable_mask.sum()
+
+    log(f"  [CLUSTER] Protected: {n_protected:,} ({rare_mask.sum():,} rare + "
+        f"{(esoteric_mask & ~rare_mask).sum():,} esoteric)")
+    log(f"  [CLUSTER] Clusterable: {n_clusterable:,} TA crosses")
+
+    if n_clusterable < 100:
+        log(f"  [CLUSTER] Too few clusterable features, skipping")
+        return sparse_mat, feature_names
+
+    # Step 2: MinHash LSH candidate pair generation
+    try:
+        from datasketch import MinHash, MinHashLSH
+    except ImportError:
+        log(f"  [CLUSTER] datasketch not installed, skipping clustering")
+        return sparse_mat, feature_names
+
+    log(f"  [CLUSTER] Building MinHash LSH index (threshold={threshold})...")
+    lsh = MinHashLSH(threshold=threshold, num_perm=128)
+    minhashes = {}
+    clusterable_indices = np.where(clusterable_mask)[0]
+
+    for i in clusterable_indices:
+        col = sparse_mat_csc.getcol(i)
+        nonzero_rows = col.nonzero()[0]
+        if len(nonzero_rows) == 0:
+            continue  # Skip empty columns
+
+        m = MinHash(num_perm=128)
+        for r in nonzero_rows:
+            m.update(r.to_bytes(8, 'little'))
+
+        key = f"f{i}"
+        lsh.insert(key, m)
+        minhashes[key] = m
+
+    # Query to get candidate pairs
+    log(f"  [CLUSTER] Querying LSH for candidate pairs...")
+    candidate_pairs = set()
+    for key, m in minhashes.items():
+        neighbors = lsh.query(m)
+        for n in neighbors:
+            if n != key:
+                i_key = int(key[1:])
+                j_key = int(n[1:])
+                if i_key < j_key:  # Avoid duplicates
+                    candidate_pairs.add((i_key, j_key))
+
+    log(f"  [CLUSTER] LSH found {len(candidate_pairs):,} candidate pairs")
+
+    if len(candidate_pairs) == 0:
+        log(f"  [CLUSTER] No candidates found, returning original matrix")
+        return sparse_mat, feature_names
+
+    # Step 3: Exact sparse Pearson verification
+    log(f"  [CLUSTER] Computing exact Pearson correlations...")
+    confirmed_pairs = []
+
+    for i, j in candidate_pairs:
+        ci = np.asarray(sparse_mat_csc.getcol(i).todense()).flatten()
+        cj = np.asarray(sparse_mat_csc.getcol(j).todense()).flatten()
+
+        # Compute Pearson correlation
+        if np.std(ci) == 0 or np.std(cj) == 0:
+            continue  # Skip constant columns
+
+        r = np.corrcoef(ci, cj)[0, 1]
+        if abs(r) > threshold:
+            confirmed_pairs.append((i, j, r))
+
+    log(f"  [CLUSTER] Confirmed: {len(confirmed_pairs):,} pairs with |r| > {threshold}")
+
+    if len(confirmed_pairs) == 0:
+        log(f"  [CLUSTER] No confirmed pairs, returning original matrix")
+        return sparse_mat, feature_names
+
+    # Step 4: Union-Find clustering
+    log(f"  [CLUSTER] Building clusters (Union-Find)...")
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x, y):
+        parent[find(x)] = find(y)
+
+    for i, j, r in confirmed_pairs:
+        union(i, j)
+
+    # Group into clusters
+    from collections import defaultdict
+    clusters = defaultdict(list)
+    for idx in clusterable_indices:
+        if idx in parent or any(idx == p[0] or idx == p[1] for p in confirmed_pairs):
+            clusters[find(idx)].append(idx)
+
+    # Step 5: Select representatives (keep sparsest = most specific signal)
+    representatives = []
+    clustered_count = 0
+
+    for root, members in clusters.items():
+        if len(members) == 1:
+            representatives.append(members[0])
+        else:
+            # Keep the sparsest (most specific) feature in each cluster
+            sparsities = [sparsity[m] for m in members]
+            best_idx = members[np.argmin(sparsities)]
+            representatives.append(best_idx)
+            clustered_count += len(members) - 1
+
+    # Add all protected features
+    protected_indices = np.where(protected_mask)[0].tolist()
+    all_keep_indices = sorted(protected_indices + representatives)
+
+    log(f"  [CLUSTER] Clusters: {len(clusters):,} groups")
+    log(f"  [CLUSTER] Removed: {clustered_count:,} redundant features")
+    log(f"  [CLUSTER] Kept: {len(all_keep_indices):,} features "
+        f"({len(protected_indices):,} protected + {len(representatives):,} representatives)")
+
+    # Build reduced matrix
+    reduced_mat = sparse_mat_csc[:, all_keep_indices].tocsc()
+    reduced_names = [feature_names[i] for i in all_keep_indices]
+
+    return reduced_mat, reduced_names
+
+
 def _compute_cooccurrence_pairs(left_mat, right_mat, min_nonzero):
     """Compute co-occurrence counts and return valid pairs meeting threshold.
 
@@ -3329,6 +3507,27 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
         log(f"  Sparse matrix: {sparse_mat.shape}, {sparse_mat.nnz:,} non-zeros, "
             f"density={sparse_mat.nnz / (sparse_mat.shape[0] * sparse_mat.shape[1]) * 100:.3f}%")
+
+        # ── CORRELATION CLUSTERING (optional, gated by env var) ──
+        # Clusters highly correlated TA × TA crosses to reduce redundancy.
+        # NEVER touches esoteric features (protected prefixes).
+        _USE_CORRELATION_CLUSTERING = os.environ.get('USE_CORRELATION_CLUSTERING', '0') == '1'
+        if _USE_CORRELATION_CLUSTERING and total_crosses > 1000:
+            log(f"\n  CORRELATION CLUSTERING: Enabled (reducing TA cross redundancy)")
+            try:
+                sparse_mat, cross_names = _apply_correlation_clustering(
+                    sparse_mat, all_cross_names, tf, threshold=0.95
+                )
+                log(f"  Clustering complete: {sparse_mat.shape[1]:,} features retained "
+                    f"({len(all_cross_names) - sparse_mat.shape[1]:,} clustered)")
+            except Exception as _cluster_err:
+                log(f"  WARNING: Correlation clustering failed (non-fatal): {_cluster_err}")
+                log(f"  Proceeding with full feature set")
+                import traceback
+                traceback.print_exc()
+                cross_names = all_cross_names
+        else:
+            cross_names = all_cross_names
 
         # Save sparse matrix + column names
         import json
