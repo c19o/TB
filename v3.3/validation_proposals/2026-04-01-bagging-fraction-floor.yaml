@@ -1,0 +1,25 @@
+id: VAL-0095
+title: bagging_fraction Optuna floor must be >= 0.95
+predicate: "All suggest_float('bagging_fraction', ...) calls have lower bound >= 0.95"
+severity: critical
+scope:
+  - training_config
+  - run_optuna_local.py
+rationale: |
+  bagging_fraction < 0.95 reduces probability that rare signals (firing 2x/year)
+  appear in any given bagging sample. At 0.7, P(rare signal in bag) drops to ~40%
+  vs 59.9% at 0.95. This silently kills the matrix thesis edge.
+  CONVENTIONS.md explicitly states: bagging_fraction >= 0.95.
+evidence:
+  - "SAV-33: Spot check found run_optuna_local.py:650 using suggest_float('bagging_fraction', 0.7, 1.0)"
+  - "CONVENTIONS.md line 27: bagging_fraction >= 0.95"
+examples:
+  passing:
+    - "trial.suggest_float('bagging_fraction', 0.95, 1.0)"
+  failing:
+    - "trial.suggest_float('bagging_fraction', 0.7, 1.0)"
+message: "bagging_fraction Optuna floor must be >= 0.95 (preserves P(rare-signal-in-bag) = 59.9%)"
+rollout: hard_gate
+proposed_by: CEO-audit
+date: 2026-04-01
+status: proposed

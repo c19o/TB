@@ -81,6 +81,24 @@ Files that REQUIRE KB research before ANY edit:
 If you edit these files without KB queries, your work will be REJECTED and REVERTED.
 The KB has 947 docs: AFML full book, LightGBM paper, CUDA guides, 42 academic papers on every signal type. USE THEM.
 
+### KB Gap + Perplexity Source Logging — MANDATORY
+If KB returns <3 relevant results across your 3 queries, you MUST:
+1. Log the gap to ops_kb:
+   ```bash
+   python ops_kb.py add "KB_GAP: Queried [your 3 queries]. <3 relevant results. Topic needed: [what's missing]. Suggested text: [paper/book if known]" --topic kb_gap
+   ```
+2. THEN use Perplexity (with matrix thesis context as always)
+3. After Perplexity returns, log its sources to ops_kb:
+   ```bash
+   python ops_kb.py add "PERPLEXITY_SOURCE: Query=[what you asked]. Sources=[list URLs/paper names Perplexity cited]. Key finding=[one-line summary]. Confidence=[high/medium/low based on source quality]" --topic perplexity_source
+   ```
+4. If Perplexity cites a paper/textbook we don't have in KB, add it to the gap log:
+   ```bash
+   python ops_kb.py add "KB_GAP_DOWNLOAD: [paper/book title] by [author]. URL: [if available]. Reason: Perplexity cited this for [topic] and we don't have it in KB." --topic kb_gap
+   ```
+
+This creates an audit trail: KB gap found -> Perplexity used -> sources logged -> texts identified for download -> user downloads -> KB ingested -> gap closed.
+
 ## POST-IMPLEMENTATION VERIFICATION — NON-NEGOTIABLE
 After writing ANY code that touches training or features, you MUST verify:
 
@@ -130,6 +148,29 @@ Before committing, answer YES to ALL:
 - [ ] validate.py passes?
 
 If ANY box is unchecked → FIX before committing.
+
+## VALIDATION PROPOSAL PROCESS
+
+When you discover a new invariant that should be enforced (e.g., a parameter range, a config consistency rule):
+
+1. **DO NOT edit validate.py directly** — it's QA Lead + User only
+2. Create a proposal file: `v3.3/validation_proposals/YYYY-MM-DD-short-name.yaml`
+3. Include: predicate, severity, rationale, evidence, pass/fail examples
+4. Commit the proposal file
+5. QA Lead reviews → implements in validate.py → updates .validate_hash
+6. Stop hook enforces the new check on all future agent runs
+
+See `v3.3/validation_proposals/README.md` for the full YAML schema.
+
+## STOP HOOK ENFORCEMENT (AUTOMATIC — YOU CANNOT BYPASS)
+
+Before you can finish any task, the Stop hook checks:
+- **Gate 1**: validate.py must pass (all checks green)
+- **Gate 2**: ops_kb must have your log entry
+- **Gate 3**: PROTECTED_FEATURE_PREFIXES must cover all feature prefixes in feature_library.py
+- **Gate 4**: Sacred parameter ranges (bagging_fraction >= 0.95, feature_fraction >= 0.7)
+
+If ANY gate fails → you are BLOCKED from finishing. Fix the violations first.
 
 ## CODE STYLE
 

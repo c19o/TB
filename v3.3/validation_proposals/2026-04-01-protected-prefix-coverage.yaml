@@ -1,0 +1,25 @@
+id: VAL-0096
+title: PROTECTED_FEATURE_PREFIXES must cover all feature_library.py prefixes
+predicate: "Every feature prefix used in feature_library.py appears in config.PROTECTED_FEATURE_PREFIXES"
+severity: critical
+scope:
+  - config.py
+  - feature_library.py
+rationale: |
+  When new features are added to feature_library.py, their prefixes MUST be added
+  to PROTECTED_FEATURE_PREFIXES in config.py. Otherwise the AFML feature elimination
+  loop in ml_multi_tf.py will silently prune these rare esoteric signals.
+  This was missed for bio_, rahu_, ketu_, fib_, gann_, biorhythm_ after SAV-13/14.
+evidence:
+  - "SAV-34: Spot check found 4+ prefixes in feature_library.py missing from config.py"
+  - "AFML elimination loop uses is_protected_feature() which reads PROTECTED_FEATURE_PREFIXES"
+examples:
+  passing:
+    - "feature_library uses 'rahu_' prefix AND config.py PROTECTED_FEATURE_PREFIXES contains 'rahu_'"
+  failing:
+    - "feature_library uses 'rahu_' prefix BUT config.py PROTECTED_FEATURE_PREFIXES does NOT contain 'rahu_'"
+message: "Feature prefix '{prefix}' used in feature_library.py but missing from PROTECTED_FEATURE_PREFIXES"
+rollout: hard_gate
+proposed_by: CEO-audit
+date: 2026-04-01
+status: proposed

@@ -647,7 +647,7 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
         min_data_in_leaf = trial.suggest_int('min_data_in_leaf', max(2, _tf_mdil), _mdil_max)
         feature_fraction = trial.suggest_float('feature_fraction', 0.7, 1.0)
         feature_fraction_bynode = trial.suggest_float('feature_fraction_bynode', 0.7, 1.0)
-        bagging_fraction = trial.suggest_float('bagging_fraction', 0.7, 1.0)
+        bagging_fraction = trial.suggest_float('bagging_fraction', 0.95, 1.0)
         lambda_l1 = trial.suggest_float('lambda_l1', 1e-4, 4.0, log=True)   # T-1: capped at 4.0 — [1,100] zeroed rare signals firing ≤15 times
         lambda_l2 = trial.suggest_float('lambda_l2', 1e-4, 10.0, log=True)  # T-1: capped at 10.0 — log-scale, mass near zero
         min_gain_to_split = trial.suggest_float('min_gain_to_split', 0.0, 5.0)

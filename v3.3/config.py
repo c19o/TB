@@ -213,6 +213,9 @@ PROTECTED_FEATURE_PREFIXES = [
     # Esoteric cycle and astro prefixes
     'schumann_', 'chakra_', 'jupiter_', 'mercury_', 'planetary_',
     'saros_', 'metonic_', 'news_astro_', 'game_astro_',
+    # V3.3 new feature prefixes (SAV-13/14)
+    'bio_', 'biorhythm_', 'rahu_', 'ketu_', 'fib_', 'fib_ret_', 'fib_ext_',
+    'gann_', 'near_fib',
 ]
 
 
@@ -661,7 +664,7 @@ OPTUNA_TF_ROW_SUBSAMPLE = {
 
 # Per-TF trial count overrides
 OPTUNA_TF_PHASE1_TRIALS = {
-    '1w': 15,   # was 20 — smaller search space (fewer leaves/depth combos), 15 is sufficient
+    '1w': 30,   # bumped from 15 — more thorough hyperparameter search for weekly TF
     '1d': 25, '4h': 25, '1h': 25, '15m': 30,
 }
 
@@ -702,6 +705,22 @@ OPTUNA_TF_FINAL_ROUNDS = {
 
 # n_jobs: env var override or auto
 OPTUNA_N_JOBS = int(os.environ.get('OPTUNA_N_JOBS', 0))  # 0 = auto (total_cores // 8). 13900K=3, 128c=16.
+
+# ── SOFT LABEL SMOOTHING ──
+LABEL_SMOOTHING_EPSILON = 0.10  # default smoothing factor (0.1 = 10% smoothing)
+LABEL_SMOOTHING_TF_OVERRIDE = {
+    '1w': 0.15,  # weekly needs more smoothing due to tiny dataset
+}
+
+# ── AFML FEATURE ELIMINATION ──
+ENABLE_AFML_ELIMINATION = False  # set True to enable SHAP-based feature elimination
+AFML_ELIMINATION_PARAMS = {
+    'max_rounds': 5,
+    'elimination_fraction': 0.05,
+    'min_importance_threshold': 1e-7,
+    'performance_tolerance': 0.02,
+    'max_samples': 2000,
+}
 
 # ── Multi-GPU Fold-Parallel CPCV ──
 # Number of GPUs to use for parallel CPCV fold training.
@@ -786,7 +805,7 @@ RISK_LIMITS = {
     'max_open_risk_pct': 0.08,        # 8% — sum of (stop_distance × position_size) / equity
     'max_leverage': 125,              # absolute cap — regime multipliers can't push above this
     'max_concurrent_positions': 5,    # across all TFs combined
-    'max_exposure_pct': 1.0,          # 100% of equity max gross notional (with leverage)
+    'max_exposure_pct': 0.30,         # 30% of equity max gross notional (SAV-19: hard limit)
 }
 
 # ── Drawdown Protocol ──
@@ -815,7 +834,7 @@ DRAWDOWN_PROTOCOL = {
 # ── Circuit Breakers (Fat-Finger / Bug Safeguards) ──
 CIRCUIT_BREAKERS = {
     'max_orders_per_minute': 3,       # prevent rapid-fire bugs
-    'max_notional_per_order': 0.25,   # 25% of equity per single order
+    'max_notional_per_order': 0.10,   # 10% of equity per single order (SAV-19: hard limit)
     'pnl_sanity_sigma': 5.0,          # if PnL moves >5σ vs recent distribution, kill switch
     'pnl_lookback_trades': 20,        # look at last 20 trades for σ calculation
     'stale_data_max_bars': 3,         # halt if features are >3 bars old
