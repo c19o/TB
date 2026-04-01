@@ -65,6 +65,7 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 2. Downstream 4h/1h/15m full runs are queued behind 1d stabilization.
 3. CUDA13+ local release path mismatch: default smoke path fails unless `ALLOW_CPU=1` is explicitly set (document/enforce fallback behavior in release flow).
 4. Documentation governance gap: `v3.3/PARAMETER_GUIDE.md` still states `validate.py` has 74 checks; current reality is 96/96. Reopened in Paperclip for correction.
+5. Paperclip governance readiness gaps: no automated KB-evidence gate, no enforced auto-failover between mirror agents, and workflow status can remain `todo` while execution runs are active.
 
 Non-blocking resolved items:
 - LightGBM import failure resolved.
@@ -102,6 +103,8 @@ Non-blocking resolved items:
 26. Documentation Lead DoD rerun after daemon-int64 documentation sync: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL again on default CUDA13 cuDF gate without `ALLOW_CPU=1`.
 27. SAV-50 re-audit completed: reviewed SAV-27/SAV-28/SAV-38/SAV-42 against current repo and issue state, found stale governance claim in `PARAMETER_GUIDE.md` (`74 checks`), and reopened SAV-28 for correction; SAV-42 remains TODO (governance audit still pending).
 28. Post-SAV-50 DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL on the same CUDA13 cuDF gate unless `ALLOW_CPU=1` is set.
+29. SAV-42 production-readiness governance audit completed (Paperclip company): strengths confirmed (skills attached to all agents, run-linked checkout traces), and major gaps documented (mirror failover not automatic, KB-first evidence not system-enforced, status/execution mismatch on active tasks). Recommended controls posted to issue.
+30. Post-SAV-42 DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL on the known CUDA13 cuDF gate unless `ALLOW_CPU=1` is set.
 
 ---
 
@@ -119,3 +122,4 @@ features and must remain protected.
 3. When 1d cross-gen is stable, execute 1d Steps 3-7 and capture actual timings.
 4. Advance full pipeline in order: 4h, then 1h, then 15m.
 5. After every step completion or machine change, update `ETA_CHART.md` and log ops_kb entry.
+6. Track closure of governance controls from SAV-42 (KB-evidence gate, mirror failover policy, workflow status consistency) before relying on autonomous multi-agent execution for production-critical training steps.
