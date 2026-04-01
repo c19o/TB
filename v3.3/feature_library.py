@@ -323,6 +323,49 @@ def _gann_sq9_vec(c_vals):
 
 
 @njit(cache=True)
+def _gann_angles_vec(c_vals, h_vals, l_vals, lookback):
+    """Gann angle features — distance from price to Gann angle lines projected
+    from the most recent swing low within *lookback* bars.
+
+    Gann angles are price/time ratios:
+      1x1 = 1 unit price per 1 unit time (45 degrees)
+      2x1 = 2 units price per 1 unit time
+      etc.
+
+    Returns arrays for each angle: ratio of (price - projected_level) / price.
+    Positive = price above angle, negative = below.
+    """
+    n = len(c_vals)
+    # 9 standard Gann angles: 1x8, 1x4, 1x3, 1x2, 1x1, 2x1, 3x1, 4x1, 8x1
+    ratios = np.array([0.125, 0.25, 0.333333, 0.5, 1.0, 2.0, 3.0, 4.0, 8.0])
+    num_angles = len(ratios)
+    out = np.full((n, num_angles), np.nan)
+
+    for i in range(1, n):
+        # Find most recent swing low in lookback window
+        start = max(0, i - lookback)
+        swing_low_idx = start
+        swing_low_val = l_vals[start]
+        for j in range(start + 1, i):
+            if l_vals[j] < swing_low_val:
+                swing_low_val = l_vals[j]
+                swing_low_idx = j
+
+        bars_since = i - swing_low_idx
+        if bars_since < 1 or swing_low_val <= 0.0:
+            continue
+
+        price = c_vals[i]
+        if price <= 0.0 or np.isnan(price):
+            continue
+
+        for k in range(num_angles):
+            projected = swing_low_val + ratios[k] * bars_since
+            out[i, k] = (price - projected) / price
+    return out
+
+
+@njit(cache=True)
 def _wyckoff_loop(c_arr, h_arr, l_arr, o_arr, v_arr, vol_ma_arr, atr_arr,
                   roll_low_30, bar_spread, n):
     """Wyckoff state machine — full 127-line loop, compiled to native code."""
@@ -1424,6 +1467,50 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     out['fib_13_from_high'] = rolling_high * 0.87
     out['near_fib_21'] = ((c - out['fib_21_from_low']).abs() / c < 0.02).astype(int)
     out['near_fib_13'] = ((c - out['fib_13_from_high']).abs() / c < 0.02).astype(int)
+
+    # --- Fibonacci Retracement Levels ---
+    # Standard retracement from 200-bar swing range
+    fib_range = rolling_high - rolling_low
+    _fib_ret_levels = {'fib_ret_236': 0.236, 'fib_ret_382': 0.382,
+                       'fib_ret_500': 0.5, 'fib_ret_618': 0.618,
+                       'fib_ret_786': 0.786}
+    fib_near_count = _m.Series(0, index=df.index, dtype=int)  # for confluence
+    for fname, flevel in _fib_ret_levels.items():
+        level = rolling_high - fib_range * flevel
+        out[fname] = level
+        dist = (c - level).abs() / c
+        out[f'{fname}_dist'] = dist
+        near = (dist < 0.02).astype(int)
+        out[f'near_{fname}'] = near
+        fib_near_count = fib_near_count + near
+
+    # --- Fibonacci Extension Levels ---
+    _fib_ext_levels = {'fib_ext_1272': 1.272, 'fib_ext_1618': 1.618,
+                       'fib_ext_2618': 2.618}
+    for fname, flevel in _fib_ext_levels.items():
+        level = rolling_low + fib_range * flevel
+        out[fname] = level
+        dist = (c - level).abs() / c
+        out[f'{fname}_dist'] = dist
+        near = (dist < 0.02).astype(int)
+        out[f'near_{fname}'] = near
+        fib_near_count = fib_near_count + near
+
+    # --- Fibonacci Confluence ---
+    # Count of how many Fib levels (retrace + extension) price is near simultaneously
+    out['fib_confluence_count'] = fib_near_count
+    out['fib_confluence_high'] = (fib_near_count >= 2).astype(int)
+
+    # --- Gann Angles from Swing Low (Numba JIT) ---
+    _gann_lookback = min(200, len(c_vals))
+    gann_ang = _gann_angles_vec(c_vals.astype(np.float64),
+                                h_vals.astype(np.float64),
+                                l_vals.astype(np.float64),
+                                _gann_lookback)
+    _gann_names = ['gann_1x8', 'gann_1x4', 'gann_1x3', 'gann_1x2',
+                   'gann_1x1', 'gann_2x1', 'gann_3x1', 'gann_4x1', 'gann_8x1']
+    for gi, gname in enumerate(_gann_names):
+        out[gname] = gann_ang[:, gi]
 
     # --- Interaction features ---
     def _col_or(df, col, default=0):
