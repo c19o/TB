@@ -64,6 +64,7 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 1. 1d cross-gen step 3+ still blocked by remaining `cross_supervisor.py` defects.
 2. Downstream 4h/1h/15m full runs are queued behind 1d stabilization.
 3. CUDA13+ local release path mismatch: default smoke path fails unless `ALLOW_CPU=1` is explicitly set (document/enforce fallback behavior in release flow).
+4. Documentation governance gap: `v3.3/PARAMETER_GUIDE.md` still states `validate.py` has 74 checks; current reality is 96/96. Reopened in Paperclip for correction.
 
 Non-blocking resolved items:
 - LightGBM import failure resolved.
@@ -99,6 +100,7 @@ Non-blocking resolved items:
 24. `gpu_daemon.py` CUDA sparse-and-batch path patched for NNZ safety (ops_kb ID 64): CSC `indptr` now preserved as int64 end-to-end (`cp.int64`, kernel pointer/loop variables migrated to `long long`) to avoid >2^31 overflow risk.
 25. New `smoke_test_1w.json` artifact after daemon int64 patch: PASS 10/10 (`total_time=5.4s`) with `ALLOW_CPU=1` fallback context on local CUDA13 environment.
 26. Documentation Lead DoD rerun after daemon-int64 documentation sync: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL again on default CUDA13 cuDF gate without `ALLOW_CPU=1`.
+27. SAV-50 re-audit completed: reviewed SAV-27/SAV-28/SAV-38/SAV-42 against current repo and issue state, found stale governance claim in `PARAMETER_GUIDE.md` (`74 checks`), and reopened SAV-28 for correction; SAV-42 remains TODO (governance audit still pending).
 
 ---
 
