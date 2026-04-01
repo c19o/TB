@@ -24,6 +24,8 @@ Steps:
 import os, sys, subprocess, time, json, glob, sqlite3, threading
 
 os.environ['PYTHONUNBUFFERED'] = '1'
+# ALLOW_CPU=1: CUDA 13+ drops cuDF — feature_library.py uses pandas fallback (all 5 TFs)
+os.environ.setdefault('ALLOW_CPU', '1')
 # SAV-53: OMP_NUM_THREADS=4 MUST be set BEFORE any numpy/scipy/LightGBM import in subprocesses.
 # Prevents thread exhaustion during cross generation on cloud machines (all 5 TFs).
 os.environ['OMP_NUM_THREADS'] = '4'
