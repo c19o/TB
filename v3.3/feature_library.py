@@ -1833,6 +1833,11 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
     out['price_contains_132'] = np.where(_c_not_nan, _c_str.str.contains('132', regex=False).astype(np.int32), np.nan)
     out['price_contains_123'] = np.where(_c_not_nan, _c_str.str.contains('123', regex=False).astype(np.int32), np.nan)
     out['price_contains_68'] = np.where(_c_not_nan, _c_str.str.contains('68', regex=False).astype(np.int32), np.nan)
+    # Matrix crypto guide/BTC Energy linked patterns
+    out['price_contains_223'] = np.where(_c_not_nan, _c_str.str.contains('223', regex=False).astype(np.int32), np.nan)
+    out['price_contains_48'] = np.where(_c_not_nan, _c_str.str.contains('48', regex=False).astype(np.int32), np.nan)
+    out['price_contains_84'] = np.where(_c_not_nan, _c_str.str.contains('84', regex=False).astype(np.int32), np.nan)
+    out['price_contains_11'] = np.where(_c_not_nan, _c_str.str.contains('11', regex=False).astype(np.int32), np.nan)
 
     # Price master number — vectorized (check last 2 digits)
     _c_mod100 = np.where(np.isnan(c_vals), -1, np.abs(c_vals).astype(np.int64) % 100)
@@ -7346,6 +7351,18 @@ def _add_cross_features(df: pd.DataFrame):
         pc68 = _bin('price_contains_68')
         _cross('px_pc68_x_rsi_os', pc68, _bin('rsi_14_os'))
         _cross('px_pc68_x_macd_high', pc68, _cont_high('macd_histogram'))
+        pc223 = _bin('price_contains_223')
+        _cross('px_pc223_x_rsi_os', pc223, _bin('rsi_14_os'))
+        _cross('px_pc223_x_macd_high', pc223, _cont_high('macd_histogram'))
+        pc48 = _bin('price_contains_48')
+        _cross('px_pc48_x_rsi_os', pc48, _bin('rsi_14_os'))
+        _cross('px_pc48_x_macd_high', pc48, _cont_high('macd_histogram'))
+        pc84 = _bin('price_contains_84')
+        _cross('px_pc84_x_rsi_os', pc84, _bin('rsi_14_os'))
+        _cross('px_pc84_x_macd_high', pc84, _cont_high('macd_histogram'))
+        pc11 = _bin('price_contains_11')
+        _cross('px_pc11_x_rsi_os', pc11, _bin('rsi_14_os'))
+        _cross('px_pc11_x_macd_high', pc11, _cont_high('macd_histogram'))
 
         # --- GCP x TA ---
         gcp_ext = _bin('gcp_extreme')
