@@ -406,11 +406,24 @@ def check_environment(tf=None, cloud=False):
         pass
     if not cudf_available:
         allow_cpu = os.environ.get('ALLOW_CPU', '')
-        check("ALLOW_CPU=1 when cuDF unavailable",
-              allow_cpu == '1',
-              f"ALLOW_CPU={allow_cpu!r} but cuDF is not importable (CUDA 13+ dropped it). "
-              f"feature_library.py needs ALLOW_CPU=1 to use pandas fallback. "
-              f"FIX: export ALLOW_CPU=1 before running pipeline.")
+        if cloud:
+            # Cloud: runtime env var MUST be set (pipeline is about to run)
+            check("ALLOW_CPU=1 when cuDF unavailable",
+                  allow_cpu == '1',
+                  f"ALLOW_CPU={allow_cpu!r} but cuDF is not importable (CUDA 13+ dropped it). "
+                  f"feature_library.py needs ALLOW_CPU=1 to use pandas fallback. "
+                  f"FIX: export ALLOW_CPU=1 before running pipeline.")
+        else:
+            # Local: verify cloud_run_tf.py sets ALLOW_CPU (it does since SAV-53)
+            crt_path = os.path.join(PROJECT_DIR, 'cloud_run_tf.py')
+            crt_has_allow_cpu = False
+            if os.path.isfile(crt_path):
+                with open(crt_path, 'r') as f:
+                    crt_has_allow_cpu = 'ALLOW_CPU' in f.read()
+            check("cloud_run_tf.py sets ALLOW_CPU for cuDF-less environments",
+                  crt_has_allow_cpu,
+                  f"cuDF unavailable and cloud_run_tf.py does not set ALLOW_CPU. "
+                  f"FIX: add os.environ.setdefault('ALLOW_CPU', '1') to cloud_run_tf.py")
 
     if not cloud:
         return  # Local mode: skip machine checks
@@ -1246,6 +1259,22 @@ def check_training_consistency():
                  f"{_sf} does not mention ALLOW_CPU=1. "
                  f"CUDA 13+ drops cuDF -- pandas fallback requires ALLOW_CPU=1. "
                  f"FIX: add 'export ALLOW_CPU=1' to {_sf}")
+
+    # -- Symbol format: no 'BTC/USDT' with slash (breaks file paths) --
+    # Bug: Symbol used in file naming (features_{symbol}_{tf}.parquet).
+    # 'BTC/USDT' format creates invalid path with slash as separator.
+    # Fix: Always use base ticker without exchange suffix (BTC not BTC/USDT).
+    _bad_symbol_pattern = re.compile(r'''['"]BTC/USDT['"]|['"]ETH/USDT['"]|['"]SPY/USD['"]''')
+    for _fname, _content in all_py_contents.items():
+        if _fname in ('validate.py', '__pycache__'):
+            continue
+        _matches = _bad_symbol_pattern.findall(_content)
+        if _matches:
+            check(f"{_fname}: no 'BTC/USDT' format in symbol args",
+                  False,
+                  f"{_fname} contains symbol with slash: {_matches[0]}. "
+                  f"Symbol is used in file naming (features_{{symbol}}_{{tf}}.parquet). "
+                  f"Slash breaks paths. FIX: use 'BTC' not 'BTC/USDT'")
 
     # -- Constant features gated for 1w (SKIP_FEATURES_1W in config.py) --
     # Bug: 10 constant features for 1w (hour_sin/cos, dow_sin/cos, etc.) waste tree splits.
