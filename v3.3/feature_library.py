@@ -1778,6 +1778,12 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
     out['is_19'] = (doy == 19).astype(int)
     out['btc_213'] = (doy == 213).astype(int)
 
+    # BTC Energy DOY flags — all permutations of 1,2,3 + 68 (digital root 5)
+    out['btc_231'] = (doy == 231).astype(int)
+    out['btc_321'] = (doy == 321).astype(int)
+    out['btc_123'] = (doy == 123).astype(int)
+    out['btc_68'] = (doy == 68).astype(int)
+
     # Mirror DOY numbers (inverse energy of key numbers)
     out['is_72'] = (doy == 72).astype(int)    # mirror of 27 (pump) = ANTI-PUMP
     out['is_71'] = (doy == 71).astype(int)    # mirror of 17 (kill) = recovery
@@ -1788,6 +1794,15 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
     # DOY 1-365 flags (for systematic cross expansion)
     for d in range(1, 366):
         out[f'doy_{d}'] = (doy == d).astype(np.int8)
+
+    # BTC Energy proximity — distance from DOY to nearest BTC energy target
+    _btc_energy_doys = np.array([213, 231, 312, 321, 132, 123, 68])
+    _doy_arr = doy.values if hasattr(doy, 'values') else doy
+    _doy_dists = np.abs(_doy_arr[:, None] - _btc_energy_doys[None, :])
+    out['doy_btc_energy_distance'] = _doy_dists.min(axis=1).astype(np.float32)
+    out['doy_btc_energy_is_near'] = (out['doy_btc_energy_distance'] <= 3).astype(int)
+    # Any BTC energy DOY flag (union of all 7 targets)
+    out['btc_energy_doy_any'] = np.isin(_doy_arr, _btc_energy_doys).astype(int)
 
     # Date DR — vectorized (no list comp)
     _date_digits = (idx.year * 10000 + idx.month * 100 + idx.day).values.astype(np.int64)
@@ -1811,6 +1826,13 @@ def compute_numerology_features(df: pd.DataFrame) -> pd.DataFrame:
     out['price_contains_113'] = np.where(_c_not_nan, _c_str.str.contains('113', regex=False).astype(np.int32), np.nan)
     out['price_contains_93'] = np.where(_c_not_nan, _c_str.str.contains('93', regex=False).astype(np.int32), np.nan)
     out['price_contains_213'] = np.where(_c_not_nan, _c_str.str.contains('213', regex=False).astype(np.int32), np.nan)
+    # BTC Energy price_contains — all permutations of {213, 231, 312, 321, 132, 123, 68}
+    out['price_contains_231'] = np.where(_c_not_nan, _c_str.str.contains('231', regex=False).astype(np.int32), np.nan)
+    out['price_contains_312'] = np.where(_c_not_nan, _c_str.str.contains('312', regex=False).astype(np.int32), np.nan)
+    out['price_contains_321'] = np.where(_c_not_nan, _c_str.str.contains('321', regex=False).astype(np.int32), np.nan)
+    out['price_contains_132'] = np.where(_c_not_nan, _c_str.str.contains('132', regex=False).astype(np.int32), np.nan)
+    out['price_contains_123'] = np.where(_c_not_nan, _c_str.str.contains('123', regex=False).astype(np.int32), np.nan)
+    out['price_contains_68'] = np.where(_c_not_nan, _c_str.str.contains('68', regex=False).astype(np.int32), np.nan)
 
     # Price master number — vectorized (check last 2 digits)
     _c_mod100 = np.where(np.isnan(c_vals), -1, np.abs(c_vals).astype(np.int64) % 100)
@@ -7214,6 +7236,112 @@ def _add_cross_features(df: pd.DataFrame):
         btc213 = _bin('btc_213')
         _cross('px_213_x_wyckoff_evr_high', btc213, _cont_high('wyckoff_effort_vs_result'))
         _cross('px_213_x_vol_ratio_high', btc213, _cont_high('volume_ratio'))
+        _cross('px_213_x_rsi_os', btc213, _bin('rsi_14_os'))
+        _cross('px_213_x_bb_low', btc213, _cont_low('bb_pctb_20'))
+        _cross('px_213_x_macd_high', btc213, _cont_high('macd_histogram'))
+        _cross('px_213_x_sar_flip', btc213, _bin('sar_flip'))
+        _cross('px_213_x_vol_spike', btc213, _bin('volume_spike'))
+        _cross('px_213_x_fg_fear', btc213, fg_fear)
+        _cross('px_213_x_fg_greed', btc213, fg_greed)
+        _cross('px_213_x_eclipse', btc213, _bin('eclipse_window'))
+
+        # --- BTC Energy #231 (permutation) x TA/Orderbook ---
+        btc231 = _bin('btc_231')
+        _cross('px_231_x_rsi_os', btc231, _bin('rsi_14_os'))
+        _cross('px_231_x_bb_low', btc231, _cont_low('bb_pctb_20'))
+        _cross('px_231_x_macd_high', btc231, _cont_high('macd_histogram'))
+        _cross('px_231_x_sar_flip', btc231, _bin('sar_flip'))
+        _cross('px_231_x_vol_spike', btc231, _bin('volume_spike'))
+        _cross('px_231_x_wyckoff_evr_high', btc231, _cont_high('wyckoff_effort_vs_result'))
+        _cross('px_231_x_vol_ratio_high', btc231, _cont_high('volume_ratio'))
+        _cross('px_231_x_fg_fear', btc231, fg_fear)
+        _cross('px_231_x_fg_greed', btc231, fg_greed)
+        _cross('px_231_x_eclipse', btc231, _bin('eclipse_window'))
+
+        # --- BTC Energy #321 (permutation) x TA/Orderbook ---
+        btc321 = _bin('btc_321')
+        _cross('px_321_x_rsi_os', btc321, _bin('rsi_14_os'))
+        _cross('px_321_x_bb_low', btc321, _cont_low('bb_pctb_20'))
+        _cross('px_321_x_macd_high', btc321, _cont_high('macd_histogram'))
+        _cross('px_321_x_sar_flip', btc321, _bin('sar_flip'))
+        _cross('px_321_x_vol_spike', btc321, _bin('volume_spike'))
+        _cross('px_321_x_wyckoff_evr_high', btc321, _cont_high('wyckoff_effort_vs_result'))
+        _cross('px_321_x_vol_ratio_high', btc321, _cont_high('volume_ratio'))
+        _cross('px_321_x_fg_fear', btc321, fg_fear)
+        _cross('px_321_x_fg_greed', btc321, fg_greed)
+        _cross('px_321_x_eclipse', btc321, _bin('eclipse_window'))
+
+        # --- BTC Energy #312 (permutation) x TA/Orderbook ---
+        n312 = _bin('is_312')
+        _cross('px_312_x_rsi_os', n312, _bin('rsi_14_os'))
+        _cross('px_312_x_bb_low', n312, _cont_low('bb_pctb_20'))
+        _cross('px_312_x_macd_high', n312, _cont_high('macd_histogram'))
+        _cross('px_312_x_sar_flip', n312, _bin('sar_flip'))
+        _cross('px_312_x_vol_spike', n312, _bin('volume_spike'))
+        _cross('px_312_x_wyckoff_evr_high', n312, _cont_high('wyckoff_effort_vs_result'))
+        _cross('px_312_x_vol_ratio_high', n312, _cont_high('volume_ratio'))
+        _cross('px_312_x_fg_fear', n312, fg_fear)
+        _cross('px_312_x_fg_greed', n312, fg_greed)
+        _cross('px_312_x_eclipse', n312, _bin('eclipse_window'))
+
+        # --- BTC Energy #132 (permutation) x TA/Orderbook ---
+        n132 = _bin('is_132')
+        _cross('px_132_x_rsi_os', n132, _bin('rsi_14_os'))
+        _cross('px_132_x_bb_low', n132, _cont_low('bb_pctb_20'))
+        _cross('px_132_x_macd_high', n132, _cont_high('macd_histogram'))
+        _cross('px_132_x_sar_flip', n132, _bin('sar_flip'))
+        _cross('px_132_x_vol_spike', n132, _bin('volume_spike'))
+        _cross('px_132_x_wyckoff_evr_high', n132, _cont_high('wyckoff_effort_vs_result'))
+        _cross('px_132_x_vol_ratio_high', n132, _cont_high('volume_ratio'))
+        _cross('px_132_x_fg_fear', n132, fg_fear)
+        _cross('px_132_x_fg_greed', n132, fg_greed)
+        _cross('px_132_x_eclipse', n132, _bin('eclipse_window'))
+
+        # --- BTC Energy #123 (permutation) x TA/Orderbook ---
+        btc123 = _bin('btc_123')
+        _cross('px_123_x_rsi_os', btc123, _bin('rsi_14_os'))
+        _cross('px_123_x_bb_low', btc123, _cont_low('bb_pctb_20'))
+        _cross('px_123_x_macd_high', btc123, _cont_high('macd_histogram'))
+        _cross('px_123_x_sar_flip', btc123, _bin('sar_flip'))
+        _cross('px_123_x_vol_spike', btc123, _bin('volume_spike'))
+        _cross('px_123_x_wyckoff_evr_high', btc123, _cont_high('wyckoff_effort_vs_result'))
+        _cross('px_123_x_vol_ratio_high', btc123, _cont_high('volume_ratio'))
+        _cross('px_123_x_fg_fear', btc123, fg_fear)
+        _cross('px_123_x_fg_greed', btc123, fg_greed)
+        _cross('px_123_x_eclipse', btc123, _bin('eclipse_window'))
+
+        # --- BTC Energy #68 (digital root 5) x TA/Orderbook ---
+        btc68 = _bin('btc_68')
+        _cross('px_68_x_rsi_os', btc68, _bin('rsi_14_os'))
+        _cross('px_68_x_bb_low', btc68, _cont_low('bb_pctb_20'))
+        _cross('px_68_x_macd_high', btc68, _cont_high('macd_histogram'))
+        _cross('px_68_x_sar_flip', btc68, _bin('sar_flip'))
+        _cross('px_68_x_vol_spike', btc68, _bin('volume_spike'))
+        _cross('px_68_x_wyckoff_evr_high', btc68, _cont_high('wyckoff_effort_vs_result'))
+        _cross('px_68_x_vol_ratio_high', btc68, _cont_high('volume_ratio'))
+        _cross('px_68_x_fg_fear', btc68, fg_fear)
+        _cross('px_68_x_fg_greed', btc68, fg_greed)
+        _cross('px_68_x_eclipse', btc68, _bin('eclipse_window'))
+
+        # --- BTC Energy price_contains crosses ---
+        pc231 = _bin('price_contains_231')
+        _cross('px_pc231_x_rsi_os', pc231, _bin('rsi_14_os'))
+        _cross('px_pc231_x_macd_high', pc231, _cont_high('macd_histogram'))
+        pc312 = _bin('price_contains_312')
+        _cross('px_pc312_x_rsi_os', pc312, _bin('rsi_14_os'))
+        _cross('px_pc312_x_macd_high', pc312, _cont_high('macd_histogram'))
+        pc321 = _bin('price_contains_321')
+        _cross('px_pc321_x_rsi_os', pc321, _bin('rsi_14_os'))
+        _cross('px_pc321_x_macd_high', pc321, _cont_high('macd_histogram'))
+        pc132 = _bin('price_contains_132')
+        _cross('px_pc132_x_rsi_os', pc132, _bin('rsi_14_os'))
+        _cross('px_pc132_x_macd_high', pc132, _cont_high('macd_histogram'))
+        pc123 = _bin('price_contains_123')
+        _cross('px_pc123_x_rsi_os', pc123, _bin('rsi_14_os'))
+        _cross('px_pc123_x_macd_high', pc123, _cont_high('macd_histogram'))
+        pc68 = _bin('price_contains_68')
+        _cross('px_pc68_x_rsi_os', pc68, _bin('rsi_14_os'))
+        _cross('px_pc68_x_macd_high', pc68, _cont_high('macd_histogram'))
 
         # --- GCP x TA ---
         gcp_ext = _bin('gcp_extreme')
