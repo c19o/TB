@@ -1,4 +1,4 @@
-﻿# Savage22 V3.3 - Pipeline ETA Chart
+# Savage22 V3.3 - Pipeline ETA Chart
 
 > IMPORTANT: Update this file after every pipeline step completion, machine change, or pipeline code change.
 > Fill actual timings as soon as known; re-estimate remaining pipeline ETAs immediately.
