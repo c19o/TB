@@ -1866,7 +1866,7 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                 N = left_mat.shape[0]
                 _out_dir = os.environ.get('V30_DATA_DIR', '.')
 
-                idx_files, total_nnz, n_feats = run_cross_step(
+                _step_result = run_cross_step(
                     handles=daemon_handles,
                     left_mat=left_mat,
                     right_mat=right_mat,
@@ -1876,6 +1876,20 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                     out_dir=_out_dir,
                     prefix=prefix,
                 )
+                # IPC contract drift guard: accept both legacy 2-tuple and
+                # newer 3-tuple return signatures from run_cross_step().
+                if not isinstance(_step_result, tuple):
+                    raise RuntimeError(
+                        f"run_cross_step returned non-tuple: {type(_step_result)}"
+                    )
+                if len(_step_result) == 3:
+                    idx_files, total_nnz, _ = _step_result
+                elif len(_step_result) == 2:
+                    idx_files, total_nnz = _step_result
+                else:
+                    raise RuntimeError(
+                        f"run_cross_step returned {len(_step_result)} values; expected 2 or 3"
+                    )
 
                 if not idx_files:
                     log(f"  V4 daemon dispatch: no .idx files (0 nnz)")
