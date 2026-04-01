@@ -13,7 +13,7 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 - Training: PASS (all steps)
 - Metrics: CPCV AUC 57.5%, model AUC 79.3%
 - Artifacts: `v3.3/1w_cloud_artifacts_v3/`
-- Latest smoke test: `smoke_test_pipeline.py --tf 1w` passed 10/10 after latest parity fix update.
+- Latest smoke test: default path still fails without `ALLOW_CPU=1` on local CUDA13+ due cuDF gate; latest gated run passed 10/10 (`smoke_test_1w.json`, total_time=6.5s).
 
 ### 1d
 - Status: BLOCKED (partial progress)
@@ -38,6 +38,7 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 - Status: NOT STARTED for V3.3 full training
 - Dependency: waits on 1d cross-gen path stabilization
 - Historical context: high OOM risk on GPU cross-gen; CPU fallback likely required
+- Latest smoke test: `smoke_test_15m.json` passed 10/10 with `ALLOW_CPU=1` (`total_time=8.9s`).
 
 ---
 
@@ -62,6 +63,7 @@ Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
 ## Blocking Issues
 1. 1d cross-gen step 3+ still blocked by remaining `cross_supervisor.py` defects.
 2. Downstream 4h/1h/15m full runs are queued behind 1d stabilization.
+3. CUDA13+ local release path mismatch: default smoke path fails unless `ALLOW_CPU=1` is explicitly set (document/enforce fallback behavior in release flow).
 
 Non-blocking resolved items:
 - LightGBM import failure resolved.
@@ -89,6 +91,11 @@ Non-blocking resolved items:
 16. Post-repo-probe DoD rerun completed: `import ops_kb` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL again with same cuDF CUDA13 gate (`ALLOW_CPU=1` needed for fallback).
 17. New `smoke_test_1w.json` artifact generated at 2026-04-01 12:08 (local): smoke test summary shows PASS (`passed=true`, 10/10 steps), `total_time=5.5s`, and no errors.
 18. Documentation Lead DoD rerun after doc refresh: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL at feature build with same cuDF CUDA13 gate unless `ALLOW_CPU=1` is set.
+19. SAV-4 follow-up (GPU/RAM) logged in ops_kb: `v2_cross_generator.py` daemon dispatch now accepts both 2-value and 3-value `run_cross_step` return contracts; tuple-unpack mismatch no longer forces legacy fallback path (commit `62f25d4`).
+20. SAV-43 production-readiness audit completed: convention gate PASS, `validate.py` PASS (96/96, 2 warnings), 1w smoke FAIL without `ALLOW_CPU=1` but PASS with it; 15m smoke PASS with `ALLOW_CPU=1`; CUDA13 fallback mismatch logged as deployment blocker.
+21. GPU/RAM safety defaults enforced in `v2_cross_generator.py`: `OMP_NUM_THREADS` default set to 4 and `RIGHT_CHUNK` default fixed at 500 (env override retained) to prevent RAM-driven oversized chunks and non-1w OOM risk.
+22. New smoke artifacts observed after SAV-43/GPU-RAM updates: `smoke_test_1w.json` PASS (`total_time=6.5s`) and `smoke_test_15m.json` PASS (`total_time=8.9s`), both aligned with `ALLOW_CPU=1` fallback context on local CUDA13 environment.
+23. Documentation Lead DoD rerun after SAV-43/GPU-RAM doc sync: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL again on CUDA13 cuDF gate without `ALLOW_CPU=1`.
 
 ---
 

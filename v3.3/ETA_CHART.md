@@ -45,6 +45,11 @@ Notes:
 | 2026-04-01 | 1w | smoke test pipeline (post-repo-probe DoD rerun) | ~2-5m | fail | Reproduced same cuDF CUDA13 gate behavior; requires cuDF or `ALLOW_CPU=1` |
 | 2026-04-01 | 1w | smoke test artifact refresh (`smoke_test_1w.json`) | ~2-5m | pass (10/10, 5.5s) | Artifact timestamp 12:08 local; no errors in JSON summary |
 | 2026-04-01 | 1w | smoke test pipeline (post-doc-refresh DoD rerun) | ~2-5m | fail | Feature build hit cuDF CUDA13 gate; set `ALLOW_CPU=1` or install cuDF |
+| 2026-04-01 | all | pipeline code change (SAV-4 daemon return-contract fix) | n/a | complete | Commit `62f25d4`: `v2_cross_generator` now accepts 2-value or 3-value `run_cross_step` return tuples (prevents false legacy fallback) |
+| 2026-04-01 | all | pipeline code change (GPU/RAM safety defaults) | n/a | complete | `v2_cross_generator` defaults: `OMP_NUM_THREADS=4`, `RIGHT_CHUNK=500` (env override kept) to reduce non-1w OOM risk |
+| 2026-04-01 | 1w | smoke test artifact refresh (`smoke_test_1w.json`) | ~2-5m | pass (10/10, 6.5s) | New artifact timestamp 12:12 local; aligns with ALLOW_CPU fallback context on CUDA13 local env |
+| 2026-04-01 | 15m | smoke test artifact refresh (`smoke_test_15m.json`) | ~2-5m | pass (10/10, 8.9s) | Artifact timestamp 12:10 local; PASS with ALLOW_CPU fallback context |
+| 2026-04-01 | 1w | smoke test pipeline (post-SAV-43 doc-sync DoD rerun) | ~2-5m | fail | Same CUDA13 cuDF gate on default path; requires `ALLOW_CPU=1` or cuDF install |
 
 ---
 
