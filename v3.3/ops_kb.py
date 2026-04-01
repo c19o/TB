@@ -13,7 +13,8 @@ Usage:
     python ops_kb.py stats
     python ops_kb.py list [--topic <tag>] [--limit N]
 
-Topics: training_result, bug_attempt, oom, deployment, decision, feature_audit, general
+Topics: training_result, bug_attempt, oom, deployment, decision, feature_audit,
+        kb_query, kb_source, kb_gap, perplexity_source, general
 """
 import sys
 import os
@@ -24,7 +25,19 @@ import textwrap
 import click
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ops_kb", "db", "ops_kb.db")
-VALID_TOPICS = {"training_result", "bug_attempt", "oom", "deployment", "decision", "feature_audit", "general"}
+VALID_TOPICS = {
+    "training_result",
+    "bug_attempt",
+    "oom",
+    "deployment",
+    "decision",
+    "feature_audit",
+    "kb_query",
+    "kb_source",
+    "kb_gap",
+    "perplexity_source",
+    "general",
+}
 
 # Prevent Windows cp1252 console crashes when entries contain unicode symbols.
 if hasattr(sys.stdout, "reconfigure"):

@@ -397,6 +397,21 @@ def check_environment(tf=None, cloud=False):
              'v3.0' not in v30 and 'LGBM' not in v30,
              f"V30_DATA_DIR={v30} -- on cloud should be /workspace or /workspace/v3.3, not v3.0 path")
 
+    # -- ALLOW_CPU env var when cuDF unavailable (CUDA 13+ drops cuDF) --
+    cudf_available = False
+    try:
+        __import__('cudf')
+        cudf_available = True
+    except (ImportError, Exception):
+        pass
+    if not cudf_available:
+        allow_cpu = os.environ.get('ALLOW_CPU', '')
+        check("ALLOW_CPU=1 when cuDF unavailable",
+              allow_cpu == '1',
+              f"ALLOW_CPU={allow_cpu!r} but cuDF is not importable (CUDA 13+ dropped it). "
+              f"feature_library.py needs ALLOW_CPU=1 to use pandas fallback. "
+              f"FIX: export ALLOW_CPU=1 before running pipeline.")
+
     if not cloud:
         return  # Local mode: skip machine checks
 
@@ -553,21 +568,6 @@ def check_environment(tf=None, cloud=False):
                      f"Cross gen will auto-fallback to CPU. Training may still work on GPU.")
     except Exception:
         pass
-
-    # -- ALLOW_CPU env var when cuDF unavailable (CUDA 13+ drops cuDF) --
-    cudf_available = False
-    try:
-        __import__('cudf')
-        cudf_available = True
-    except (ImportError, Exception):
-        pass
-    if not cudf_available:
-        allow_cpu = os.environ.get('ALLOW_CPU', '')
-        check("ALLOW_CPU=1 when cuDF unavailable",
-              allow_cpu == '1',
-              f"ALLOW_CPU={allow_cpu!r} but cuDF is not importable (CUDA 13+ dropped it). "
-              f"feature_library.py needs ALLOW_CPU=1 to use pandas fallback. "
-              f"FIX: export ALLOW_CPU=1 before running pipeline.")
 
     # -- DB files must exist in BOTH root and v3.3/ (symlinked) --
     # cloud_run_tf.py runs from v3.3/ but some code references root-level DBs
@@ -1211,7 +1211,7 @@ def check_training_consistency():
     # Fix: replaced with env var V3_FORCE_SEQUENTIAL=1.
     no_parallel_splits_files = []
     for fname, content in all_py_contents.items():
-        if fname == 'validate.py':
+        if fname in ('validate.py', 'validate_debug.py'):
             continue
         lines = content.split('\n')
         for i, line in enumerate(lines):
