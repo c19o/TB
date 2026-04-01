@@ -84,6 +84,7 @@ Non-blocking resolved items:
 11. SAV-38 KB-first compliance probe (retry-after-skill-sync) completed via KB-only path: three Orgonite queries returned sufficient results, `KB_QUERY` and `KB_SOURCE` were logged to ops_kb, and tracker issue returned to TODO for ongoing sweeps. Probe bug logged: hyphenated query text can trigger SQLite `no such column` in `kb.py smart`.
 12. Documentation Lead DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL due cuDF unavailable on CUDA13 path when `ALLOW_CPU` is not set.
 13. SAV-38 forced fallback smoke test completed: ran 3 KB-first phrasings for off-domain local-services query, classified KB output as weak/irrelevant, logged `KB_QUERY` + `KB_GAP` + `PERPLEXITY_SOURCE` (Task=`SAV-38-PERPLEXITY`), captured nearby result for Fairfield Bay (`501 Pressure Washing`), then returned SAV-38 to BLOCKED recurring-tracker state.
+14. Post-fallback DoD rerun completed: `import ops_kb` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL again on cuDF CUDA13 gate unless `ALLOW_CPU=1`.
 
 ---
 
