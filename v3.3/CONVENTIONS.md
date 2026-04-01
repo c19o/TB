@@ -57,6 +57,30 @@ Injected into every agent session. These are non-negotiable.
 - All Discord notifications: emoji prefix + TF + step + key metric
 - All training logs: tee to disk + unbuffered output
 
+## MANDATORY KB RESEARCH — NON-NEGOTIABLE
+Any code that touches training or features MUST query the Knowledge Base BEFORE writing code:
+```bash
+cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
+python kb.py smart "<what you're implementing>" --n 10
+python kb.py smart "<alternative phrasing>" --n 10
+python kb.py smart "<third phrasing>" --n 10
+```
+Also query ops_kb for what's been tried before:
+```bash
+cd "C:/Users/C/Documents/Savage22 Server/v3.3"
+python ops_kb.py smart "<what you're doing>" --n 5
+```
+Files that REQUIRE KB research before ANY edit:
+- feature_library.py (features/signals)
+- ml_multi_tf.py (training pipeline)
+- config.py (parameters)
+- v2_cross_generator.py (cross features)
+- cloud_run_tf.py (deployment)
+- gpu_daemon.py (GPU operations)
+
+If you edit these files without KB queries, your work will be REJECTED and REVERTED.
+The KB has 947 docs: AFML full book, LightGBM paper, CUDA guides, 42 academic papers on every signal type. USE THEM.
+
 ## CODE STYLE
 
 - No docstrings/comments on code you didn't change
