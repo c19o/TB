@@ -24,18 +24,27 @@ Read this file completely. Then read v3.3/CLAUDE.md. Resume from "Next Steps" be
 
 ## Current State
 
-### 1w Training: COMPLETE
+### 🔴 CRITICAL BLOCKER: LightGBM Import Failure
+- **Error**: `lib_lightgbm.dll` missing from Python312 site-packages
+- **Impact**: Blocks ALL training (1w/1d/4h/1h/15m)
+- **validate.py**: 93/94 checks (only failure: `import lightgbm`)
+- **Priority**: Must fix BEFORE daemon RELOAD bug
+- **Discovered**: 2026-04-01
+
+### 1w Training: COMPLETE (but can't retrain until LightGBM fixed)
 - CPCV: 57.5%, Model: 79.3%, Binary mode, all steps PASS
 - Artifacts: v3.3/1w_cloud_artifacts_v3/
 - OOS 70%+ confidence = 83-100% accuracy
 
-### 1d Training: BLOCKED on daemon RELOAD bug
-- V4 daemon architecture PROVEN: 138K features in 4s, 44GB RAM (was 700GB+ OOM)
-- First 2 cross steps work via daemons (dx, ax)
-- Steps 3+ fail: daemons die during RELOAD (matrix swap between cross steps)
-- Falls back to legacy path which OOMs at 700GB+
+### 1d Training: BLOCKED on TWO issues
+1. **LightGBM import** (priority 1 - blocks validation)
+2. **Daemon RELOAD bug** (priority 2 - blocks cross-gen step 3+)
+   - V4 daemon architecture PROVEN: 138K features in 4s, 44GB RAM (was 700GB+ OOM)
+   - First 2 cross steps work via daemons (dx, ax)
+   - Steps 3+ fail: daemons die during RELOAD (matrix swap between cross steps)
+   - Falls back to legacy path which OOMs at 700GB+
 
-### 4h/1h/15m: Waiting on 1d
+### 4h/1h/15m: Waiting on 1d blockers resolved
 
 ---
 
@@ -113,7 +122,8 @@ See git log for details. Key ones:
 ---
 
 ## Next Steps
-1. Fix daemon RELOAD bug in gpu_daemon.py (the ONLY remaining blocker)
-2. Once fixed: 1d trains with 44GB RAM on 774GB machine (proven)
-3. Then 4h → 1h → 15m
-4. Long-term: custom CUDA C++ pipeline (Option B, 4-5 months)
+1. **URGENT**: Fix LightGBM import (lib_lightgbm.dll missing) — blocks ALL training
+2. Fix daemon RELOAD bug in gpu_daemon.py (blocks 1d cross-gen step 3+)
+3. Once both fixed: 1d trains with 44GB RAM on 774GB machine (proven)
+4. Then 4h → 1h → 15m
+5. Long-term: custom CUDA C++ pipeline (Option B, 4-5 months)
