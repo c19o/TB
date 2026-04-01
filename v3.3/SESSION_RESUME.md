@@ -1,4 +1,4 @@
-﻿# V3.3 Session Resume - 2026-04-01
+# V3.3 Session Resume - 2026-04-01
 
 ## Instruction To New Session
 Read this file completely. Then read `v3.3/CLAUDE.md`. Resume from "Next Steps".
@@ -75,6 +75,7 @@ Non-blocking resolved items:
 3. `gpu_daemon.py` RELOAD path patched with 3 concrete fixes.
 4. `PARAMETER_GUIDE.md` completed.
 5. KB gap analysis completed with 4 missing-paper links captured.
+6. `ops_kb.py` Unicode output hardening applied to prevent Windows cp1252 crash during list/smart output.
 
 ---
 
