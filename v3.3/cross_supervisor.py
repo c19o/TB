@@ -317,6 +317,13 @@ def _gpu_daemon_main(conn: Connection, gpu_id: int, vram_limit_pct: float):
         if tag == 'RELOAD':
             _, left_npy_path, right_npy_path, n_left_cols = msg
             try:
+                # Free prior GPU arrays BEFORE loading new ones (memory leak fix)
+                if indptr_gpu is not None:
+                    del indptr_gpu, indices_gpu
+                    cp.cuda.Stream.null.synchronize()
+                    mempool.free_all_blocks()
+                    pinned_pool.free_all_blocks()
+
                 indptr_gpu, indices_gpu, col_nnz_cpu, n_rows = _reload_csc_to_gpu(
                     left_npy_path, right_npy_path, n_left_cols, cp, _np
                 )
@@ -357,9 +364,9 @@ def _compile_sparse_and_kernel(cp):
     kernel_code = r'''
     extern "C" __global__
     void sparse_and_batch(
-        const int* __restrict__ indptr,
-        const int* __restrict__ indices,
-        const int* __restrict__ col_pairs,
+        const long long* __restrict__ indptr,
+        const int*       __restrict__ indices,
+        const int*       __restrict__ col_pairs,
         int*       result_indices,
         int*       result_counts,
         const int  max_out_per_pair
@@ -367,8 +374,8 @@ def _compile_sparse_and_kernel(cp):
         int pair = blockIdx.x;
         int col_a = col_pairs[pair * 2];
         int col_b = col_pairs[pair * 2 + 1];
-        int a = indptr[col_a], a_end = indptr[col_a + 1];
-        int b = indptr[col_b], b_end = indptr[col_b + 1];
+        long long a = indptr[col_a], a_end = indptr[col_a + 1];
+        long long b = indptr[col_b], b_end = indptr[col_b + 1];
         int* out = result_indices + pair * max_out_per_pair;
         int cnt = 0;
         while (a < a_end && b < b_end && cnt < max_out_per_pair) {
@@ -408,8 +415,8 @@ def _reload_csc_to_gpu(left_npy_path, right_npy_path, n_left_cols, cp, np):
 
     del combined
 
-    # Upload to GPU (int32 for indptr is fine — per-column NNZ fits int32)
-    indptr_gpu = cp.asarray(indptr.astype(np.int32))
+    # Upload to GPU — int64 indptr required (NNZ > 2^31 support, matches gpu_daemon.py)
+    indptr_gpu = cp.asarray(indptr, dtype=cp.int64)
     indices_gpu = cp.asarray(indices)
 
     return indptr_gpu, indices_gpu, col_nnz, n_rows

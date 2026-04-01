@@ -115,7 +115,12 @@ def prestage_gpu_daemons(n_gpus, available_gpu_ids=None, vram_limit_pct=0.85):
     for h in handles:
         try:
             msg = h.pipe.recv()
-            if hasattr(msg, 'tag') and msg.tag == 'READY':
+            # Accept both tuple ('READY', gpu_id) and dataclass ReadyMsg
+            is_ready = (
+                (isinstance(msg, tuple) and len(msg) >= 1 and msg[0] == 'READY') or
+                (hasattr(msg, 'tag') and msg.tag == 'READY')
+            )
+            if is_ready:
                 h.status = 'idle'
                 _print(f"Daemon GPU-{h.gpu_id} ready")
             else:
@@ -220,7 +225,8 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
         col_nnz_cpu = None
         n_rows = 0
 
-        conn.send(ReadyMsg(gpu_id=gpu_id))
+        # Send tuple format (matches cross_supervisor protocol)
+        conn.send(('READY', gpu_id))
         _log("Kernel compiled, entering work loop")
 
         # ── WORK LOOP ──
@@ -231,11 +237,34 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
             if msg is None:  # poison pill
                 break
 
-            if msg.tag == 'RELOAD':
+            # Normalize IPC format: accept both tuples (from cross_supervisor)
+            # and dataclasses (from gpu_daemon's own protocol)
+            if isinstance(msg, tuple):
+                tag = msg[0]
+            else:
+                tag = getattr(msg, 'tag', None)
+
+            if tag == 'RELOAD':
+                # Extract fields from either tuple or dataclass format
+                if isinstance(msg, tuple):
+                    _, left_npy_path, right_npy_path, n_left_cols = msg
+                else:
+                    left_npy_path = msg.left_npy_path
+                    right_npy_path = msg.right_npy_path
+
+                # Free prior GPU arrays BEFORE loading new ones (memory leak fix)
+                if indptr_gpu is not None:
+                    del indptr_gpu, indices_gpu
+                    cp.cuda.Stream.null.synchronize()
+                    mempool.free_all_blocks()
+                    pinned_pool.free_all_blocks()
+                    indptr_gpu = None
+                    indices_gpu = None
+
                 # Upload new CSC to GPU (happens once per cross step)
-                _log(f"RELOAD: loading matrices from {msg.left_npy_path}")
-                left = np.load(msg.left_npy_path, mmap_mode='r')
-                right = np.load(msg.right_npy_path, mmap_mode='r')
+                _log(f"RELOAD: loading matrices from {left_npy_path}")
+                left = np.load(left_npy_path, mmap_mode='r')
+                right = np.load(right_npy_path, mmap_mode='r')
                 combined = np.hstack([np.asarray(left), np.asarray(right)])
                 n_rows = combined.shape[0]
 
@@ -255,10 +284,6 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                 del combined, left, right
 
                 # Upload to GPU
-                if indptr_gpu is not None:
-                    del indptr_gpu, indices_gpu
-                    mempool.free_all_blocks()
-
                 indptr_gpu = cp.asarray(indptr_np, dtype=cp.int64)
                 indices_gpu = cp.asarray(indices_np)
                 col_nnz_cpu = col_nnz_local
@@ -267,12 +292,21 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
 
                 _log(f"CSC uploaded — {n_cols} cols, max_nnz={int(col_nnz_cpu.max())}, "
                      f"GPU mem: {cp.cuda.Device(0).mem_info[0]/1e9:.1f}GB free")
-                conn.send(ReadyMsg(gpu_id=gpu_id))
+                # Send tuple format (matches cross_supervisor protocol)
+                conn.send(('READY', gpu_id))
                 continue
 
-            if msg.tag == 'BATCH':
+            if tag == 'BATCH':
+                # Extract fields from either tuple or dataclass format
+                if isinstance(msg, tuple):
+                    _, batch_id, pairs, out_path, pair_id_offset = msg
+                else:
+                    batch_id = msg.batch_id
+                    pairs = msg.pairs
+                    out_path = msg.out_path
+                    pair_id_offset = msg.pair_id_offset
+
                 # Process intersection batch
-                pairs = msg.pairs  # (n_pairs, 2) int32, already remapped
                 n_pairs = len(pairs)
                 t0 = time.time()
 
@@ -283,7 +317,7 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                 max_out = int(pair_max.max()) if n_pairs > 0 else 0
 
                 if max_out == 0:
-                    conn.send(ResultMsg(batch_id=msg.batch_id, total_nnz=0, status='ok'))
+                    conn.send(('RESULT', batch_id, '', 0, 'ok', ''))
                     continue
                 max_out = min(max_out, n_rows)
 
@@ -296,7 +330,7 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                     sub_batch = n_pairs
 
                 total_nnz = 0
-                idx_path = msg.out_path
+                idx_path = out_path
 
                 with open(idx_path, 'wb') as f:
                     # Write header
@@ -335,7 +369,7 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                         for i in range(n_sb):
                             cnt = int(counts_cpu[i])
                             if cnt > 0:
-                                global_pair_id = msg.pair_id_offset + sb_start + i
+                                global_pair_id = pair_id_offset + sb_start + i
                                 offset = i * sb_max
                                 rows = results_cpu[offset:offset + cnt]
                                 write_buf += np.int32(global_pair_id).tobytes()
@@ -363,12 +397,8 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                 dt = time.time() - t0
                 batches_done += 1
 
-                conn.send(ResultMsg(
-                    batch_id=msg.batch_id,
-                    idx_path=idx_path,
-                    total_nnz=total_nnz,
-                    status='ok'
-                ))
+                # Send tuple format (matches cross_supervisor protocol)
+                conn.send(('RESULT', batch_id, idx_path, total_nnz, 'ok', ''))
 
                 # Free pool blocks every 10 batches (not every batch — perf)
                 if batches_done % 10 == 0:
@@ -385,10 +415,7 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
         _log(f"FATAL ERROR: {e}")
         traceback.print_exc()
         try:
-            conn.send(ResultMsg(
-                batch_id=-1, status='error',
-                error_msg=str(e)
-            ))
+            conn.send(('RESULT', -1, '', 0, 'error', str(e)))
         except (BrokenPipeError, OSError):
             pass
 
