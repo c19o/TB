@@ -40,7 +40,7 @@ Always include: "System with 2.9M+ sparse binary features in CSR format with int
 **KB-FIRST**: When any bug, question, or decision arises — ALWAYS query the Orgonite Master KB first.
 ```bash
 cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
-python kb.py smart "<your question here>" --n 10
+python kb.py smart "<your question here>" --limit 10
 ```
 Only if the KB returns no definitive answer → use `mcp__perplexity-browser__perplexity_search`.
 Deep research (`perplexity_deep_research`) = last resort only, limited credits.
@@ -110,7 +110,7 @@ ALWAYS escalate to Discord (stop work, notify user) when:
 ```
 Before starting any task:
   cd "C:/Users/C/Documents/Savage22 Server/v3.3"
-  python ops_kb.py smart "<what you're about to work on>" --n 5
+  python ops_kb.py smart "<what you're about to work on>" --limit 5
 
 After completing any task:
   python ops_kb.py add "FACT: <what you did and the result>" --topic <tag>
@@ -139,15 +139,15 @@ Before marking ANY task complete, run this checklist:
 Before any code change, you MUST gather enough information:
 
 Step 1: ops_kb — "Has this been tried before?"
-  python ops_kb.py smart "<what you're about to do>" --n 5
+  python ops_kb.py smart "<what you're about to do>" --limit 5
   → If YES with clear outcome: STOP research, use that outcome
   → If NO or inconclusive: continue
 
 Step 2: Orgonite Master KB — query 3 DIFFERENT phrasings minimum
   cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
-  python kb.py smart "<phrasing 1>" --n 10
-  python kb.py smart "<phrasing 2>" --n 10
-  python kb.py smart "<phrasing 3>" --n 10
+  python kb.py smart "<phrasing 1>" --limit 10
+  python kb.py smart "<phrasing 2>" --limit 10
+  python kb.py smart "<phrasing 3>" --limit 10
   → Log all queries and result counts
   → If any query returns >5 relevant results: READ the top 5
   → If total relevant results across 3 queries < 3: continue to Step 3

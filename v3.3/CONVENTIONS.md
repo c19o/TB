@@ -61,14 +61,14 @@ Injected into every agent session. These are non-negotiable.
 Any code that touches training or features MUST query the Knowledge Base BEFORE writing code:
 ```bash
 cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
-python kb.py smart "<what you're implementing>" --n 10
-python kb.py smart "<alternative phrasing>" --n 10
-python kb.py smart "<third phrasing>" --n 10
+python kb.py smart "<what you're implementing>" --limit 10
+python kb.py smart "<alternative phrasing>" --limit 10
+python kb.py smart "<third phrasing>" --limit 10
 ```
 Also query ops_kb for what's been tried before:
 ```bash
 cd "C:/Users/C/Documents/Savage22 Server/v3.3"
-python ops_kb.py smart "<what you're doing>" --n 5
+python ops_kb.py smart "<what you're doing>" --limit 5
 ```
 Files that REQUIRE KB research before ANY edit:
 - feature_library.py (features/signals)
