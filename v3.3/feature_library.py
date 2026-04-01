@@ -7325,6 +7325,9 @@ def _add_cross_features(df: pd.DataFrame):
         _cross('px_68_x_eclipse', btc68, _bin('eclipse_window'))
 
         # --- BTC Energy price_contains crosses ---
+        pc213 = _bin('price_contains_213')
+        _cross('px_pc213_x_rsi_os', pc213, _bin('rsi_14_os'))
+        _cross('px_pc213_x_macd_high', pc213, _cont_high('macd_histogram'))
         pc231 = _bin('price_contains_231')
         _cross('px_pc231_x_rsi_os', pc231, _bin('rsi_14_os'))
         _cross('px_pc231_x_macd_high', pc231, _cont_high('macd_histogram'))
