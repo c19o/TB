@@ -24,6 +24,11 @@ Steps:
 import os, sys, subprocess, time, json, glob, sqlite3, threading
 
 os.environ['PYTHONUNBUFFERED'] = '1'
+# SAV-53: OMP_NUM_THREADS=4 MUST be set BEFORE any numpy/scipy/LightGBM import in subprocesses.
+# Prevents thread exhaustion during cross generation on cloud machines (all 5 TFs).
+os.environ['OMP_NUM_THREADS'] = '4'
+os.environ['NUMBA_NUM_THREADS'] = '4'
+os.environ['MKL_DYNAMIC'] = 'FALSE'
 # FIX #43: PyTorch expandable segments — reduces fragmentation-induced OOM on LSTM/meta steps
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 # CuPy Blackwell (sm_120) compat: PTX JIT lets CUDA 13.0 driver compile for sm_120
@@ -72,7 +77,7 @@ try:
     with open('/proc/sys/kernel/numa_balancing', 'w') as f:
         f.write('0')
     print("  NUMA auto-balancing: disabled (prevents page migration storms)")
-except (PermissionError, FileNotFoundError):
+except (PermissionError, FileNotFoundError, OSError):
     pass
 
 # ── Fix #7: Dirty page limits + swappiness — keep CSR in RAM ──
@@ -85,7 +90,7 @@ for path, val, desc in [
         with open(path, 'w') as f:
             f.write(val)
         print(f"  Kernel: {desc}")
-    except (PermissionError, FileNotFoundError):
+    except (PermissionError, FileNotFoundError, OSError):
         pass
 
 def _script(name):
@@ -554,17 +559,17 @@ if TF in SKIP_CROSSES_TFS:
     log(f"  SKIP CROSSES for {TF} — base features only (too few rows for cross features to add signal)")
     log(f"  Matrix signal comes from base feature diversity on {TF}")
 
-# --- Dynamic OMP/NUMBA for cross gen phase ---
-# Full core count for both OMP (MKL SpGEMM) and NUMBA (prange kernels).
-# Thread exhaustion is prevented by threadpoolctl scoping in _mkl_dot(), not
-# by global throttling. MKL_DYNAMIC=FALSE prevents MKL from auto-shrinking.
-os.environ['OMP_NUM_THREADS'] = str(cpu_count)
-os.environ['NUMBA_NUM_THREADS'] = str(cpu_count)
+# --- Cross gen thread safety (SAV-53) ---
+# OMP_NUM_THREADS=4 set at top of file (before any numpy/scipy import).
+# Reinforced here for clarity. 4 threads prevents thread exhaustion on cloud machines
+# while still allowing MKL SpGEMM parallelism. NUMBA prange uses its own thread count.
+os.environ['OMP_NUM_THREADS'] = '4'
+os.environ['NUMBA_NUM_THREADS'] = '4'
 os.environ['MKL_DYNAMIC'] = 'FALSE'
 os.environ.setdefault('OMP_PROC_BIND', 'spread')
 os.environ.setdefault('OMP_PLACES', 'cores')
 os.environ.setdefault('OMP_SCHEDULE', 'static')
-log(f"Cross gen phase: OMP_NUM_THREADS={cpu_count}, NUMBA_NUM_THREADS={cpu_count}, MKL_DYNAMIC=FALSE (all {cpu_count} cores active)")
+log(f"Cross gen phase: OMP_NUM_THREADS=4, NUMBA_NUM_THREADS=4, MKL_DYNAMIC=FALSE (thread-safe for all TFs)")
 
 npz_path = f'v2_crosses_BTC_{TF}.npz'
 # Check both CWD and _SCRIPT_DIR for existing NPZ
@@ -854,6 +859,46 @@ _backup_path = f'model_{TF}_cpcv_backup.json'
 if os.path.exists(_model_path):
     shutil.copy2(_model_path, _backup_path)
     log(f"  Model backed up: {_backup_path} ({os.path.getsize(_model_path)/1024:.0f} KB)")
+
+# ============================================================
+# VERSIONING SYSTEM: Deploy model to version registry
+# ============================================================
+log("=== DEPLOYING MODEL TO VERSION REGISTRY ===")
+
+# Extract accuracy from train log
+_model_accuracy = 0.0
+if os.path.exists(train_log):
+    with open(train_log, 'r', errors='replace') as f:
+        for line in f:
+            if 'Model saved:' in line and 'accuracy:' in line:
+                # Parse: "Model saved: /path/model_1w.json (accuracy: 0.934)"
+                try:
+                    _acc_str = line.split('accuracy:')[1].strip().rstrip(')')
+                    _model_accuracy = float(_acc_str)
+                    log(f"  Extracted accuracy: {_model_accuracy:.3f}")
+                    break
+                except (IndexError, ValueError) as _e:
+                    log(f"  WARNING: Failed to parse accuracy from log: {_e}")
+
+if _model_accuracy == 0.0:
+    log("  WARNING: Could not extract accuracy from train log, using 0.0")
+
+# Check if features file exists
+_feat_path = f'features_{TF}_all.json'
+_feat_arg = f'--features {_feat_path}' if os.path.exists(_feat_path) else ''
+
+# Deploy to version registry
+import subprocess as _sp
+_deploy_cmd = f'python {_script("deploy_model.py")} deploy --tf {TF} --model {_model_path} --accuracy {_model_accuracy} {_feat_arg}'
+log(f"  Running: {_deploy_cmd}")
+try:
+    _deploy_result = _sp.run(_deploy_cmd, shell=True, capture_output=True, text=True, check=True)
+    log(_deploy_result.stdout)
+    log("  ✓ Model successfully deployed to version registry")
+except _sp.CalledProcessError as _e:
+    log(f"  WARNING: Model versioning failed (non-critical): {_e}")
+    log(_e.stderr)
+    # Don't fail the pipeline on versioning errors (it's a new feature)
 
 # NOTE: Step 5 (Optuna search) now runs BEFORE Step 4. It saves only params (optuna_configs_{tf}.json),
 # NOT a model. Step 4 reads those params and uses them for full CPCV training.
