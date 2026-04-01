@@ -87,6 +87,8 @@ Non-blocking resolved items:
 14. Post-fallback DoD rerun completed: `import ops_kb` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL again on cuDF CUDA13 gate unless `ALLOW_CPU=1`.
 15. SAV-38 repo probe completed (read-only environment test): `git rev-parse --show-toplevel` confirms repo root is parent `Savage22 Server` directory (not `v3.3`), `git remote -v` confirms `tb33` remote exists (`https://github.com/c19o/TB-3.3.git`), and issue returned to BLOCKED recurring-tracker state.
 16. Post-repo-probe DoD rerun completed: `import ops_kb` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL again with same cuDF CUDA13 gate (`ALLOW_CPU=1` needed for fallback).
+17. New `smoke_test_1w.json` artifact generated at 2026-04-01 12:08 (local): smoke test summary shows PASS (`passed=true`, 10/10 steps), `total_time=5.5s`, and no errors.
+18. Documentation Lead DoD rerun after doc refresh: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), `smoke_test_pipeline.py --tf 1w` FAIL at feature build with same cuDF CUDA13 gate unless `ALLOW_CPU=1` is set.
 
 ---
 
