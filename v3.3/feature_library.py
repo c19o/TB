@@ -251,12 +251,25 @@ def _supertrend_loop(c_vals, ub_vals, lb_vals):
 
 @njit(cache=True)
 def _consec_count_loop(is_true):
-    """Consecutive True count — stateful sequential, compiled."""
+    """Consecutive True count -- stateful sequential, compiled."""
     n = len(is_true)
     out = np.zeros(n, dtype=np.int64)
     for i in range(1, n):
         if is_true[i]:
             out[i] = out[i - 1] + 1
+    return out
+
+
+@njit(cache=True)
+def _bars_since_flip(flip_arr):
+    """Count bars since last flip (1=flip, 0=no flip). Compiled."""
+    n = len(flip_arr)
+    out = np.zeros(n, dtype=np.float32)
+    for i in range(1, n):
+        if flip_arr[i]:
+            out[i] = 0.0
+        else:
+            out[i] = out[i - 1] + 1.0
     return out
 
 
@@ -1221,6 +1234,22 @@ def compute_ta_features(df: pd.DataFrame, tf_name: str = '1h') -> pd.DataFrame:
     minus_di = 100 * _m.Series(minus_dm, index=df.index).ewm(span=14).mean() / out['atr_14']
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     out['adx_14'] = dx.ewm(span=14).mean()
+
+    # --- Trend-Strength Features ---
+    # ADX slope: rate of change of ADX (trend strengthening vs weakening)
+    out['adx_14_slope'] = out['adx_14'].pct_change(5)
+    # SMA angle: arctangent of SMA200 slope (angular measure of trend direction)
+    _sma200_diff = out['sma_200'].diff(5) / out['sma_200'].shift(5)
+    out['sma_200_angle'] = np.degrees(np.arctan(_sma200_diff))
+    # Trend consistency: fraction of last 20 bars where close > SMA50
+    _above_sma50 = (c > out['sma_50']).astype(float)
+    out['trend_consistency_20'] = _above_sma50.rolling(20, min_periods=10).mean()
+    # Trend age: bars since last SMA50 crossover (direction flip)
+    _sma50_side = (c > out['sma_50']).astype(int)
+    _sma50_flip = (_sma50_side != _sma50_side.shift(1)).astype(int)
+    out['trend_age'] = _bars_since_flip(_np(_sma50_flip).astype(np.int64))
+    # Strong trend: ADX > 25 AND price above SMA200 (confirmed uptrend)
+    out['strong_trend'] = ((out['adx_14'] > 25) & (c > out['sma_200'])).astype(int)
 
     # --- CCI ---
     tp = (h + l + c) / 3
@@ -5507,6 +5536,56 @@ def compute_lunar_electromagnetic_features(df: pd.DataFrame,
     for col in moon_df.columns:
         mapping = moon_df[col].to_dict()
         feat_dict[col] = date_series.map(mapping).values.astype(np.float64)
+
+    # ------------------------------------------------------------------
+    # Rahu/Ketu (lunar nodes) — zodiac signs, transits, nodal return
+    # Rahu = North Node, Ketu = South Node (always opposite, +6 signs)
+    # ------------------------------------------------------------------
+    rahu_sign = feat_dict.get('lunar_node_sign_idx',
+                              np.full(n, np.nan, dtype=np.float64))
+    feat_dict['rahu_sign'] = rahu_sign
+    ketu_sign = np.where(np.isnan(rahu_sign), np.nan, (rahu_sign + 6) % 12)
+    feat_dict['ketu_sign'] = ketu_sign
+
+    # One-hot encode Rahu/Ketu zodiac signs (sparse binary — each fires ~18 months)
+    for sign_i in range(12):
+        feat_dict[f'rahu_in_sign_{sign_i}'] = np.where(
+            np.isnan(rahu_sign), np.nan, (rahu_sign == sign_i).astype(np.float64))
+        feat_dict[f'ketu_in_sign_{sign_i}'] = np.where(
+            np.isnan(ketu_sign), np.nan, (ketu_sign == sign_i).astype(np.float64))
+
+    # Transit flags: detect sign changes (Rahu/Ketu change signs ~every 18 months)
+    rahu_arr = rahu_sign.copy()
+    rahu_diff = np.empty_like(rahu_arr)
+    rahu_diff[0] = 0.0
+    rahu_diff[1:] = np.where(
+        np.isnan(rahu_arr[1:]) | np.isnan(rahu_arr[:-1]),
+        np.nan,
+        (rahu_arr[1:] != rahu_arr[:-1]).astype(np.float64))
+    feat_dict['rahu_transit'] = rahu_diff
+    feat_dict['ketu_transit'] = rahu_diff  # They always transit together
+
+    # BTC Genesis Nodal Return — genesis Rahu in Aquarius (sign 10), Ketu in Leo (sign 4)
+    BTC_GENESIS_RAHU_SIGN = 10.0  # Aquarius
+    BTC_GENESIS_KETU_SIGN = 4.0   # Leo
+    feat_dict['nodal_return_rahu'] = np.where(
+        np.isnan(rahu_sign), np.nan, (rahu_sign == BTC_GENESIS_RAHU_SIGN).astype(np.float64))
+    feat_dict['nodal_return_ketu'] = np.where(
+        np.isnan(ketu_sign), np.nan, (ketu_sign == BTC_GENESIS_KETU_SIGN).astype(np.float64))
+
+    # ------------------------------------------------------------------
+    # Saros cycle (eclipse family): 6585.32 days (223 synodic months)
+    # Distinct from lunar node cycle (6798 days / nodal precession)
+    # ------------------------------------------------------------------
+    feat_dict['saros_cycle_sin'] = np.sin(2.0 * np.pi * days_arr / 6585.32)
+    feat_dict['saros_cycle_cos'] = np.cos(2.0 * np.pi * days_arr / 6585.32)
+
+    # ------------------------------------------------------------------
+    # Golden number (Metonic cycle year position): (year % 19) + 1, range 1-19
+    # Used in ecclesiastical calendars to predict eclipses and lunar phases
+    # ------------------------------------------------------------------
+    years_arr = np.array([d.year for d in _cpu_idx.date], dtype=np.float64)
+    feat_dict['golden_number'] = (years_arr % 19) + 1
 
     # Build output DataFrame in one shot
     out = pd.DataFrame(feat_dict, index=_cpu_idx)
