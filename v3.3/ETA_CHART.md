@@ -57,6 +57,7 @@ Notes:
 | 2026-04-01 | 1w | smoke test pipeline (post-SAV-50 DoD rerun) | ~2-5m | fail | Reproduced same default-path CUDA13 cuDF gate; run passes only when `ALLOW_CPU=1` is set |
 | 2026-04-01 | all | governance audit (SAV-42, Paperclip readiness) | n/a | complete | Confirmed strengths (skill sync + run-trace checkout) and logged gaps (no auto-failover, no automated KB-evidence gate, status/execution mismatch risk) |
 | 2026-04-01 | 1w | smoke test pipeline (post-SAV-42 DoD rerun) | ~2-5m | fail | Same default-path CUDA13 cuDF gate persists; requires `ALLOW_CPU=1` or cuDF install |
+| 2026-04-01 | all | blocker routing (SAV-27 -> SAV-62) | n/a | complete | Created/assigned code-owner implementation task for Discord/Paperclip parity; kept SAV-27 blocked pending implementation and verification |
 
 ---
 

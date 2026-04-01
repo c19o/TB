@@ -105,6 +105,7 @@ Non-blocking resolved items:
 28. Post-SAV-50 DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL on the same CUDA13 cuDF gate unless `ALLOW_CPU=1` is set.
 29. SAV-42 production-readiness governance audit completed (Paperclip company): strengths confirmed (skills attached to all agents, run-linked checkout traces), and major gaps documented (mirror failover not automatic, KB-first evidence not system-enforced, status/execution mismatch on active tasks). Recommended controls posted to issue.
 30. Post-SAV-42 DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL on the known CUDA13 cuDF gate unless `ALLOW_CPU=1` is set.
+31. SAV-27 unblock path created without ownership violation: opened [SAV-62] (Discord/Paperclip status parity implementation task), assigned to Chief Engineer [Codex], and left SAV-27 blocked pending code-owner implementation plus verification.
 
 ---
 
