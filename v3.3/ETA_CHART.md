@@ -54,6 +54,7 @@ Notes:
 | 2026-04-01 | 1w | smoke test artifact refresh (`smoke_test_1w.json`) | ~2-5m | pass (10/10, 5.4s) | New artifact timestamp 12:18 local; PASS with ALLOW_CPU fallback context |
 | 2026-04-01 | 1w | smoke test pipeline (post-daemon-int64 doc-sync DoD rerun) | ~2-5m | fail | Same default-path CUDA13 cuDF gate; requires `ALLOW_CPU=1` or cuDF install |
 | 2026-04-01 | all | governance/doc re-audit (SAV-50) | n/a | complete | Reopened stale doc task after finding `PARAMETER_GUIDE.md` still says validate has 74 checks (current: 96) |
+| 2026-04-01 | 1w | smoke test pipeline (post-SAV-50 DoD rerun) | ~2-5m | fail | Reproduced same default-path CUDA13 cuDF gate; run passes only when `ALLOW_CPU=1` is set |
 
 ---
 

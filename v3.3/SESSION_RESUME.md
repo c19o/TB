@@ -101,6 +101,7 @@ Non-blocking resolved items:
 25. New `smoke_test_1w.json` artifact after daemon int64 patch: PASS 10/10 (`total_time=5.4s`) with `ALLOW_CPU=1` fallback context on local CUDA13 environment.
 26. Documentation Lead DoD rerun after daemon-int64 documentation sync: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL again on default CUDA13 cuDF gate without `ALLOW_CPU=1`.
 27. SAV-50 re-audit completed: reviewed SAV-27/SAV-28/SAV-38/SAV-42 against current repo and issue state, found stale governance claim in `PARAMETER_GUIDE.md` (`74 checks`), and reopened SAV-28 for correction; SAV-42 remains TODO (governance audit still pending).
+28. Post-SAV-50 DoD rerun: `python -c "import ops_kb"` PASS, `validate.py` PASS (96/96, 2 warnings), and `smoke_test_pipeline.py --tf 1w` FAIL on the same CUDA13 cuDF gate unless `ALLOW_CPU=1` is set.
 
 ---
 
