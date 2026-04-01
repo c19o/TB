@@ -1,4 +1,1 @@
-# validate.py integrity hash — checked at agent session start
-# If this hash doesn't match, an unauthorized modification occurred
-# Only QA Lead may modify validate.py (with user approval)
-HASH=7304a450e601057e4f454df8ab2efdeeae2c12b1
+76ada5be3442fe1e967ca3fbd694303420c177b87910fe20c9d0ad1d7c050b6b *validate.py

@@ -22,4 +22,4 @@ message: "bagging_fraction Optuna floor must be >= 0.95 (preserves P(rare-signal
 rollout: hard_gate
 proposed_by: CEO-audit
 date: 2026-04-01
-status: proposed
+status: implemented

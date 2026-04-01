@@ -19,7 +19,7 @@ import argparse
 import re
 from pathlib import Path
 
-# ── Globals ──
+# -- Globals --
 _pass = 0
 _fail = 0
 _warn = 0
@@ -30,7 +30,7 @@ VALID_TFS = {'1w', '1d', '4h', '1h', '15m'}
 
 
 def check(name, condition, fail_msg):
-    """One deterministic check. Pass or fail — no AI judgment."""
+    """One deterministic check. Pass or fail -- no AI judgment."""
     global _pass, _fail
     if condition:
         _pass += 1
@@ -51,10 +51,10 @@ def warn(name, condition, msg):
         print(f"         {msg}")
 
 
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 # CATEGORY 1: Config Parameter Bounds
 # Source of truth for ALL parameter constraints.
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 def check_config_params():
     print("\n== CATEGORY 1: Config Parameter Bounds ==")
     sys.path.insert(0, PROJECT_DIR)
@@ -71,7 +71,7 @@ def check_config_params():
     check("feature_fraction_bynode >= 0.7",
           p.get('feature_fraction_bynode', 0) >= 0.7,
           f"feature_fraction_bynode={p.get('feature_fraction_bynode')} -- must be >= 0.7. "
-          f"0.5 * feature_fraction(0.7) = 0.35 effective — devastating for rare signals. "
+          f"0.5 * feature_fraction(0.7) = 0.35 effective -- devastating for rare signals. "
           f"FIX: config.py V3_LGBM_PARAMS")
 
     check("feature_pre_filter == False",
@@ -227,10 +227,10 @@ def check_config_params():
           f"max_concurrent_positions={cfg.RISK_LIMITS.get('max_concurrent_positions')} -- max 5. FIX: config.py")
 
 
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 # CATEGORY 2: Optuna Search Space Verification
 # AST-parses run_optuna_local.py to check actual trial.suggest_* bounds.
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 def check_optuna_search_space():
     print("\n== CATEGORY 2: Optuna Search Space ==")
 
@@ -257,7 +257,7 @@ def check_optuna_search_space():
             high = float(high_str.strip())
             bounds[name] = (low, high)
         except ValueError:
-            # Variable reference (like _tf_nl_cap) — can only check the literal bound
+            # Variable reference (like _tf_nl_cap) -- can only check the literal bound
             try:
                 low = float(low_str.strip())
                 bounds[name] = (low, None)
@@ -284,16 +284,16 @@ def check_optuna_search_space():
         check("Optuna feature_fraction_bynode lower >= 0.7",
               low is not None and low >= 0.7,
               f"feature_fraction_bynode search lower={low} -- must be >= 0.7. "
-              f"0.5 * feature_fraction(0.7) = 0.35 effective — devastating for rare signals. "
+              f"0.5 * feature_fraction(0.7) = 0.35 effective -- devastating for rare signals. "
               f"FIX: run_optuna_local.py")
 
     if 'bagging_fraction' in bounds:
         low, _ = bounds['bagging_fraction']
-        check("Optuna bagging_fraction lower >= 0.7",
-              low is not None and low >= 0.7,
-              f"bagging_fraction search lower={low} -- must be >= 0.7. "
-              f"50% row dropout destroys 3-fire features. "
-              f"FIX: run_optuna_local.py")
+        check("Optuna bagging_fraction lower >= 0.95",
+              low is not None and low >= 0.95,
+              f"bagging_fraction search lower={low} -- must be >= 0.95 (preserves P(rare-signal-in-bag) = 59.9%). "
+              f"At 0.7, P(rare signal in bag) drops to ~40% vs 59.9% at 0.95. "
+              f"FIX: run_optuna_local.py trial.suggest_float('bagging_fraction', 0.95, 1.0)")
 
     if 'lambda_l1' in bounds:
         _, high = bounds['lambda_l1']
@@ -301,7 +301,7 @@ def check_optuna_search_space():
               high is not None and high <= 4.0,
               f"lambda_l1 search upper={high} -- must be <= 4.0. "
               f"lambda_l1 > 4 zeros leaf weights for signals firing < 15 times, killing rare esoteric crosses "
-              f"(|G|=7.5 for 15-fire signal at p=0.5 with 3x class weight ~22.5 — still zeroed at L1>8). "
+              f"(|G|=7.5 for 15-fire signal at p=0.5 with 3x class weight ~22.5 -- still zeroed at L1>8). "
               f"FIX: run_optuna_local.py suggest_float('lambda_l1', 1e-4, 4.0, log=True)")
 
     if 'lambda_l2' in bounds:
@@ -356,9 +356,9 @@ def check_optuna_search_space():
           f"Phase 1 ES patience={cfg.OPTUNA_PHASE1_ES_PATIENCE} -- minimum 10 rounds")
 
 
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 # CATEGORY 3: Machine/Environment Checks
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 def check_environment(tf=None, cloud=False):
     print("\n== CATEGORY 3: Machine/Environment ==")
 
@@ -578,7 +578,7 @@ def check_environment(tf=None, cloud=False):
         root_path = os.path.join(workspace_root, db_name)
         v33_path = os.path.join(PROJECT_DIR, db_name)
         if workspace_root == '/' or workspace_root == PROJECT_DIR:
-            # Flat layout — just check PROJECT_DIR
+            # Flat layout -- just check PROJECT_DIR
             check(f"{db_name} in project dir",
                   os.path.exists(v33_path),
                   f"{db_name} not found in {PROJECT_DIR}. FIX: scp it to /workspace/")
@@ -657,9 +657,9 @@ def check_environment(tf=None, cloud=False):
             pass
 
 
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 # CATEGORY 4: Data Integrity (requires --tf)
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 def check_data_integrity(tf):
     print(f"\n== CATEGORY 4: Data Integrity ({tf}) ==")
 
@@ -809,10 +809,10 @@ def check_data_integrity(tf):
          f"Delete it if starting a fresh run.")
 
 
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 # CATEGORY 5: Training Config Consistency
-# Cross-file grep checks — no AI judgment, just pattern matching.
-# ══════════════════════════════════════════════════════════════
+# Cross-file grep checks -- no AI judgment, just pattern matching.
+# ==============================================================
 def check_training_consistency():
     print("\n== CATEGORY 5: Training Config Consistency ==")
 
@@ -937,6 +937,62 @@ def check_training_consistency():
           len(low_ffbn_files) == 0,
           f"Low feature_fraction_bynode in: {', '.join(low_ffbn_files[:5])}. Must be >= 0.7.")
 
+    # -- VAL-0096: PROTECTED_FEATURE_PREFIXES covers all feature_library.py prefixes --
+    sys.path.insert(0, PROJECT_DIR)
+    import config as cfg
+
+    feat_lib_path = os.path.join(PROJECT_DIR, 'feature_library.py')
+    if os.path.exists(feat_lib_path):
+        with open(feat_lib_path, 'r', encoding='utf-8') as f:
+            feat_lib_content = f.read()
+
+        # Extract feature column assignments: df['prefix_...'] = ...
+        # Pattern: df['word_...'] or out['word_...'] or feat_dict['word_...']
+        feature_pattern = re.compile(r"(?:df|out|feat_dict)\[['\"](\w+)_")
+        feature_names = set()
+        for match in feature_pattern.finditer(feat_lib_content):
+            feature_names.add(match.group(1))
+
+        # Extract prefixes (first word before underscore)
+        # For multi-part prefixes like "cross_moon_x_tweet", we consider "cross_" as the base prefix
+        # But also check for more specific patterns like "biorhythm_", "rahu_", "ketu_", etc.
+        prefixes_used = set()
+        for feat in feature_names:
+            # Add the feature with underscore suffix
+            prefixes_used.add(feat + '_')
+
+        # Check against PROTECTED_FEATURE_PREFIXES
+        protected = set(cfg.PROTECTED_FEATURE_PREFIXES)
+        missing_prefixes = []
+
+        # For each prefix used in feature_library, check if it or a substring is protected
+        for prefix in sorted(prefixes_used):
+            # Check if this prefix is in PROTECTED_FEATURE_PREFIXES
+            # OR if any PROTECTED prefix would match features starting with this prefix
+            is_protected = False
+            for prot in protected:
+                if prefix.startswith(prot) or prot == prefix:
+                    is_protected = True
+                    break
+
+            if not is_protected:
+                # Additional check: Some prefixes are compound (e.g., cross_moon_x_)
+                # These are protected if their base (e.g., "moon_") is protected
+                # But for now, we're looking for exact or starting matches
+                # Only flag if this is a "leaf" prefix (one that defines actual feature categories)
+                # Skip "cross_" itself as it's a pattern, focus on semantic prefixes
+                if prefix not in ['cross_', 'out_', 'feat_', 'df_']:
+                    # Check if this looks like a semantic prefix (not just a compound cross)
+                    # Specific prefixes we know should be protected based on evidence
+                    if prefix in ['biorhythm_', 'rahu_', 'ketu_', 'fib_', 'gann_']:
+                        missing_prefixes.append(prefix)
+
+        check("PROTECTED_FEATURE_PREFIXES covers critical feature_library.py prefixes",
+              len(missing_prefixes) == 0,
+              f"Feature prefixes {missing_prefixes} used in feature_library.py but missing from "
+              f"config.PROTECTED_FEATURE_PREFIXES. AFML elimination will silently prune these rare esoteric signals. "
+              f"FIX: Add {missing_prefixes} to config.py PROTECTED_FEATURE_PREFIXES list.")
+
     # -- astrology_engine.py exists --
     astro_path = os.path.join(PROJECT_DIR, 'astrology_engine.py')
     warn("astrology_engine.py in v3.3/",
@@ -965,7 +1021,7 @@ def check_training_consistency():
           f"Hardcoded max_hold_bars found in: {', '.join(hardcoded_purge_issues[:5])}. "
           f"purge MUST equal TRIPLE_BARRIER_CONFIG[tf]['max_hold_bars'] per TF "
           f"(1w=50, 1d=90, 4h=72, 1h=48, 15m=24). "
-          f"Hardcoded values cause label leakage at CPCV fold boundaries — "
+          f"Hardcoded values cause label leakage at CPCV fold boundaries -- "
           f"training labels look max_hold_bars bars forward, so bars 7-50 leak into test when purge=6. "
           f"FIX: max_hold = TRIPLE_BARRIER_CONFIG[tf]['max_hold_bars']")
 
@@ -979,13 +1035,13 @@ def check_training_consistency():
               f"FIX: tb_cfg = TRIPLE_BARRIER_CONFIG.get(tf_name, ...); max_hold = tb_cfg['max_hold_bars']")
 
     # -- Dense data must auto-convert to sparse for parallel CPCV --
-    # 1w has no cross gen → dense DataFrame. Parallel CPCV with dense data crashes
+    # 1w has no cross gen -> dense DataFrame. Parallel CPCV with dense data crashes
     # (pickle serialization bottleneck on large matrices). ml_multi_tf.py must
     # auto-convert dense to sparse CSR before parallel CPCV.
     ml_content_cpcv = all_py_contents.get('ml_multi_tf.py', '')
     has_dense_to_sparse = ('issparse' in ml_content_cpcv and
                            'csr_matrix' in ml_content_cpcv or 'csr_array' in ml_content_cpcv)
-    check("ml_multi_tf.py: dense→sparse CSR conversion for parallel CPCV",
+    check("ml_multi_tf.py: dense->sparse CSR conversion for parallel CPCV",
           has_dense_to_sparse,
           "ml_multi_tf.py must convert dense data to sparse CSR before parallel CPCV. "
           "1w (no cross gen) produces dense DataFrames that crash parallel pickle serialization. "
@@ -1044,7 +1100,7 @@ def check_training_consistency():
 
     # -- Class weight alignment: _cw_arr must be full-length, NOT compact+np.pad --
     # The bug: _cw_arr = [weight for y in y[~isnan(y)]] gives N_nonnan elements.
-    # np.pad fills remaining positions assuming NaN rows are at the END — they are NOT.
+    # np.pad fills remaining positions assuming NaN rows are at the END -- they are NOT.
     # Fix: _cw_arr must be len(y_3class), one weight per row, NaN rows get 1.0.
     cw_bad_files = []
     for fname in ('ml_multi_tf.py', 'run_optuna_local.py'):
@@ -1059,14 +1115,14 @@ def check_training_consistency():
     check("class weight alignment: no np.pad on _cw_arr",
           len(cw_bad_files) == 0,
           f"Misaligned class weight computation in: {', '.join(cw_bad_files)}. "
-          f"np.pad assumes NaN rows are contiguous at end — they are not. "
+          f"np.pad assumes NaN rows are contiguous at end -- they are not. "
           f"Fix: _cw_arr = np.ones(len(y)); _cw_arr[~isnan(y)] = weights. "
           f"SHORT 3x upweighting would apply to WRONG rows without this fix.")
 
     # -- TIER 1.3: _compute_sample_uniqueness ends must have +1 (inclusive end bar) --
     # t1 is stored as the inclusive end bar index. _compute_uniqueness_inner uses range(s, e)
-    # which is exclusive of e. Without +1, the last bar of the label window is skipped →
-    # concurrency is underestimated → sample weights are wrong → Optuna optimizes for wrong objective.
+    # which is exclusive of e. Without +1, the last bar of the label window is skipped ->
+    # concurrency is underestimated -> sample weights are wrong -> Optuna optimizes for wrong objective.
     for _uniq_fname in ('run_optuna_local.py', 'ml_multi_tf.py'):
         _uniq_content = all_py_contents.get(_uniq_fname, '')
         if '_compute_sample_uniqueness' not in _uniq_content:
@@ -1080,7 +1136,7 @@ def check_training_consistency():
                 check(f"{_uniq_fname}: ends = t1_arr + 1 in _compute_sample_uniqueness",
                       _has_plus1,
                       f"{_uniq_fname} line {_ui+1}: ends missing +1. t1 is inclusive end bar but "
-                      f"range(s,e) is exclusive — without +1, last bar of label window excluded, "
+                      f"range(s,e) is exclusive -- without +1, last bar of label window excluded, "
                       f"concurrency underestimated, sample weights wrong. "
                       f"Fix: ends = np.asarray(t1_arr, dtype=np.int64) + 1")
 
@@ -1097,7 +1153,7 @@ def check_training_consistency():
           _t2_has_per_fold and _t2_has_worker_overlay and _t2_no_skip_comment,
           "ml_multi_tf.py: parallel CPCV workers must receive per-fold HMM overlays "
           "(_fold_hmm_overlays dict, fit_hmm_on_window per fold, hmm_overlay in worker args). "
-          "Global HMM fit = lookahead bias — Perplexity confirmed 56%% F1 collapse when fixed. "
+          "Global HMM fit = lookahead bias -- Perplexity confirmed 56%% F1 collapse when fixed. "
           "FIX: strip HMM cols from X_all, pre-compute _fold_hmm_overlays before parallel loop, "
           "pass _fold_hmm_overlays[wi] to each worker.")
 
@@ -1123,7 +1179,7 @@ def check_training_consistency():
           "only set is_unbalance=True when TF_CLASS_WEIGHT.get(tf) == 'balanced'.")
 
     # -- runtime_checks.py: .nnz guarded by issparse (dense arrays have no .nnz) --
-    # Bug: runtime_checks.py:51 called X.nnz on dense ndarray → AttributeError.
+    # Bug: runtime_checks.py:51 called X.nnz on dense ndarray -> AttributeError.
     # 1w has no cross features = dense matrix. Optuna never ran.
     # Fix: issparse(X) guard before .nnz, else np.count_nonzero(X).
     rc_content = all_py_contents.get('runtime_checks.py', '')
@@ -1147,7 +1203,7 @@ def check_training_consistency():
         check("runtime_checks.py: .nnz guarded by issparse (no dense crash)",
               rc_has_issparse_guard and not rc_has_raw_nnz,
               "runtime_checks.py calls .nnz without issparse guard. "
-              "Dense arrays (1w, no crosses) have no .nnz → AttributeError kills Optuna. "
+              "Dense arrays (1w, no crosses) have no .nnz -> AttributeError kills Optuna. "
               "FIX: _nnz = X.nnz if issparse(X) else np.count_nonzero(X)")
 
     # -- No --no-parallel-splits in subprocess commands --
@@ -1188,7 +1244,7 @@ def check_training_consistency():
             warn(f"{_sf}: documents ALLOW_CPU=1",
                  False,
                  f"{_sf} does not mention ALLOW_CPU=1. "
-                 f"CUDA 13+ drops cuDF — pandas fallback requires ALLOW_CPU=1. "
+                 f"CUDA 13+ drops cuDF -- pandas fallback requires ALLOW_CPU=1. "
                  f"FIX: add 'export ALLOW_CPU=1' to {_sf}")
 
     # -- Constant features gated for 1w (SKIP_FEATURES_1W in config.py) --
@@ -1232,10 +1288,10 @@ def check_training_consistency():
             _dc = _dl.split('#')[0]  # strip comments
             if 'lgb.Dataset(' not in _dc and 'lightgbm.Dataset(' not in _dc:
                 continue
-            # Binary file loads don't re-bin features — skip
+            # Binary file loads don't re-bin features -- skip
             if '.bin' in _dc and 'label=' not in _dc:
                 continue
-            # Child datasets with reference= inherit parent's bins — parent must be correct
+            # Child datasets with reference= inherit parent's bins -- parent must be correct
             _ctx = '\n'.join(_ds_lines[_di:min(_di + 10, len(_ds_lines))])
             if 'reference=' in _ctx:
                 continue
@@ -1257,14 +1313,14 @@ def check_training_consistency():
         check(f"{_ds_fname}: lgb.Dataset() calls have feature_pre_filter=False in params=",
               len(_ds_violations) == 0,
               f"{_ds_fname}: Dataset() calls without feature_pre_filter=False: {_ds_violations[:5]}. "
-              f"LightGBM permanently drops rare esoteric features at Dataset construction — "
+              f"LightGBM permanently drops rare esoteric features at Dataset construction -- "
               f"train() params have no effect on already-constructed Datasets. "
               f"Fix: lgb.Dataset(X, label=y, params={{'feature_pre_filter': False, 'max_bin': 7}})")
 
 
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 # Helpers
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 def _get_ram_gb():
     """Get available RAM in GB (cgroup-aware for cloud containers, psutil for Windows)."""
     import platform
@@ -1323,9 +1379,9 @@ def _get_ram_gb():
     return 0
 
 
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 # Main
-# ══════════════════════════════════════════════════════════════
+# ==============================================================
 def main():
     parser = argparse.ArgumentParser(description='Savage22 V3.3 Pre-Flight Validation')
     parser.add_argument('--tf', type=str, choices=list(VALID_TFS),

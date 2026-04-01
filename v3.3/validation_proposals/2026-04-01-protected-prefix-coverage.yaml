@@ -22,4 +22,4 @@ message: "Feature prefix '{prefix}' used in feature_library.py but missing from 
 rollout: hard_gate
 proposed_by: CEO-audit
 date: 2026-04-01
-status: proposed
+status: implemented
