@@ -1627,7 +1627,7 @@ if __name__ == '__main__':
               # Downcast float64 → float32 (LightGBM uses float32 histograms, saves 2x RAM)
               _f64 = df.select_dtypes(include=['float64']).columns
               if len(_f64) > 0:
-                  df[_f64] = df[_f64].astype(np.float32)
+                  df = df.astype({c: np.float32 for c in _f64})
                   log(f"  Downcast {len(_f64)} float64 cols → float32 (saves ~{len(_f64) * len(df) * 4 / 1e6:.0f} MB)")
               log(f"  Loaded from parquet: {parquet_path}")
           elif os.path.exists(db_path):
@@ -1652,9 +1652,9 @@ if __name__ == '__main__':
 
           # Parse timestamp
           if 'timestamp' in df.columns:
-              df['timestamp'] = pd.to_datetime(df['timestamp'])
+              df = df.assign(timestamp=pd.to_datetime(df['timestamp']))
           elif 'date' in df.columns:
-              df['timestamp'] = pd.to_datetime(df['date'])
+              df = df.assign(timestamp=pd.to_datetime(df['date']))
 
           log(f"  {elapsed()} Loaded: {len(df)} rows x {len(df.columns)} columns")
 
@@ -2108,6 +2108,26 @@ if __name__ == '__main__':
                   log(f"  WARNING: Failed to load Optuna params: {_oe}")
           else:
               log(f"  No optuna_configs_{tf_name}.json found — using config.py defaults")
+
+          # ── SAV-52: Runtime guards — clamp params that kill rare esoteric signals ──
+          _CLAMP_RULES = {
+              'feature_fraction':        (0.7,  None, "kills rare cross signals below 0.7"),
+              'feature_fraction_bynode':  (0.7,  None, "kills rare cross signals below 0.7"),
+              'bagging_fraction':         (0.95, None, "drops rare-event rows below 0.95"),
+          }
+          for _ck, (_cmin, _cmax, _creason) in _CLAMP_RULES.items():
+              if _ck in _base_lgb_params:
+                  _cval = _base_lgb_params[_ck]
+                  if _cmin is not None and _cval < _cmin:
+                      log(f"  ⚠ CLAMPED {_ck}: {_cval} → {_cmin} ({_creason})")
+                      _base_lgb_params[_ck] = _cmin
+                  if _cmax is not None and _cval > _cmax:
+                      log(f"  ⚠ CLAMPED {_ck}: {_cval} → {_cmax} ({_creason})")
+                      _base_lgb_params[_ck] = _cmax
+          # Force feature_pre_filter=False (True silently kills rare features)
+          if _base_lgb_params.get('feature_pre_filter') is not False:
+              log(f"  ⚠ CLAMPED feature_pre_filter: {_base_lgb_params.get('feature_pre_filter')} → False (silently kills rare features)")
+              _base_lgb_params['feature_pre_filter'] = False
 
           # Interaction constraints — DISABLED for 100K+ features (787K constrained features kills LightGBM perf)
           # LightGBM checks constraint groups per split candidate per round — catastrophic at 787K.
@@ -3418,6 +3438,25 @@ if __name__ == '__main__':
           for _ok in _OPTUNA_TUNABLE_KEYS_FINAL:
               if _ok in _base_lgb_params and _ok not in ('num_threads',):
                   final_params[_ok] = _base_lgb_params[_ok]
+
+          # ── SAV-52: Runtime guards on final retrain params ──
+          _CLAMP_RULES_FINAL = {
+              'feature_fraction':        (0.7,  None, "kills rare cross signals below 0.7"),
+              'feature_fraction_bynode':  (0.7,  None, "kills rare cross signals below 0.7"),
+              'bagging_fraction':         (0.95, None, "drops rare-event rows below 0.95"),
+          }
+          for _ck, (_cmin, _cmax, _creason) in _CLAMP_RULES_FINAL.items():
+              if _ck in final_params:
+                  _cval = final_params[_ck]
+                  if _cmin is not None and _cval < _cmin:
+                      log(f"  ⚠ CLAMPED (final) {_ck}: {_cval} → {_cmin} ({_creason})")
+                      final_params[_ck] = _cmin
+                  if _cmax is not None and _cval > _cmax:
+                      log(f"  ⚠ CLAMPED (final) {_ck}: {_cval} → {_cmax} ({_creason})")
+                      final_params[_ck] = _cmax
+          if final_params.get('feature_pre_filter') is not False:
+              log(f"  ⚠ CLAMPED (final) feature_pre_filter: {final_params.get('feature_pre_filter')} → False")
+              final_params['feature_pre_filter'] = False
 
           # Propagate binary mode from CPCV params to final model
           if _BINARY_MODE:
