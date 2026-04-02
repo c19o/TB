@@ -48,4 +48,5 @@ These folders exist so one terminal can stay open in each timeframe lane without
 1. Commit shared framework changes on `private-shop-core`.
 2. Create the lane worktrees.
 3. Open one Codex terminal in each `lanes/<tf>` folder.
-4. Keep local runtime data outside the repo under `SAVAGE22_RUNTIME_HOME`.
+4. Read `v3.3/LANE_SESSION_START.md` in the lane terminal.
+5. Keep local runtime data outside the repo under `SAVAGE22_RUNTIME_HOME`.
