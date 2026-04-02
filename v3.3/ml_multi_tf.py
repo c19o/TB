@@ -37,6 +37,13 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 from numba import njit
+from path_contract import (
+    ARTIFACT_ROOT,
+    CODE_ROOT,
+    SHARED_DB_ROOT,
+    artifact_path,
+    ensure_runtime_dirs,
+)
 
 def _fix_binary_preds(preds):
     """Convert binary 1D predictions to 2D [P(DOWN), P(UP)] for compat with 3-class eval code."""
@@ -44,16 +51,72 @@ def _fix_binary_preds(preds):
         return np.column_stack([1 - preds, preds])
     return preds
 
-DB_DIR = os.environ.get('SAVAGE22_DB_DIR', os.path.dirname(os.path.abspath(__file__)))
+def _labels_to_int(labels, binary_mode=False):
+    """Preserve binary label identity after soft-label smoothing."""
+    arr = np.asarray(labels)
+    finite = arr[np.isfinite(arr)]
+    inferred_binary = finite.size > 0 and finite.min() >= 0 and finite.max() <= 1
+    if binary_mode or inferred_binary:
+        return (arr > 0.5).astype(int)
+    return arr.astype(int)
+
+ARTIFACT_DIR = ARTIFACT_ROOT
+SHARED_INPUT_DIR = SHARED_DB_ROOT
+DB_DIR = ARTIFACT_DIR
+PROJECT_DIR = CODE_ROOT
 # v3.1: resolve feature data from v3.0 shared dir — import from config (single source of truth)
 try:
     from config import V30_DATA_DIR
 except ImportError:
-    # Fallback: use PROJECT_DIR (self-contained v3.3) or env var
+    # Fallback: maintained runs use artifact root; ad-hoc runs may still override via env.
     V30_DATA_DIR = os.environ.get("V30_DATA_DIR",
-        os.path.dirname(os.path.abspath(__file__)))
+        ARTIFACT_DIR)
+ensure_runtime_dirs()
+
+
+def _existing_paths(*paths):
+    seen = set()
+    ordered = []
+    for path in paths:
+        if not path:
+            continue
+        norm = os.path.normcase(os.path.abspath(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ordered.append(path)
+    return ordered
+
+
+def _artifact_input_candidates(*names):
+    candidates = []
+    for name in names:
+        candidates.extend([
+            artifact_path(name),
+            os.path.join(ARTIFACT_DIR, name),
+            os.path.join(SHARED_INPUT_DIR, name),
+            os.path.join(V30_DATA_DIR, name),
+            os.path.join(PROJECT_DIR, name),
+            name,
+        ])
+    return _existing_paths(*candidates)
+
+
+def _artifact_output_path(name):
+    return artifact_path(name)
+
+
+def _first_existing_path(*paths):
+    for path in _existing_paths(*paths):
+        if os.path.exists(path):
+            return path
+    return None
 START_TIME = time.time()
 RESULTS = []
+_HOT_PATH_TRAINING = os.environ.get('V3_HOT_PATH_TRAINING', '0') == '1'
+_RUN_FI_STABILITY = os.environ.get('V3_RUN_FI_STABILITY', '0' if _HOT_PATH_TRAINING else '1') == '1'
+_RUN_ADVANCED_FI = os.environ.get('V3_RUN_ADVANCED_FI', '0' if _HOT_PATH_TRAINING else '1') == '1'
+_CHECKPOINT_PERIOD = max(25, int(os.environ.get('V3_CHECKPOINT_PERIOD', '200' if _HOT_PATH_TRAINING else '100')))
 
 def elapsed():
     return f"[{time.time()-START_TIME:.0f}s]"
@@ -559,9 +622,9 @@ def _cpcv_split_worker(args_tuple):
         test_valid = ~np.isnan(y_test_raw)
 
         X_train = X_all[train_idx][train_valid]
-        y_train = y_train_raw[train_valid].astype(int)
+        y_train = _labels_to_int(y_train_raw[train_valid])
         X_test = X_all[test_idx][test_valid]
-        y_test = y_test_raw[test_valid].astype(int)
+        y_test = _labels_to_int(y_test_raw[test_valid])
 
         # T-2 FIX: Apply per-fold HMM overlay (fitted on train-end-date only, no lookahead)
         # hmm_overlay is (N, n_hmm_cols) float32 pre-computed by the parent process per fold.
@@ -730,8 +793,8 @@ def _isolated_fold_worker(shared_dir, wi, train_idx, test_idx,
 
     X_train = X_all[train_idx][train_valid]
     X_test = X_all[test_idx][test_valid]
-    y_train = np.array(y_train_raw[train_valid]).astype(int)
-    y_test = np.array(y_test_raw[test_valid]).astype(int)
+    y_train = _labels_to_int(np.array(y_train_raw[train_valid]))
+    y_test = _labels_to_int(np.array(y_test_raw[test_valid]))
 
     # Apply per-fold HMM overlay
     if hmm_overlay is not None and len(hmm_overlay_names) > 0:
@@ -882,8 +945,8 @@ def _gpu_fold_worker(fold_id, gpu_id, shared_dir, train_idx, test_idx,
 
         X_train = X_all[train_idx][train_valid]
         X_test = X_all[test_idx][test_valid]
-        y_train = np.array(y_train_raw[train_valid]).astype(int)
-        y_test = np.array(y_test_raw[test_valid]).astype(int)
+        y_train = _labels_to_int(np.array(y_train_raw[train_valid]))
+        y_test = _labels_to_int(np.array(y_test_raw[test_valid]))
 
         # Apply per-fold HMM overlay
         if hmm_overlay is not None and len(hmm_overlay_names) > 0:
@@ -1439,9 +1502,14 @@ if __name__ == '__main__':
   # LOAD DAILY DATA FOR HMM (will re-fit per window)
   # ============================================================
   log(f"\n{elapsed()} Loading daily closes for HMM...")
-  _btc_db = f'{DB_DIR}/btc_prices.db'
-  if not os.path.exists(_btc_db) or os.path.getsize(_btc_db) == 0:
-      _btc_db = os.path.join(os.path.dirname(DB_DIR), 'btc_prices.db')
+  _btc_db = _first_existing_path(
+      artifact_path('btc_prices.db'),
+      os.path.join(DB_DIR, 'btc_prices.db'),
+      os.path.join(os.path.dirname(DB_DIR), 'btc_prices.db'),
+      os.path.join(PROJECT_DIR, 'btc_prices.db'),
+  )
+  if _btc_db is None:
+      raise FileNotFoundError("btc_prices.db not found in artifact/shared/code roots")
   conn = sqlite3.connect(_btc_db)
   daily = pd.read_sql_query("""
       SELECT open_time, close FROM ohlcv
@@ -1610,16 +1678,19 @@ if __name__ == '__main__':
           log(f"TRAINING {tf_name.upper()} MODEL")
           log(f"{'='*70}")
 
-          db_path = f"{DB_DIR}/{cfg['db']}"
-          parquet_path = db_path.replace('.db', '.parquet')
-          # V2 naming: features_BTC_{tf}.parquet (asset-prefixed)
-          v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
-          # v3.1: also check v3.0 shared data dir
-          v30_parquet = os.path.join(V30_DATA_DIR, f'features_BTC_{tf_name}.parquet')
-          if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
-              parquet_path = v2_parquet
-          if not os.path.exists(parquet_path) and os.path.exists(v30_parquet):
-              parquet_path = v30_parquet
+          db_path = _first_existing_path(
+              artifact_path(cfg['db']),
+              os.path.join(DB_DIR, cfg['db']),
+              os.path.join(PROJECT_DIR, cfg['db']),
+          ) or os.path.join(DB_DIR, cfg['db'])
+          parquet_path = _first_existing_path(
+              artifact_path(cfg['db'].replace('.db', '.parquet')),
+              os.path.join(DB_DIR, cfg['db'].replace('.db', '.parquet')),
+              os.path.join(PROJECT_DIR, cfg['db'].replace('.db', '.parquet')),
+              artifact_path(f'features_BTC_{tf_name}.parquet'),
+              os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet'),
+              os.path.join(V30_DATA_DIR, f'features_BTC_{tf_name}.parquet'),
+          ) or cfg['db'].replace('.db', '.parquet')
 
           # Try parquet first (no column limit), fall back to SQLite, then v3.0
           if os.path.exists(parquet_path):
@@ -1756,17 +1827,16 @@ if __name__ == '__main__':
           # Check for sparse cross .npy memmap dir or .npz file for this TF
           cross_matrix = None
           cross_cols = None
-          npy_dir = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy')
-          if not os.path.isdir(npy_dir):
-              npy_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy')
-              if os.path.isdir(npy_v30):
-                  npy_dir = npy_v30
-          npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
-          # v3.1: check v3.0 shared data dir for cross NPZ
-          if not os.path.exists(npz_path):
-              npz_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz')
-              if os.path.exists(npz_v30):
-                  npz_path = npz_v30
+          npy_dir = _first_existing_path(
+              artifact_path(f'v2_crosses_BTC_{tf_name}_npy'),
+              os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+              os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+          ) or os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy')
+          npz_path = _first_existing_path(
+              artifact_path(f'v2_crosses_BTC_{tf_name}.npz'),
+              os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+              os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+          ) or os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
           # Prefer .npy memmap (zero-copy) over NPZ (full RAM load)
           if os.path.isdir(npy_dir) and os.path.exists(os.path.join(npy_dir, 'indptr.npy')):
               try:
@@ -1775,7 +1845,7 @@ if __name__ == '__main__':
                   cross_matrix = load_csr_npy(npy_dir, mmap_mode='r')
                   cross_matrix = _ensure_lgbm_sparse_dtypes(cross_matrix, "cross_matrix")
                   # Load column names
-                  for _cols_dir in [DB_DIR, V30_DATA_DIR]:
+                  for _cols_dir in [ARTIFACT_ROOT, DB_DIR, V30_DATA_DIR]:
                       _cols_path = os.path.join(_cols_dir, f'v2_cross_names_BTC_{tf_name}.json')
                       if os.path.exists(_cols_path):
                           with open(_cols_path) as f:
@@ -1792,7 +1862,11 @@ if __name__ == '__main__':
           if cross_matrix is None and os.path.exists(npz_path):
               try:
                   log(f"  {elapsed()} Loading sparse cross matrix: {npz_path}")
-                  cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
+                  try:
+                      from atomic_io import load_npz_auto
+                      cross_matrix = load_npz_auto(npz_path).tocsr()
+                  except Exception:
+                      cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
                   cross_matrix = _ensure_lgbm_sparse_dtypes(cross_matrix, "cross_matrix")
                   # Load column names (try both naming conventions)
                   cols_path = npz_path.replace('.npz', '_columns.json')
@@ -1804,10 +1878,11 @@ if __name__ == '__main__':
                       _npz_basename = os.path.basename(npz_path)  # e.g. v2_crosses_BTC_1d.npz
                       _parts = _npz_basename.replace('v2_crosses_', '').replace('.npz', '').rsplit('_', 1)
                       _sym, _tfn = (_parts[0], _parts[1]) if len(_parts) == 2 else ('BTC', tf_name)
-                      cols_path_alt = os.path.join(DB_DIR, f'v2_cross_names_{_sym}_{_tfn}.json')
-                      # v3.1: also check v3.0 for cross names
-                      if not os.path.exists(cols_path_alt):
-                          cols_path_alt = os.path.join(V30_DATA_DIR, f'v2_cross_names_{_sym}_{_tfn}.json')
+                      cols_path_alt = _first_existing_path(
+                          artifact_path(f'v2_cross_names_{_sym}_{_tfn}.json'),
+                          os.path.join(DB_DIR, f'v2_cross_names_{_sym}_{_tfn}.json'),
+                          os.path.join(V30_DATA_DIR, f'v2_cross_names_{_sym}_{_tfn}.json'),
+                      ) or os.path.join(DB_DIR, f'v2_cross_names_{_sym}_{_tfn}.json')
                       if os.path.exists(cols_path_alt):
                           with open(cols_path_alt) as f:
                               cross_cols = json.load(f)
@@ -1998,7 +2073,7 @@ if __name__ == '__main__':
           best_acc = 0
 
           # ── CPCV fold checkpoint: resume from last completed fold on crash ──
-          _cpcv_ckpt_path = os.path.join(DB_DIR, f'cpcv_checkpoint_{tf_name}.pkl')
+          _cpcv_ckpt_path = _artifact_output_path(f'cpcv_checkpoint_{tf_name}.pkl')
           _completed_folds = set()
           if os.path.exists(_cpcv_ckpt_path):
               try:
@@ -2074,12 +2149,13 @@ if __name__ == '__main__':
           # If run_optuna_local.py was run first (Step 5 in cloud pipeline), it saves
           # optuna_configs_{tf}.json with best_params. Load and overlay onto _base_lgb_params.
           # This lets Step 4 (training) use Optuna-found params instead of config.py defaults.
-          _optuna_config_path = os.path.join(V30_DATA_DIR, f'optuna_configs_{tf_name}.json')
-          if not os.path.exists(_optuna_config_path):
-              # Also check CWD (cloud deploys may have it in /workspace)
-              _optuna_config_path_cwd = f'optuna_configs_{tf_name}.json'
-              if os.path.exists(_optuna_config_path_cwd):
-                  _optuna_config_path = _optuna_config_path_cwd
+          _optuna_config_path = _first_existing_path(
+              artifact_path(f'optuna_configs_{tf_name}.json'),
+              os.path.join(DB_DIR, f'optuna_configs_{tf_name}.json'),
+              os.path.join(V30_DATA_DIR, f'optuna_configs_{tf_name}.json'),
+              os.path.join(PROJECT_DIR, f'optuna_configs_{tf_name}.json'),
+              f'optuna_configs_{tf_name}.json',
+          )
           if os.path.exists(_optuna_config_path):
               try:
                   with open(_optuna_config_path) as _ocf:
@@ -2402,7 +2478,7 @@ if __name__ == '__main__':
               if window_results:
                   _best_fold = max(window_results, key=lambda r: r['accuracy'])
                   _best_wi = _best_fold['window'] - 1
-                  _best_model_path = os.path.join(DB_DIR, f'model_{tf_name}_fold{_best_wi}.txt')
+                  _best_model_path = _artifact_output_path(f'model_{tf_name}_fold{_best_wi}.txt')
                   if os.path.exists(_best_model_path):
                       best_model_obj = lgb.Booster(model_file=_best_model_path)
 
@@ -2772,9 +2848,11 @@ if __name__ == '__main__':
               # we keep HMM columns as a small dense overlay that gets hstacked
               # only on the train/test SUBSET at extraction time (milliseconds).
               _HMM_COL_NAMES = ['hmm_bull_prob', 'hmm_bear_prob', 'hmm_neutral_prob', 'hmm_state']
-              _hmm_overlay = None  # (N, 4) dense float32 — updated each fold
+              _hmm_overlay = None  # base dense float32 overlay
+              _final_hmm_overlay = None  # overlay used for the final retrain path
               _hmm_overlay_names = []  # feature names for the overlay columns
               _hmm_stripped = False  # whether we removed HMM cols from X_all
+              _fold_hmm_overlays_seq = {}
 
               if _X_all_is_sparse:
                   # Find HMM columns already in feature_cols and strip them from X_all
@@ -2828,6 +2906,39 @@ if __name__ == '__main__':
                       _hmm_overlay_names = list(_HMM_COL_NAMES)
                       log(f"  HMM overlay: initialized {len(_HMM_COL_NAMES)} new cols as dense overlay")
 
+                  # Pre-compute sequential sparse overlays once so per-fold work does not
+                  # repeatedly rebuild the full HMM mapping.
+                  if 'timestamp' in df.columns:
+                      _date_norm_seq = pd.to_datetime(timestamps)
+                      if _date_norm_seq.tz is not None:
+                          _date_norm_seq = _date_norm_seq.tz_localize(None)
+                      _date_norm_seq = _date_norm_seq.normalize()
+                      _n_rows_seq = X_all.shape[0]
+                      for _wj, (train_idx_j, _) in enumerate(splits):
+                          if _wj in _completed_folds:
+                              _fold_hmm_overlays_seq[_wj] = None
+                              continue
+                          _train_end_seq = pd.Timestamp(timestamps[train_idx_j[-1]])
+                          _hmm_df_seq = fit_hmm_on_window(_train_end_seq)
+                          _fold_ov = np.full((_n_rows_seq, len(_hmm_overlay_names)), np.nan, dtype=np.float32)
+                          if _hmm_df_seq is not None:
+                              _hmm_notz_seq = _hmm_df_seq.copy()
+                              if _hmm_notz_seq.index.tz is not None:
+                                  _hmm_notz_seq.index = _hmm_notz_seq.index.tz_localize(None)
+                              for _hi, _hcol in enumerate(_hmm_overlay_names):
+                                  if _hcol in _hmm_notz_seq.columns:
+                                      _fold_ov[:, _hi] = pd.Series(_date_norm_seq).map(
+                                          _hmm_notz_seq[_hcol].to_dict()
+                                      ).ffill().values.astype(np.float32)
+                          _fold_hmm_overlays_seq[_wj] = _fold_ov
+                      _non_null_seq = [wi for wi, ov in _fold_hmm_overlays_seq.items() if ov is not None]
+                      if _non_null_seq:
+                          _final_hmm_overlay = _fold_hmm_overlays_seq[max(_non_null_seq)]
+                      log(f"  HMM overlay: pre-computed {len(_fold_hmm_overlays_seq)} sequential fold overlays")
+
+              if _final_hmm_overlay is None:
+                  _final_hmm_overlay = _hmm_overlay
+
               # ── Build parent Dataset ONCE for EFB/bin reuse across folds ──
               # This avoids recomputing EFB bundles + bin thresholds per fold (~30% time savings).
               # Per-fold Datasets use reference=_parent_ds to inherit bins/EFB.
@@ -2835,7 +2946,7 @@ if __name__ == '__main__':
               _parent_ds = None
               try:
                   _parent_t0 = time.time()
-                  bin_path = os.path.join(DB_DIR, f'lgbm_dataset_{tf_name}.bin')
+                  bin_path = _artifact_output_path(f'lgbm_dataset_{tf_name}.bin')
                   if os.path.exists(bin_path):
                       log(f"  Loading parent Dataset from binary: {bin_path}")
                       _parent_ds = lgb.Dataset(bin_path, params={'feature_pre_filter': False, 'max_bin': _base_lgb_params.get('max_bin', 7), 'min_data_in_bin': 1})
@@ -2867,7 +2978,7 @@ if __name__ == '__main__':
                               from run_optuna_local import _parallel_dataset_construct
                               log(f"  Parallel Dataset construction: {_Xp.shape[1]:,} features...")
                               _parent_ds = _parallel_dataset_construct(
-                                  _Xp, y_3class[_parent_valid].astype(int),
+                                  _Xp, _labels_to_int(y_3class[_parent_valid]),
                                   sample_weights[_parent_valid],
                               )
                               log(f"  Parallel build done in {time.time() - _parent_t0:.1f}s. "
@@ -2877,7 +2988,7 @@ if __name__ == '__main__':
                               _parent_ds = None
                       if _parent_ds is None:
                           _parent_ds = lgb.Dataset(
-                              _Xp, label=y_3class[_parent_valid].astype(int),
+                              _Xp, label=_labels_to_int(y_3class[_parent_valid]),
                               weight=sample_weights[_parent_valid],
                               feature_name=_parent_feature_cols,
                               free_raw_data=True,
@@ -2903,7 +3014,7 @@ if __name__ == '__main__':
               _shared_fold_dir = None
               if _subprocess_folds:
                   import shutil
-                  _shared_fold_dir = os.path.join(DB_DIR, f'_fold_shared_{tf_name}')
+                  _shared_fold_dir = _artifact_output_path(f'_fold_shared_{tf_name}')
                   if os.path.exists(_shared_fold_dir):
                       shutil.rmtree(_shared_fold_dir)
                   from atomic_io import save_csr_npy
@@ -2911,6 +3022,9 @@ if __name__ == '__main__':
                   save_csr_npy(X_all, _shared_fold_dir)
                   np.save(os.path.join(_shared_fold_dir, 'y.npy'), y_3class)
                   np.save(os.path.join(_shared_fold_dir, 'weights.npy'), sample_weights)
+                  for _wi, _fold_overlay in _fold_hmm_overlays_seq.items():
+                      if _fold_overlay is not None:
+                          np.save(os.path.join(_shared_fold_dir, f'hmm_overlay_fold{_wi}.npy'), _fold_overlay)
                   log(f"  SUBPROCESS FOLDS: shared data saved. Each fold runs in isolated process.")
 
               for wi, (train_idx, test_idx) in enumerate(splits):
@@ -2919,8 +3033,8 @@ if __name__ == '__main__':
                       continue
                   log(f"\n  --- CPCV Path {wi+1}/{len(splits)} ---")
 
-                  # HMM: re-fit on training data only
-                  if 'timestamp' in df.columns:
+                  _fold_overlay = _fold_hmm_overlays_seq.get(wi, _hmm_overlay)
+                  if (not _X_all_is_sparse) and 'timestamp' in df.columns:
                       train_end_date = pd.Timestamp(timestamps[train_idx[-1]])
                       hmm_df = fit_hmm_on_window(train_end_date)
                       if hmm_df is not None:
@@ -2931,42 +3045,29 @@ if __name__ == '__main__':
                           hmm_df_notz = hmm_df.copy()
                           if hmm_df_notz.index.tz is not None:
                               hmm_df_notz.index = hmm_df_notz.index.tz_localize(None)
-
-                          if _X_all_is_sparse and _hmm_overlay is not None:
-                              # Fast path: update the small dense overlay (no sparse conversion)
-                              for hi, hmm_col in enumerate(_hmm_overlay_names):
-                                  if hmm_col in hmm_df_notz.columns:
-                                      hmm_mapped = pd.Series(date_norm).map(
-                                          hmm_df_notz[hmm_col].to_dict()
-                                      ).ffill().values.astype(np.float32)
-                                      _hmm_overlay[:, hi] = hmm_mapped
-                          else:
-                              # Dense matrix path: update columns in-place (cheap for dense)
-                              for hmm_col in _HMM_COL_NAMES:
-                                  hmm_mapped = pd.Series(date_norm).map(
-                                      hmm_df_notz[hmm_col].to_dict()
-                                  ).ffill().values.astype(np.float32)
-                                  col_idx = {f: i for i, f in enumerate(feature_cols)}.get(hmm_col, -1)
-                                  if col_idx >= 0:
-                                      X_all[:, col_idx] = hmm_mapped
-                                  else:
-                                      X_all = np.column_stack([X_all, hmm_mapped])
-                                      feature_cols.append(hmm_col)
+                          for hmm_col in _HMM_COL_NAMES:
+                              hmm_mapped = pd.Series(date_norm).map(
+                                  hmm_df_notz[hmm_col].to_dict()
+                              ).ffill().values.astype(np.float32)
+                              col_idx = {f: i for i, f in enumerate(feature_cols)}.get(hmm_col, -1)
+                              if col_idx >= 0:
+                                  X_all[:, col_idx] = hmm_mapped
+                              else:
+                                  X_all = np.column_stack([X_all, hmm_mapped])
+                                  feature_cols.append(hmm_col)
 
                   # ── Subprocess isolation path: train fold in isolated process ──
                   if _subprocess_folds and _shared_fold_dir is not None:
                       import multiprocessing as _mp_iso
-                      _fold_result_path = os.path.join(DB_DIR, f'_fold_result_{tf_name}_{wi}.pkl')
+                      _fold_result_path = _artifact_output_path(f'_fold_result_{tf_name}_{wi}.pkl')
                       # Save per-fold HMM overlay to disk for subprocess
-                      if _hmm_overlay is not None:
-                          np.save(os.path.join(_shared_fold_dir, f'hmm_overlay_fold{wi}.npy'), _hmm_overlay)
                       _fold_proc = _mp_iso.Process(
                           target=_isolated_fold_worker,
                           args=(_shared_fold_dir, wi, train_idx, test_idx,
                                 _base_lgb_params, feature_cols,
                                 _tf_boost_rounds, tf_name,
-                                _hmm_overlay_names if _hmm_overlay is not None else [],
-                                _fold_result_path, DB_DIR),
+                                _hmm_overlay_names if _fold_overlay is not None else [],
+                                _fold_result_path, ARTIFACT_ROOT),
                       )
                       _fold_proc.start()
                       # FIX-3: Timeout on subprocess join — hung folds block forever without this.
@@ -3023,7 +3124,7 @@ if __name__ == '__main__':
 
                       if acc > best_acc:
                           best_acc = acc
-                          _fold_model_path = os.path.join(DB_DIR, f'model_{tf_name}_fold{wi}.txt')
+                          _fold_model_path = _artifact_output_path(f'model_{tf_name}_fold{wi}.txt')
                           best_model_obj = lgb.Booster(model_file=_fold_model_path)
 
                       _completed_folds.add(wi)
@@ -3055,15 +3156,15 @@ if __name__ == '__main__':
                   test_valid = ~np.isnan(y_test_raw)
 
                   # Extract train/test — sparse path hstacks HMM overlay at extraction time
-                  if _X_all_is_sparse and _hmm_overlay is not None:
+                  if _X_all_is_sparse and _fold_overlay is not None:
                       # hstack only on the SUBSET rows (much smaller than full matrix)
                       _Xtr_base = X_all[train_idx][train_valid]
-                      _Xtr_hmm = sp_sparse.csr_matrix(_hmm_overlay[train_idx][train_valid])
+                      _Xtr_hmm = sp_sparse.csr_matrix(_fold_overlay[train_idx][train_valid])
                       X_train = sp_sparse.hstack([_Xtr_base, _Xtr_hmm], format='csr')
                       del _Xtr_base, _Xtr_hmm
 
                       _Xte_base = X_all[test_idx][test_valid]
-                      _Xte_hmm = sp_sparse.csr_matrix(_hmm_overlay[test_idx][test_valid])
+                      _Xte_hmm = sp_sparse.csr_matrix(_fold_overlay[test_idx][test_valid])
                       X_test = sp_sparse.hstack([_Xte_base, _Xte_hmm], format='csr')
                       del _Xte_base, _Xte_hmm
 
@@ -3073,8 +3174,8 @@ if __name__ == '__main__':
                       X_test = X_all[test_idx][test_valid]
                       _fold_feature_cols = feature_cols
 
-                  y_train = y_train_raw[train_valid].astype(int)
-                  y_test = y_test_raw[test_valid].astype(int)
+                  y_train = _labels_to_int(y_train_raw[train_valid])
+                  y_test = _labels_to_int(y_test_raw[test_valid])
                   test_idx_valid = test_idx[test_valid]  # for OOS prediction storage
 
                   # NO pre-filtering: LightGBM decides via tree splits, not us.
@@ -3117,7 +3218,7 @@ if __name__ == '__main__':
                       _ds_kwargs['reference'] = _parent_ds  # reuse EFB bundles + bin thresholds
                   dtrain = lgb.Dataset(X_train_es, label=y_train_es, weight=w_train_es, **_ds_kwargs)
                   dval = lgb.Dataset(X_val_es, label=y_val_es, weight=w_val_es, **_ds_kwargs)
-                  _ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_fold{wi}.txt')
+                  _ckpt_path = _artifact_output_path(f'lgbm_ckpt_{tf_name}_fold{wi}.txt')
                   _es_rounds = max(50, int(100 * (0.1 / params.get('learning_rate', 0.03))))
                   if tf_name in _CFG_TF_ES:
                       _es_rounds = _CFG_TF_ES[tf_name]
@@ -3129,7 +3230,7 @@ if __name__ == '__main__':
                           params, dtrain, dval, _X_csr_fold,
                           num_boost_round=_tf_boost_rounds,
                           early_stopping_rounds=_es_rounds,
-                          checkpoint_cb=CheckpointCallback(_ckpt_path, period=100),
+                          checkpoint_cb=CheckpointCallback(_ckpt_path, period=_CHECKPOINT_PERIOD),
                           log_period=100,
                           gpu_device_id=_gpu_id,
                       )
@@ -3145,7 +3246,7 @@ if __name__ == '__main__':
                           callbacks=[
                               lgb.early_stopping(_es_rounds),
                               lgb.log_evaluation(100),
-                              CheckpointCallback(_ckpt_path, period=100),
+                              CheckpointCallback(_ckpt_path, period=_CHECKPOINT_PERIOD),
                           ],
                       )
 
@@ -3184,9 +3285,10 @@ if __name__ == '__main__':
                   # Feature importance for this fold (gain-based)
                   importance = dict(zip(model.feature_name(), model.feature_importance(importance_type='gain')))
 
-                  # Save fold model for feature importance pipeline
-                  _fold_model_path = os.path.join(DB_DIR, f'model_{tf_name}_fold{wi}.txt')
-                  model.save_model(_fold_model_path)
+                  # Save fold models only when the advanced FI pipeline is active.
+                  if _RUN_ADVANCED_FI:
+                      _fold_model_path = _artifact_output_path(f'model_{tf_name}_fold{wi}.txt')
+                      model.save_model(_fold_model_path)
 
                   window_results.append({
                       'window': wi + 1, 'accuracy': acc,
@@ -3280,7 +3382,7 @@ if __name__ == '__main__':
               log(f"  CPCV checkpoint cleaned: {os.path.basename(_cpcv_ckpt_path)}")
 
           # Save OOS predictions for meta-labeling and PBO
-          oos_path = os.path.join(DB_DIR, f'cpcv_oos_predictions_{tf_name}.pkl')
+          oos_path = _artifact_output_path(f'cpcv_oos_predictions_{tf_name}.pkl')
           try:
               import pickle
               with open(oos_path, 'wb') as f:
@@ -3292,101 +3394,104 @@ if __name__ == '__main__':
           # ============================================================
           # FEATURE IMPORTANCE STABILITY ACROSS CPCV FOLDS
           # ============================================================
-          t0_fi = time.time()
-          try:
-              all_importances = [w.get('importance', {}) for w in window_results if w.get('importance')]
-              if len(all_importances) >= 3:
-                  # Collect all feature names that appeared in any fold
-                  all_feat_names = set()
-                  for imp in all_importances:
-                      all_feat_names.update(imp.keys())
+          if _RUN_FI_STABILITY:
+              t0_fi = time.time()
+              try:
+                  all_importances = [w.get('importance', {}) for w in window_results if w.get('importance')]
+                  if len(all_importances) >= 3:
+                      # Collect all feature names that appeared in any fold
+                      all_feat_names = set()
+                      for imp in all_importances:
+                          all_feat_names.update(imp.keys())
 
-                  # Build rank matrix: (n_folds, n_features)
-                  feat_list = sorted(all_feat_names)
-                  rank_matrix = np.zeros((len(all_importances), len(feat_list)))
-                  for fold_i, imp in enumerate(all_importances):
-                      gains = np.array([imp.get(f, 0) for f in feat_list])
-                      rank_matrix[fold_i] = np.argsort(np.argsort(-gains)) + 1  # 3x faster than rankdata
+                      # Build rank matrix: (n_folds, n_features)
+                      feat_list = sorted(all_feat_names)
+                      rank_matrix = np.zeros((len(all_importances), len(feat_list)))
+                      for fold_i, imp in enumerate(all_importances):
+                          gains = np.array([imp.get(f, 0) for f in feat_list])
+                          rank_matrix[fold_i] = np.argsort(np.argsort(-gains)) + 1  # 3x faster than rankdata
 
-                  # Stability: mean rank + rank CV across folds
-                  mean_ranks = rank_matrix.mean(axis=0)
-                  std_ranks = rank_matrix.std(axis=0)
-                  cv_ranks = std_ranks / np.maximum(mean_ranks, 1)
+                      # Stability: mean rank + rank CV across folds
+                      mean_ranks = rank_matrix.mean(axis=0)
+                      std_ranks = rank_matrix.std(axis=0)
+                      cv_ranks = std_ranks / np.maximum(mean_ranks, 1)
 
-                  # Top features by mean rank (consistently important)
-                  top_k = min(50, len(feat_list))
-                  top_idx = np.argsort(mean_ranks)[:top_k]
-                  stable_features = []
-                  for idx in top_idx:
-                      fname = feat_list[idx]
-                      stable_features.append({
-                          'feature': fname,
-                          'mean_rank': float(mean_ranks[idx]),
-                          'rank_cv': float(cv_ranks[idx]),
-                          'appears_in_folds': int((rank_matrix[:, idx] < len(feat_list) * 0.5).sum()),
-                      })
+                      # Top features by mean rank (consistently important)
+                      top_k = min(50, len(feat_list))
+                      top_idx = np.argsort(mean_ranks)[:top_k]
+                      stable_features = []
+                      for idx in top_idx:
+                          fname = feat_list[idx]
+                          stable_features.append({
+                              'feature': fname,
+                              'mean_rank': float(mean_ranks[idx]),
+                              'rank_cv': float(cv_ranks[idx]),
+                              'appears_in_folds': int((rank_matrix[:, idx] < len(feat_list) * 0.5).sum()),
+                          })
 
-                  # dx_ audit: flag any DOY cross in top 50 with high rank CV
-                  dx_in_top = [f for f in stable_features if f['feature'].startswith('dx_')]
-                  if dx_in_top:
-                      log(f"  Feature stability: {len(dx_in_top)} dx_ crosses in top {top_k}")
-                      for dxf in dx_in_top[:5]:
-                          log(f"    {dxf['feature']}: mean_rank={dxf['mean_rank']:.0f} cv={dxf['rank_cv']:.2f}")
+                      dx_in_top = [f for f in stable_features if f['feature'].startswith('dx_')]
+                      if dx_in_top:
+                          log(f"  Feature stability: {len(dx_in_top)} dx_ crosses in top {top_k}")
+                          for dxf in dx_in_top[:5]:
+                              log(f"    {dxf['feature']}: mean_rank={dxf['mean_rank']:.0f} cv={dxf['rank_cv']:.2f}")
 
-                  # Save stability report
-                  stability_report = {
-                      'n_folds': len(all_importances),
-                      'n_features_used': len(feat_list),
-                      'top_stable': stable_features[:top_k],
-                      'dx_in_top': dx_in_top,
-                      'n_unstable': int((cv_ranks > 0.5).sum()),
-                  }
-                  stab_path = os.path.join(DB_DIR, f'feature_importance_stability_{tf_name}.json')
-                  with open(stab_path, 'w') as f:
-                      json.dump(stability_report, f, indent=2)
-                  log(f"  {elapsed()} Feature stability: {len(feat_list)} features analyzed, "
-                      f"{stability_report['n_unstable']} unstable (CV>0.5), saved to {stab_path}")
-              else:
-                  log(f"  Feature stability: skipped (need >= 3 folds, got {len(all_importances)})")
-          except Exception as e:
-              log(f"  Feature stability failed: {e}")
-          log(f"  Feature importance stability: {time.time()-t0_fi:.1f}s")
+                      stability_report = {
+                          'n_folds': len(all_importances),
+                          'n_features_used': len(feat_list),
+                          'top_stable': stable_features[:top_k],
+                          'dx_in_top': dx_in_top,
+                          'n_unstable': int((cv_ranks > 0.5).sum()),
+                      }
+                      stab_path = _artifact_output_path(f'feature_importance_stability_{tf_name}.json')
+                      with open(stab_path, 'w') as f:
+                          json.dump(stability_report, f, indent=2)
+                      log(f"  {elapsed()} Feature stability: {len(feat_list)} features analyzed, "
+                          f"{stability_report['n_unstable']} unstable (CV>0.5), saved to {stab_path}")
+                  else:
+                      log(f"  Feature stability: skipped (need >= 3 folds, got {len(all_importances)})")
+              except Exception as e:
+                  log(f"  Feature stability failed: {e}")
+              log(f"  Feature importance stability: {time.time()-t0_fi:.1f}s")
+          else:
+              log(f"  Feature importance stability: skipped (V3_RUN_FI_STABILITY=0)")
 
           # ============================================================
           # ADVANCED FEATURE IMPORTANCE PIPELINE (6M-scale)
           # ============================================================
-          try:
-              from feature_importance_pipeline import FeatureImportancePipeline
-              import lightgbm as _lgb_loader
+          if _RUN_ADVANCED_FI:
+              try:
+                  from feature_importance_pipeline import FeatureImportancePipeline
+                  import lightgbm as _lgb_loader
 
-              # Load saved fold models
-              _fold_boosters = []
-              for _wi in range(len(window_results)):
-                  _fm_path = os.path.join(DB_DIR, f'model_{tf_name}_fold{_wi}.txt')
-                  if os.path.exists(_fm_path):
-                      _fold_boosters.append(_lgb_loader.Booster(model_file=_fm_path))
+                  _fold_boosters = []
+                  for _wi in range(len(window_results)):
+                      _fm_path = _artifact_output_path(f'model_{tf_name}_fold{_wi}.txt')
+                      if os.path.exists(_fm_path):
+                          _fold_boosters.append(_lgb_loader.Booster(model_file=_fm_path))
 
-              if len(_fold_boosters) >= 3:
-                  log(f"  {elapsed()} Running advanced feature importance pipeline ({len(_fold_boosters)} folds)...")
-                  _fi_pipeline = FeatureImportancePipeline(
-                      fold_boosters=_fold_boosters,
-                      feature_names=list(feature_cols) + (list(_hmm_overlay_names) if _hmm_overlay is not None else []),
-                      tf_name=tf_name,
-                      output_dir=DB_DIR,
-                  )
-                  _fi_results = _fi_pipeline.run(
-                      skip_permutation=True,   # No X_val available here
-                      skip_shap=True,          # No X_val available here
-                      skip_injection=True,     # No X_val available here
-                      skip_viz=True,           # matplotlib may not be on cloud
-                  )
-                  log(f"  {elapsed()} Advanced feature importance pipeline complete")
-              else:
-                  log(f"  Advanced FI pipeline: skipped (need >= 3 fold models, got {len(_fold_boosters)})")
-          except ImportError:
-              log(f"  Advanced FI pipeline: skipped (feature_importance_pipeline.py not found)")
-          except Exception as _fi_err:
-              log(f"  Advanced FI pipeline failed: {_fi_err}")
+                  if len(_fold_boosters) >= 3:
+                      log(f"  {elapsed()} Running advanced feature importance pipeline ({len(_fold_boosters)} folds)...")
+                      _fi_pipeline = FeatureImportancePipeline(
+                          fold_boosters=_fold_boosters,
+                          feature_names=list(feature_cols) + (list(_hmm_overlay_names) if _hmm_overlay is not None else []),
+                          tf_name=tf_name,
+                          output_dir=ARTIFACT_ROOT,
+                      )
+                      _fi_results = _fi_pipeline.run(
+                          skip_permutation=True,
+                          skip_shap=True,
+                          skip_injection=True,
+                          skip_viz=True,
+                      )
+                      log(f"  {elapsed()} Advanced feature importance pipeline complete")
+                  else:
+                      log(f"  Advanced FI pipeline: skipped (need >= 3 fold models, got {len(_fold_boosters)})")
+              except ImportError:
+                  log(f"  Advanced FI pipeline: skipped (feature_importance_pipeline.py not found)")
+              except Exception as _fi_err:
+                  log(f"  Advanced FI pipeline failed: {_fi_err}")
+          else:
+              log(f"  Advanced FI pipeline: skipped (V3_RUN_ADVANCED_FI=0)")
 
           # OPT-13: Re-enable GC after CPCV (H-5: always re-enable, even on exception above)
           # NOTE: gc.disable() at line ~1657 should be in try/finally, but re-indenting
@@ -3406,16 +3511,16 @@ if __name__ == '__main__':
 
           # If HMM overlay was separated (sequential sparse path), hstack it back
           _final_feature_cols = feature_cols
-          if _hmm_overlay is not None and _X_all_is_sparse:
+          if _final_hmm_overlay is not None and _X_all_is_sparse:
               _Xall_base = X_all[all_mask]
-              _Xall_hmm = sp_sparse.csr_matrix(_hmm_overlay[all_mask])
+              _Xall_hmm = sp_sparse.csr_matrix(_final_hmm_overlay[all_mask])
               X_final_all = sp_sparse.hstack([_Xall_base, _Xall_hmm], format='csr')
               del _Xall_base, _Xall_hmm
               _final_feature_cols = feature_cols + _hmm_overlay_names
           else:
               X_final_all = X_all[all_mask]
 
-          y_final_all = y_3class[all_mask].astype(int)
+          y_final_all = _labels_to_int(y_3class[all_mask])
           w_final_all = sample_weights[all_mask]
 
           final_params = V2_LGBM_PARAMS.copy()
@@ -3486,7 +3591,7 @@ if __name__ == '__main__':
               _final_ds_kwargs['reference'] = _parent_ds  # reuse EFB from parent
           dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f, **_final_ds_kwargs)
           dval = lgb.Dataset(X_val_f, label=y_val_f, weight=w_val_f, **_final_ds_kwargs)
-          _final_ckpt_path = os.path.join(DB_DIR, f'lgbm_ckpt_{tf_name}_final.txt')
+          _final_ckpt_path = _artifact_output_path(f'lgbm_ckpt_{tf_name}_final.txt')
           _final_es_rounds = max(50, int(100 * (0.1 / final_params.get('learning_rate', 0.03))))
           if tf_name in _CFG_TF_ES:
               _final_es_rounds = _CFG_TF_ES[tf_name]
@@ -3497,7 +3602,7 @@ if __name__ == '__main__':
                   final_params, dtrain, dval, _X_csr_final,
                   num_boost_round=_tf_boost_rounds,
                   early_stopping_rounds=_final_es_rounds,
-                  checkpoint_cb=CheckpointCallback(_final_ckpt_path, period=100),
+                  checkpoint_cb=CheckpointCallback(_final_ckpt_path, period=_CHECKPOINT_PERIOD),
                   log_period=100,
               )
               del _X_csr_final
@@ -3510,7 +3615,7 @@ if __name__ == '__main__':
                   callbacks=[
                       lgb.early_stopping(_final_es_rounds),
                       lgb.log_evaluation(100),
-                      CheckpointCallback(_final_ckpt_path, period=100),
+                      CheckpointCallback(_final_ckpt_path, period=_CHECKPOINT_PERIOD),
                   ],
               )
 
@@ -3552,7 +3657,7 @@ if __name__ == '__main__':
               sys.exit(1)
           else:
               # Atomic save: write to temp then rename (prevents corrupt model on crash)
-              _model_path = f'{DB_DIR}/model_{tf_name}.json'
+              _model_path = _artifact_output_path(f'model_{tf_name}.json')
               if os.path.exists(_model_path):
                   import shutil
                   _backup_path = _model_path.replace('.json', '_prev.json')
@@ -3561,7 +3666,7 @@ if __name__ == '__main__':
               _model_tmp = _model_path + '.tmp'
               final_model.save_model(_model_tmp)
               os.replace(_model_tmp, _model_path)
-              _feat_path = f'{DB_DIR}/features_{tf_name}_all.json'
+              _feat_path = _artifact_output_path(f'features_{tf_name}_all.json')
               _feat_tmp = _feat_path + '.tmp'
               with open(_feat_tmp, 'w') as f:
                   json.dump(_final_feature_cols, f, indent=2)
@@ -3581,7 +3686,7 @@ if __name__ == '__main__':
               # --- Inference pruner (optional, prunes model for deployment) ---
               try:
                   from inference_pruner import prune_model
-                  prune_model(_model_path, tf_name=tf_name, output_dir=DB_DIR)
+                  prune_model(_model_path, tf_name=tf_name, output_dir=ARTIFACT_ROOT)
                   log(f"  Inference pruner: model pruned for deployment")
               except ImportError:
                   pass
@@ -3632,30 +3737,38 @@ if __name__ == '__main__':
                   _band_acc = _avg_correct[_band_mask].mean()
                   log(f"    {_lo*100:.0f}-{_hi*100:.0f}%: acc={_band_acc:.3f} n={_n_band}")
 
-          if len(cal_raw_3c) > 50:
+          _platt_classes_present = np.unique(_avg_y.astype(int))
+          if len(cal_raw_3c) > 50 and len(_platt_classes_present) >= 2:
               # Platt scaling: fit on per-sample averaged predictions (reduces noise from
               # path-level variance and prevents overfit paths from dominating calibration)
-              platt = LogisticRegression(max_iter=500)
-              platt.fit(_avg_probs, _avg_y.astype(int))
-              with open(f'{DB_DIR}/platt_{tf_name}.pkl', 'wb') as f:
-                  pickle.dump(platt, f)
-              _n_platt_classes = _avg_probs.shape[1]
-              log(f"  Platt calibrator saved (platt_{tf_name}.pkl) -- {_n_platt_classes}-class, "
-                  f"fitted on {len(_avg_y)} per-sample averaged predictions")
+              try:
+                  platt = LogisticRegression(max_iter=500)
+                  platt.fit(_avg_probs, _avg_y.astype(int))
+                  with open(_artifact_output_path(f'platt_{tf_name}.pkl'), 'wb') as f:
+                      pickle.dump(platt, f)
+                  _n_platt_classes = _avg_probs.shape[1]
+                  log(f"  Platt calibrator saved (platt_{tf_name}.pkl) -- {_n_platt_classes}-class, "
+                      f"fitted on {len(_avg_y)} per-sample averaged predictions")
 
-              # Log calibrated confidence-accuracy for comparison
-              _cal_probs = platt.predict_proba(_avg_probs)
-              _cal_max_conf = _cal_probs.max(axis=1)
-              _cal_pred_cls = np.argmax(_cal_probs, axis=1)
-              _cal_correct = (_cal_pred_cls == _avg_y)
-              log(f"  CALIBRATED CONFIDENCE-ACCURACY TABLE (Platt):")
-              for _lo, _hi in _conf_bands:
-                  _band_mask = (_cal_max_conf >= _lo) & (_cal_max_conf < _hi)
-                  _n_band = _band_mask.sum()
-                  if _n_band > 0:
-                      _band_acc = _cal_correct[_band_mask].mean()
-                      log(f"    {_lo*100:.0f}-{_hi*100:.0f}%: acc={_band_acc:.3f} n={_n_band}")
+                  # Log calibrated confidence-accuracy for comparison
+                  _cal_probs = platt.predict_proba(_avg_probs)
+                  _cal_max_conf = _cal_probs.max(axis=1)
+                  _cal_pred_cls = np.argmax(_cal_probs, axis=1)
+                  _cal_correct = (_cal_pred_cls == _avg_y)
+                  log(f"  CALIBRATED CONFIDENCE-ACCURACY TABLE (Platt):")
+                  for _lo, _hi in _conf_bands:
+                      _band_mask = (_cal_max_conf >= _lo) & (_cal_max_conf < _hi)
+                      _n_band = _band_mask.sum()
+                      if _n_band > 0:
+                           _band_acc = _cal_correct[_band_mask].mean()
+                           log(f"    {_lo*100:.0f}-{_hi*100:.0f}%: acc={_band_acc:.3f} n={_n_band}")
+              except Exception as _platt_err:
+                  log(f"  Platt calibration skipped: {_platt_err}")
+                  platt = None
           else:
+              if len(cal_raw_3c) > 50:
+                  log(f"  Platt calibration skipped: calibration labels collapsed to "
+                      f"{len(_platt_classes_present)} class(es) ({sorted(_platt_classes_present.tolist())})")
               platt = None
 
           # ── Isotonic Calibrator (CalibratedClassifierCV with cv='prefit') ──
@@ -3683,7 +3796,7 @@ if __name__ == '__main__':
                   # Fit isotonic on held-out val set (isotonic needs raw model input, not OOS probs)
                   iso_cal = CalibratedClassifierCV(_lgbm_wrapper, cv='prefit', method='isotonic')
                   iso_cal.fit(X_val_f, y_val_f)
-                  _iso_path = f'{DB_DIR}/calibrator_{tf_name}.pkl'
+                  _iso_path = _artifact_output_path(f'calibrator_{tf_name}.pkl')
                   _iso_tmp = _iso_path + '.tmp'
                   with open(_iso_tmp, 'wb') as f:
                       pickle.dump(iso_cal, f)
@@ -3769,10 +3882,10 @@ if __name__ == '__main__':
 
   log(f"\n  Total time: {elapsed()}")
 
-  with open(f'{DB_DIR}/ml_multi_tf_results.txt', 'w', encoding='utf-8') as f:
+  with open(_artifact_output_path('ml_multi_tf_results.txt'), 'w', encoding='utf-8') as f:
       f.write('\n'.join(RESULTS))
 
-  with open(f'{DB_DIR}/ml_multi_tf_configs.json', 'w') as f:
+  with open(_artifact_output_path('ml_multi_tf_configs.json'), 'w') as f:
       json.dump(all_results, f, indent=2, default=str)
 
   log(f"  Saved: ml_multi_tf_results.txt, ml_multi_tf_configs.json")

@@ -18,6 +18,7 @@ import json
 import argparse
 import re
 from pathlib import Path
+import path_contract
 
 # -- Globals --
 _pass = 0
@@ -127,10 +128,10 @@ def check_config_params():
           "XGBoost reference found in V3_LGBM_PARAMS. MUST use LightGBM only.")
 
     # -- Signal-killing param guards (config defaults, not just Optuna bounds) --
-    check("bagging_fraction >= 0.7",
-          p.get('bagging_fraction', 0) >= 0.7,
-          f"bagging_fraction={p.get('bagging_fraction')} -- must be >= 0.7. "
-          f"50% row dropout destroys rare esoteric signals (P(10-fire)=0.001 at bf=0.5). "
+    check("bagging_fraction >= 0.95",
+          p.get('bagging_fraction', 0) >= 0.95,
+          f"bagging_fraction={p.get('bagging_fraction')} -- must be >= 0.95. "
+          f"Low row dropout preserves rare esoteric signals (P(10-fire) stays ~59.9% at bf=0.95). "
           f"FIX: config.py V3_LGBM_PARAMS")
 
     check("lambda_l1 <= 4.0",
@@ -390,12 +391,75 @@ def check_environment(tf=None, cloud=False):
     except Exception:
         pass
 
-    # -- V30_DATA_DIR --
+    # -- Runtime root contract --
     v30 = os.environ.get('V30_DATA_DIR', '')
+    managed_root_contract = any(os.environ.get(name) for name in ('SAVAGE22_RUN_DIR', 'SAVAGE22_ARTIFACT_DIR'))
+    path_contract = None
+    try:
+        import path_contract as path_contract
+    except Exception:
+        path_contract = None
     if cloud:
         warn("V30_DATA_DIR not pointing to stale v3.0",
              'v3.0' not in v30 and 'LGBM' not in v30,
-             f"V30_DATA_DIR={v30} -- on cloud should be /workspace or /workspace/v3.3, not v3.0 path")
+             f"V30_DATA_DIR={v30} -- must not point at stale v3.0 paths")
+        if managed_root_contract:
+            check("Maintained runs do not use legacy /workspace or /workspace/v3.3 as V30_DATA_DIR",
+                  v30 not in ('/workspace', '/workspace/v3.3'),
+                  f"V30_DATA_DIR={v30} -- maintained runs must use a dedicated artifact root")
+        if path_contract is not None:
+            check("path_contract CODE_ROOT matches validate.py project dir",
+                  path_contract.CODE_ROOT == PROJECT_DIR,
+                  f"CODE_ROOT={path_contract.CODE_ROOT} PROJECT_DIR={PROJECT_DIR}")
+            check("path_contract SHARED_DB_ROOT exists",
+                  os.path.isdir(path_contract.SHARED_DB_ROOT),
+                  f"Missing SHARED_DB_ROOT={path_contract.SHARED_DB_ROOT}")
+            if managed_root_contract:
+                check("Maintained run keeps code root separate from run root",
+                      path_contract.CODE_ROOT != path_contract.RUN_ROOT,
+                      f"CODE_ROOT={path_contract.CODE_ROOT}, RUN_ROOT={path_contract.RUN_ROOT}")
+                check("Maintained run keeps code root separate from artifact root",
+                      path_contract.CODE_ROOT != path_contract.ARTIFACT_ROOT,
+                      f"CODE_ROOT={path_contract.CODE_ROOT}, ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}")
+                check("Maintained run keeps run root separate from artifact root",
+                      path_contract.RUN_ROOT != path_contract.ARTIFACT_ROOT,
+                      f"RUN_ROOT={path_contract.RUN_ROOT}, ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}")
+                check("Maintained run artifact root is not legacy workspace fallback",
+                      path_contract.ARTIFACT_ROOT not in ('/workspace', '/workspace/v3.3'),
+                      f"ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}")
+                check("Maintained run root is not legacy workspace fallback",
+                      path_contract.RUN_ROOT not in ('/workspace', '/workspace/v3.3'),
+                      f"RUN_ROOT={path_contract.RUN_ROOT}")
+                check("V30_DATA_DIR resolves to path_contract.ARTIFACT_ROOT",
+                      os.path.realpath(v30) == path_contract.ARTIFACT_ROOT,
+                      f"V30_DATA_DIR={v30} ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}")
+                release_manifest = os.path.join(path_contract.RUN_ROOT, 'release_manifest.json')
+                check("release_manifest.json exists in RUN_ROOT",
+                      os.path.isfile(release_manifest),
+                      f"Missing {release_manifest}")
+                if os.path.isfile(release_manifest):
+                    try:
+                        with open(release_manifest, 'r', encoding='utf-8') as f:
+                            release_meta = json.load(f)
+                    except Exception as e:
+                        check("release_manifest.json parseable", False, str(e))
+                    else:
+                        check("release_manifest release_dir matches CODE_ROOT",
+                              os.path.realpath(release_meta.get('release_dir', '')) == path_contract.CODE_ROOT,
+                              f"release_dir={release_meta.get('release_dir')} CODE_ROOT={path_contract.CODE_ROOT}")
+                        check("release_manifest run_dir matches RUN_ROOT",
+                              os.path.realpath(release_meta.get('run_dir', '')) == path_contract.RUN_ROOT,
+                              f"run_dir={release_meta.get('run_dir')} RUN_ROOT={path_contract.RUN_ROOT}")
+                        check("release_manifest artifact_root matches ARTIFACT_ROOT",
+                              os.path.realpath(release_meta.get('artifact_root', '')) == path_contract.ARTIFACT_ROOT,
+                              f"artifact_root={release_meta.get('artifact_root')} ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}")
+                        check("release_manifest shared_db_root matches SHARED_DB_ROOT",
+                              os.path.realpath(release_meta.get('shared_db_root', '')) == path_contract.SHARED_DB_ROOT,
+                              f"shared_db_root={release_meta.get('shared_db_root')} SHARED_DB_ROOT={path_contract.SHARED_DB_ROOT}")
+                        heartbeat_path = release_meta.get('heartbeat_path', '')
+                        check("release_manifest heartbeat path stays inside RUN_ROOT",
+                              bool(heartbeat_path) and os.path.realpath(os.path.dirname(heartbeat_path)) == path_contract.RUN_ROOT,
+                              f"heartbeat_path={heartbeat_path} RUN_ROOT={path_contract.RUN_ROOT}")
 
     # -- ALLOW_CPU env var when cuDF unavailable (CUDA 13+ drops cuDF) --
     cudf_available = False
@@ -418,7 +482,7 @@ def check_environment(tf=None, cloud=False):
             crt_path = os.path.join(PROJECT_DIR, 'cloud_run_tf.py')
             crt_has_allow_cpu = False
             if os.path.isfile(crt_path):
-                with open(crt_path, 'r') as f:
+                with open(crt_path, 'r', encoding='utf-8', errors='ignore') as f:
                     crt_has_allow_cpu = 'ALLOW_CPU' in f.read()
             check("cloud_run_tf.py sets ALLOW_CPU for cuDF-less environments",
                   crt_has_allow_cpu,
@@ -582,40 +646,10 @@ def check_environment(tf=None, cloud=False):
     except Exception:
         pass
 
-    # -- DB files must exist in BOTH root and v3.3/ (symlinked) --
-    # cloud_run_tf.py runs from v3.3/ but some code references root-level DBs
-    workspace_root = os.path.dirname(PROJECT_DIR)  # /workspace (or / if flat layout)
-    dual_dbs = ['multi_asset_prices.db', 'v2_signals.db']
-    for db_name in dual_dbs:
-        # Flat layout (/workspace/ is PROJECT_DIR): both paths are the same
-        root_path = os.path.join(workspace_root, db_name)
-        v33_path = os.path.join(PROJECT_DIR, db_name)
-        if workspace_root == '/' or workspace_root == PROJECT_DIR:
-            # Flat layout -- just check PROJECT_DIR
-            check(f"{db_name} in project dir",
-                  os.path.exists(v33_path),
-                  f"{db_name} not found in {PROJECT_DIR}. FIX: scp it to /workspace/")
-        else:
-            root_exists = os.path.exists(root_path)
-            v33_exists = os.path.exists(v33_path)
-            check(f"{db_name} in both root and v3.3/",
-                  root_exists and v33_exists,
-                  f"{db_name}: root={root_exists}, v3.3/={v33_exists}. "
-                  f"FIX: ln -sf /workspace/{db_name} /workspace/v3.3/{db_name}")
-
-    # -- Flat workspace layout: all .py files accessible from /workspace/ --
-    # cloud_run_tf.py expects flat layout with symlinks from /workspace/*.py -> /workspace/v3.3/*.py
-    if os.path.exists('/workspace'):
-        critical_py = ['config.py', 'feature_library.py', 'ml_multi_tf.py', 'astrology_engine.py']
-        for py_name in critical_py:
-            ws_path = os.path.join('/workspace', py_name)
-            v33_path = os.path.join(PROJECT_DIR, py_name)
-            if os.path.exists(v33_path):
-                check(f"{py_name} accessible from /workspace/",
-                      os.path.exists(ws_path),
-                      f"{py_name} exists in v3.3/ but not in /workspace/. "
-                      f"cloud_run_tf.py needs flat layout. "
-                      f"FIX: ln -sf /workspace/v3.3/{py_name} /workspace/{py_name}")
+    if managed_root_contract and path_contract is not None:
+        check("Maintained run stores weekly artifacts outside immutable code root",
+              path_contract.ARTIFACT_ROOT != PROJECT_DIR,
+              f"ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT} PROJECT_DIR={PROJECT_DIR}")
 
     # Disk space
     try:
@@ -680,11 +714,14 @@ def check_data_integrity(tf):
     import config as cfg
 
     # -- Parquet existence and column count --
+    managed_root_contract = any(os.environ.get(name) for name in ('SAVAGE22_RUN_DIR', 'SAVAGE22_ARTIFACT_DIR'))
     parquet_patterns = [
-        os.path.join(PROJECT_DIR, f'features_BTC_{tf}.parquet'),
-        os.path.join(PROJECT_DIR, f'features_{tf}.parquet'),
+        os.path.join(path_contract.ARTIFACT_ROOT, f'features_BTC_{tf}.parquet'),
+        os.path.join(path_contract.ARTIFACT_ROOT, f'features_{tf}.parquet'),
         os.path.join(cfg.V30_DATA_DIR, f'features_BTC_{tf}.parquet'),
         os.path.join(cfg.V30_DATA_DIR, f'features_{tf}.parquet'),
+        os.path.join(PROJECT_DIR, f'features_BTC_{tf}.parquet'),
+        os.path.join(PROJECT_DIR, f'features_{tf}.parquet'),
     ]
     parquet_found = None
     for pp in parquet_patterns:
@@ -708,8 +745,18 @@ def check_data_integrity(tf):
              f"No parquet found for BTC {tf}. Features will need to be built.")
 
     # -- Cross features per-TF strategy --
-    npz_path = os.path.join(PROJECT_DIR, f'v2_crosses_BTC_{tf}.npz')
-    json_path = os.path.join(PROJECT_DIR, f'v2_cross_names_BTC_{tf}.json')
+    npz_candidates = [
+        os.path.join(path_contract.ARTIFACT_ROOT, f'v2_crosses_BTC_{tf}.npz'),
+        os.path.join(cfg.V30_DATA_DIR, f'v2_crosses_BTC_{tf}.npz'),
+        os.path.join(PROJECT_DIR, f'v2_crosses_BTC_{tf}.npz'),
+    ]
+    json_candidates = [
+        os.path.join(path_contract.ARTIFACT_ROOT, f'v2_cross_names_BTC_{tf}.json'),
+        os.path.join(cfg.V30_DATA_DIR, f'v2_cross_names_BTC_{tf}.json'),
+        os.path.join(PROJECT_DIR, f'v2_cross_names_BTC_{tf}.json'),
+    ]
+    npz_path = next((p for p in npz_candidates if os.path.exists(p)), npz_candidates[0])
+    json_path = next((p for p in json_candidates if os.path.exists(p)), json_candidates[0])
     npz_exists = os.path.exists(npz_path)
     json_exists = os.path.exists(json_path)
 
@@ -805,8 +852,8 @@ def check_data_integrity(tf):
     # If a TF is configured to skip cross gen, any existing cross files are stale.
     tfs_no_cross = {'1w'}  # TFs that should NOT have cross gen
     if tf in tfs_no_cross:
-        stale_npz = os.path.join(PROJECT_DIR, f'v2_crosses_BTC_{tf}.npz')
-        stale_json = os.path.join(PROJECT_DIR, f'v2_cross_names_BTC_{tf}.json')
+        stale_npz = os.path.join(path_contract.ARTIFACT_ROOT, f'v2_crosses_BTC_{tf}.npz')
+        stale_json = os.path.join(path_contract.ARTIFACT_ROOT, f'v2_cross_names_BTC_{tf}.json')
         if os.path.exists(stale_npz) or os.path.exists(stale_json):
             warn(f"stale cross files for {tf} (no cross gen TF)",
                  False,
@@ -815,11 +862,10 @@ def check_data_integrity(tf):
                  f"FIX: rm {stale_npz} {stale_json}")
 
     # -- pipeline_manifest.json contamination --
-    manifest_path = os.path.join(PROJECT_DIR, 'pipeline_manifest.json')
+    manifest_path = os.path.join(path_contract.ARTIFACT_ROOT, 'pipeline_manifest.json')
     warn("no stale pipeline_manifest.json",
-         not os.path.exists(manifest_path),
-         f"pipeline_manifest.json exists -- may contaminate full pipeline. "
-         f"Delete it if starting a fresh run.")
+         managed_root_contract or not os.path.exists(manifest_path),
+         f"pipeline_manifest.json exists at {manifest_path} -- may contaminate full pipeline if reused across runs.")
 
 
 # ==============================================================
@@ -849,6 +895,20 @@ def check_training_consistency():
             all_py_contents[f.name] = f.read_text(encoding='utf-8', errors='ignore')
         except Exception:
             pass
+    launcher_path = Path(PROJECT_DIR) / 'deploy_washington_1w.sh'
+    launcher_content = ''
+    if launcher_path.exists():
+        try:
+            launcher_content = launcher_path.read_text(encoding='utf-8', errors='ignore')
+        except Exception:
+            launcher_content = ''
+    contract_doc_path = Path(PROJECT_DIR) / 'CLOUD_1W_LAUNCH_CONTRACT.md'
+    contract_doc = ''
+    if contract_doc_path.exists():
+        try:
+            contract_doc = contract_doc_path.read_text(encoding='utf-8', errors='ignore')
+        except Exception:
+            contract_doc = ''
 
     # -- No XGBoost in core training code --
     # Only check files that are in the actual training pipeline
@@ -869,6 +929,25 @@ def check_training_consistency():
     check("no XGBoost in core training code",
           len(xgb_files) == 0,
           f"XGBoost found in: {', '.join(xgb_files[:5])}. MUST use LightGBM only.")
+
+    check("deploy_washington_1w.sh defines a dedicated artifact root",
+          'REMOTE_ARTIFACT_ROOT=' in launcher_content and 'SAVAGE22_ARTIFACT_DIR=$REMOTE_ARTIFACT_ROOT' in launcher_content,
+          "deploy_washington_1w.sh must define REMOTE_ARTIFACT_ROOT and export SAVAGE22_ARTIFACT_DIR/V30_DATA_DIR to it.")
+    check("deploy_washington_1w.sh defines a dedicated run root",
+          'SAVAGE22_RUN_DIR=$REMOTE_RUN_DIR' in launcher_content and 'REMOTE_RUN_DIR=' in launcher_content,
+          "deploy_washington_1w.sh must export SAVAGE22_RUN_DIR to a per-run control directory.")
+    check("deploy_washington_1w.sh release manifest records all 4 roots",
+          'release_manifest.json' in launcher_content and 'artifact_root' in launcher_content and 'shared_db_root' in launcher_content and 'heartbeat_path' in launcher_content,
+          "release_manifest.json must record release_dir, run_dir, artifact_root, shared_db_root, and heartbeat_path.")
+    check("deploy_washington_1w.sh validates required artifacts only in artifact root",
+          'pathlib.Path("/workspace") / name' not in launcher_content and 'pathlib.Path("\'"$REMOTE_RELEASE_DIR"\'") / name' not in launcher_content,
+          "validate_phase_artifacts must not accept /workspace or release-dir fallback locations for run-produced artifacts.")
+    check("CLOUD_1W_LAUNCH_CONTRACT.md documents the 4-root contract",
+          'Artifact root:' in contract_doc and 'Run root:' in contract_doc and 'Shared DB root:' in contract_doc,
+          "CLOUD_1W_LAUNCH_CONTRACT.md must explicitly document code, shared DB, run, and artifact roots.")
+    check("CLOUD_1W_LAUNCH_CONTRACT.md forbids root fallback artifact validation",
+          'not a shared root-level file' in contract_doc and 'Do not accept run-produced artifacts from `/workspace`' in contract_doc,
+          "CLOUD_1W_LAUNCH_CONTRACT.md must state that maintained runs do not validate artifacts from /workspace or release-root fallbacks.")
 
     # -- feature_pre_filter=False in Dataset calls --
     for fname, content in file_contents.items():
@@ -916,7 +995,7 @@ def check_training_consistency():
           len(low_ff_files) == 0,
           f"Low feature_fraction found in: {', '.join(low_ff_files[:5])}. Must be >= 0.7.")
 
-    # -- No hardcoded bagging_fraction < 0.7 --
+    # -- No hardcoded bagging_fraction < 0.95 --
     low_bf_files = []
     bf_pattern = re.compile(r"['\"]?bagging_fraction['\"]?\s*[:=]\s*(0\.\d+)")
     for fname, content in all_py_contents.items():
@@ -927,11 +1006,11 @@ def check_training_consistency():
             code_part = line.split('#')[0]
             for match in bf_pattern.finditer(code_part):
                 val = float(match.group(1))
-                if val < 0.7:
+                if val < 0.95:
                     low_bf_files.append(f"{fname}:{i+1} (val={val})")
-    check("no hardcoded bagging_fraction < 0.7",
+    check("no hardcoded bagging_fraction < 0.95",
           len(low_bf_files) == 0,
-          f"Low bagging_fraction in: {', '.join(low_bf_files[:5])}. Must be >= 0.7. Rare signals vanish at 0.5-0.6.")
+          f"Low bagging_fraction in: {', '.join(low_bf_files[:5])}. Must be >= 0.95. Rare signals vanish at lower row-dropout rates.")
 
     # -- No hardcoded feature_fraction_bynode < 0.7 --
     low_ffbn_files = []
@@ -1260,21 +1339,55 @@ def check_training_consistency():
                  f"CUDA 13+ drops cuDF -- pandas fallback requires ALLOW_CPU=1. "
                  f"FIX: add 'export ALLOW_CPU=1' to {_sf}")
 
-    # -- Symbol format: no 'BTC/USDT' with slash (breaks file paths) --
+    # -- Symbol format: no 'BTC/USDT' in argparse defaults or --symbol= args --
     # Bug: Symbol used in file naming (features_{symbol}_{tf}.parquet).
     # 'BTC/USDT' format creates invalid path with slash as separator.
-    # Fix: Always use base ticker without exchange suffix (BTC not BTC/USDT).
-    _bad_symbol_pattern = re.compile(r'''['"]BTC/USDT['"]|['"]ETH/USDT['"]|['"]SPY/USD['"]''')
+    # Fix: argparse defaults should be 'BTC' not 'BTC/USDT'.
+    # Note: SQL queries with 'BTC/USDT' are fine (database format).
+    _bad_argparse_pattern = re.compile(r'''add_argument\([^)]*symbol[^)]*default\s*=\s*['"](?:BTC|ETH|SPY)/(?:USDT|USD)['"]''', re.IGNORECASE)
+    _bad_cli_pattern = re.compile(r'''--symbol\s+['"](?:BTC|ETH|SPY)/(?:USDT|USD)['"]''')
     for _fname, _content in all_py_contents.items():
         if _fname in ('validate.py', '__pycache__'):
             continue
-        _matches = _bad_symbol_pattern.findall(_content)
-        if _matches:
-            check(f"{_fname}: no 'BTC/USDT' format in symbol args",
+        _argparse_matches = _bad_argparse_pattern.findall(_content)
+        _cli_matches = _bad_cli_pattern.findall(_content)
+        if _argparse_matches or _cli_matches:
+            _sample = _argparse_matches[0] if _argparse_matches else _cli_matches[0]
+            check(f"{_fname}: symbol argparse default or CLI arg has no slash",
                   False,
-                  f"{_fname} contains symbol with slash: {_matches[0]}. "
-                  f"Symbol is used in file naming (features_{{symbol}}_{{tf}}.parquet). "
-                  f"Slash breaks paths. FIX: use 'BTC' not 'BTC/USDT'")
+                  f"{_fname} has symbol with slash in argparse default or --symbol CLI arg. "
+                  f"Symbol is used in file naming. Slash breaks paths. "
+                  f"FIX: use 'BTC' not 'BTC/USDT' in argparse defaults and --symbol args")
+
+    # -- Symbol format validation: must match ^[A-Z]{2,5}$ pattern --
+    # Bug: Invalid symbol formats (lowercase, numbers, special chars) cause silent failures
+    # Fix: Symbol must be 2-5 uppercase letters only (BTC, ETH, SPY, etc.)
+    # SAV-56: Comprehensive format check beyond just slash detection
+    _symbol_extract_pattern = re.compile(r'''add_argument\([^)]*['"]--symbol['"][^)]*default\s*=\s*['"]([\w/]+)['"]''', re.IGNORECASE)
+    _symbol_cli_extract = re.compile(r'''--symbol\s+['"]([\w/]+)['"]''')
+    _valid_symbol = re.compile(r'^[A-Z]{2,5}$')
+    for _fname, _content in all_py_contents.items():
+        if _fname in ('validate.py', '__pycache__'):
+            continue
+        # Check argparse defaults
+        for match in _symbol_extract_pattern.finditer(_content):
+            symbol_val = match.group(1)
+            if not _valid_symbol.match(symbol_val):
+                check(f"{_fname}: symbol default matches ^[A-Z]{{2,5}}$ pattern",
+                      False,
+                      f"{_fname} has invalid symbol format: '{symbol_val}'. "
+                      f"Symbol must be 2-5 uppercase letters (e.g., 'BTC', 'ETH', 'SPY'). "
+                      f"No lowercase, numbers, or special chars. "
+                      f"FIX: update argparse default to valid format")
+        # Check CLI args in examples/comments
+        for match in _symbol_cli_extract.finditer(_content):
+            symbol_val = match.group(1)
+            if not _valid_symbol.match(symbol_val):
+                check(f"{_fname}: --symbol CLI examples match ^[A-Z]{{2,5}}$ pattern",
+                      False,
+                      f"{_fname} has invalid symbol in CLI example: '{symbol_val}'. "
+                      f"Symbol must be 2-5 uppercase letters. "
+                      f"FIX: update example to use valid format like 'BTC'")
 
     # -- Constant features gated for 1w (SKIP_FEATURES_1W in config.py) --
     # Bug: 10 constant features for 1w (hour_sin/cos, dow_sin/cos, etc.) waste tree splits.

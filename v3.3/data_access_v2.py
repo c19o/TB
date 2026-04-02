@@ -20,33 +20,28 @@ import time
 import sqlite3
 import pandas as pd
 from datetime import datetime
-
-# V2 project directory
-V2_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# V1 directory (shared esoteric DBs)
-V1_DIR = os.environ.get("SAVAGE22_V1_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from path_contract import CODE_ROOT as V2_DIR, V1_ROOT as V1_DIR, db_path, v1_path
 
 # V2 databases
-MULTI_ASSET_DB = os.path.join(V2_DIR, "multi_asset_prices.db")
-V2_SIGNALS_DB = os.path.join(V2_DIR, "v2_signals.db")
+MULTI_ASSET_DB = db_path("multi_asset_prices.db")
+V2_SIGNALS_DB = db_path("v2_signals.db")
 
 # V1 databases (shared — never duplicate, always read from V1)
 V1_DBS = {
-    'btc_prices':    os.path.join(V1_DIR, "btc_prices.db"),
-    'tweets':        os.path.join(V1_DIR, "tweets.db"),
-    'news':          os.path.join(V1_DIR, "news_articles.db"),
-    'astrology':     os.path.join(V1_DIR, "astrology_full.db"),
-    'ephemeris':     os.path.join(V1_DIR, "ephemeris_cache.db"),
-    'fear_greed':    os.path.join(V1_DIR, "fear_greed.db"),
-    'sports':        os.path.join(V1_DIR, "sports_results.db"),
-    'space_weather': os.path.join(V1_DIR, "space_weather.db"),
-    'macro':         os.path.join(V1_DIR, "macro_data.db"),
-    'onchain':       os.path.join(V1_DIR, "onchain_data.db"),
-    'funding':       os.path.join(V1_DIR, "funding_rates.db"),
-    'oi':            os.path.join(V1_DIR, "open_interest.db"),
-    'google_trends': os.path.join(V1_DIR, "google_trends.db"),
-    'llm_cache':     os.path.join(V1_DIR, "llm_cache.db"),
+    'btc_prices':    v1_path("btc_prices.db"),
+    'tweets':        v1_path("tweets.db"),
+    'news':          v1_path("news_articles.db"),
+    'astrology':     v1_path("astrology_full.db"),
+    'ephemeris':     v1_path("ephemeris_cache.db"),
+    'fear_greed':    v1_path("fear_greed.db"),
+    'sports':        v1_path("sports_results.db"),
+    'space_weather': v1_path("space_weather.db"),
+    'macro':         v1_path("macro_data.db"),
+    'onchain':       v1_path("onchain_data.db"),
+    'funding':       v1_path("funding_rates.db"),
+    'oi':            v1_path("open_interest.db"),
+    'google_trends': v1_path("google_trends.db"),
+    'llm_cache':     v1_path("llm_cache.db"),
 }
 
 

@@ -37,6 +37,7 @@ os.environ.setdefault("ALLOW_CPU", "1")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
+from path_contract import ARTIFACT_ROOT, CODE_ROOT, RUN_ROOT, SHARED_DB_ROOT, ensure_runtime_dirs, is_under
 
 # ── Counters ──
 PASS = 0
@@ -70,6 +71,88 @@ def sha256_file(filepath):
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def load_json(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def managed_run_active():
+    return any(
+        os.environ.get(name)
+        for name in ("SAVAGE22_RUN_DIR", "SAVAGE22_ARTIFACT_DIR", "SAVAGE22_DB_DIR")
+    )
+
+
+def check_root_contract(tf):
+    print(f"\n== ROOT CONTRACT: 4 Roots ({tf}) ==")
+    ensure_runtime_dirs()
+    check(f"CODE_ROOT exists: {CODE_ROOT}", os.path.isdir(CODE_ROOT), f"Missing code root: {CODE_ROOT}")
+    check(f"SHARED_DB_ROOT exists: {SHARED_DB_ROOT}", os.path.isdir(SHARED_DB_ROOT), f"Missing DB root: {SHARED_DB_ROOT}")
+    check(f"RUN_ROOT exists: {RUN_ROOT}", os.path.isdir(RUN_ROOT), f"Missing run root: {RUN_ROOT}")
+    check(f"ARTIFACT_ROOT exists: {ARTIFACT_ROOT}", os.path.isdir(ARTIFACT_ROOT), f"Missing artifact root: {ARTIFACT_ROOT}")
+    check("CODE_ROOT matches deploy_verify.py directory", CODE_ROOT == SCRIPT_DIR,
+          f"CODE_ROOT={CODE_ROOT} but deploy_verify.py lives in {SCRIPT_DIR}")
+
+    if not managed_run_active():
+        warn("Managed 4-root contract active", False,
+             "SAVAGE22_* root env vars are not set; running legacy/local preflight semantics.")
+        return
+
+    check("Maintained run does not use legacy /workspace/v3.3 code root",
+          CODE_ROOT != "/workspace/v3.3",
+          "Maintained runs must execute from immutable /workspace/releases/v3.3_<run_id>, not /workspace/v3.3")
+    check("Maintained run keeps code root separate from run root",
+          CODE_ROOT != RUN_ROOT,
+          f"CODE_ROOT={CODE_ROOT}, RUN_ROOT={RUN_ROOT}")
+    check("Maintained run keeps code root separate from artifact root",
+          CODE_ROOT != ARTIFACT_ROOT,
+          f"CODE_ROOT={CODE_ROOT}, ARTIFACT_ROOT={ARTIFACT_ROOT}")
+    check("Maintained run keeps run root separate from artifact root",
+          RUN_ROOT != ARTIFACT_ROOT,
+          f"RUN_ROOT={RUN_ROOT}, ARTIFACT_ROOT={ARTIFACT_ROOT}")
+    check("Artifact root is not legacy workspace fallback",
+          ARTIFACT_ROOT not in ("/workspace", "/workspace/v3.3"),
+          f"ARTIFACT_ROOT={ARTIFACT_ROOT} must be a run-scoped artifact directory")
+    check("Run root is not legacy workspace fallback",
+          RUN_ROOT not in ("/workspace", "/workspace/v3.3"),
+          f"RUN_ROOT={RUN_ROOT} must be a run-scoped control directory")
+
+    release_manifest = os.path.join(RUN_ROOT, "release_manifest.json")
+    check("release_manifest.json exists in RUN_ROOT", os.path.isfile(release_manifest),
+          f"Missing: {release_manifest}")
+    if not os.path.isfile(release_manifest):
+        return
+
+    try:
+        manifest = load_json(release_manifest)
+    except Exception as e:
+        check("release_manifest.json parseable", False, str(e))
+        return
+
+    check("release_manifest release_dir matches CODE_ROOT",
+          os.path.realpath(manifest.get("release_dir", "")) == CODE_ROOT,
+          f"release_dir={manifest.get('release_dir')} CODE_ROOT={CODE_ROOT}")
+    check("release_manifest run_dir matches RUN_ROOT",
+          os.path.realpath(manifest.get("run_dir", "")) == RUN_ROOT,
+          f"run_dir={manifest.get('run_dir')} RUN_ROOT={RUN_ROOT}")
+    check("release_manifest artifact_root matches ARTIFACT_ROOT",
+          os.path.realpath(manifest.get("artifact_root", "")) == ARTIFACT_ROOT,
+          f"artifact_root={manifest.get('artifact_root')} ARTIFACT_ROOT={ARTIFACT_ROOT}")
+    check("release_manifest shared_db_root matches SHARED_DB_ROOT",
+          os.path.realpath(manifest.get("shared_db_root", "")) == SHARED_DB_ROOT,
+          f"shared_db_root={manifest.get('shared_db_root')} SHARED_DB_ROOT={SHARED_DB_ROOT}")
+
+    current_link = manifest.get("current_link", "")
+    check("release_manifest current_link resolves to CODE_ROOT",
+          bool(current_link) and os.path.realpath(current_link) == CODE_ROOT,
+          f"current_link={current_link} CODE_ROOT={CODE_ROOT}")
+
+    heartbeat_path = manifest.get("heartbeat_path", "")
+    check("release_manifest heartbeat path stays under RUN_ROOT",
+          bool(heartbeat_path) and is_under(heartbeat_path, RUN_ROOT),
+          f"heartbeat_path={heartbeat_path} RUN_ROOT={RUN_ROOT}")
 
 
 # ====================================================================
@@ -161,15 +244,18 @@ def check_pycache():
     else:
         check("No .pyc files in __pycache__", True)
 
-    # Also check for .pyc in workspace root (sometimes left by old deploys)
-    workspace_pyc = glob.glob("/workspace/__pycache__/*.pyc") + glob.glob("/workspace/v3.3/__pycache__/*.pyc")
-    if workspace_pyc:
-        for pyc in workspace_pyc:
+    extra_roots = {CODE_ROOT, RUN_ROOT, ARTIFACT_ROOT}
+    extra_pyc = []
+    for root in extra_roots:
+        if root:
+            extra_pyc.extend(glob.glob(os.path.join(root, "__pycache__", "*.pyc")))
+    if extra_pyc:
+        for pyc in extra_pyc:
             try:
                 os.remove(pyc)
             except OSError:
                 pass
-        check(f"Purged {len(workspace_pyc)} stale .pyc from workspace", True)
+        check(f"Purged {len(extra_pyc)} stale .pyc from active roots", True)
 
 
 # ====================================================================
@@ -299,7 +385,7 @@ def check_binary_mode(tf):
 # ====================================================================
 def check_databases():
     print("\n== CHECK F: Database Files ==")
-    # Expected DBs (either in /workspace or in SCRIPT_DIR via symlinks)
+    # Maintained runs use SHARED_DB_ROOT; ad-hoc local runs may still stage DBs beside the code.
     required_dbs = [
         "btc_prices.db",
         "multi_asset_prices.db",
@@ -319,7 +405,9 @@ def check_databases():
         "google_trends.db",
     ]
 
-    search_dirs = ["/workspace", SCRIPT_DIR, os.path.dirname(SCRIPT_DIR)]
+    search_dirs = [SHARED_DB_ROOT]
+    if not managed_run_active():
+        search_dirs.extend([SCRIPT_DIR, os.path.dirname(SCRIPT_DIR)])
     found = 0
     missing = []
     too_small = []
@@ -452,11 +540,16 @@ def check_optuna_import():
 def check_stale_bin(tf):
     print(f"\n== CHECK J: Stale LightGBM Dataset Binaries ({tf}) ==")
     bin_patterns = [
-        os.path.join(SCRIPT_DIR, "lgbm_dataset_*.bin"),
-        os.path.join("/workspace", "lgbm_dataset_*.bin"),
-        os.path.join(SCRIPT_DIR, f"lgbm_parent_{tf}.bin"),
-        os.path.join("/workspace", f"lgbm_parent_{tf}.bin"),
+        os.path.join(ARTIFACT_ROOT, "lgbm_dataset_*.bin"),
+        os.path.join(ARTIFACT_ROOT, f"lgbm_parent_{tf}.bin"),
     ]
+    if not managed_run_active():
+        bin_patterns.extend([
+            os.path.join(SCRIPT_DIR, "lgbm_dataset_*.bin"),
+            os.path.join("/workspace", "lgbm_dataset_*.bin"),
+            os.path.join(SCRIPT_DIR, f"lgbm_parent_{tf}.bin"),
+            os.path.join("/workspace", f"lgbm_parent_{tf}.bin"),
+        ])
 
     stale_bins = []
     for pat in bin_patterns:
@@ -584,6 +677,10 @@ def check_gotchas(tf):
     if v30:
         check(f"V30_DATA_DIR={v30} exists", os.path.isdir(v30),
               f"Directory not found: {v30}")
+        if managed_run_active():
+            check("V30_DATA_DIR resolves to ARTIFACT_ROOT for maintained runs",
+                  os.path.realpath(v30) == ARTIFACT_ROOT,
+                  f"V30_DATA_DIR={v30} ARTIFACT_ROOT={ARTIFACT_ROOT}")
 
     # Check SAVAGE22_V1_DIR
     v1 = os.environ.get("SAVAGE22_V1_DIR", "")
@@ -591,23 +688,16 @@ def check_gotchas(tf):
         check(f"SAVAGE22_V1_DIR={v1} exists", os.path.isdir(v1),
               f"Directory not found: {v1}")
 
-    # Check DB symlinks in v3.3 directory
-    expected_symlinks = ["btc_prices.db", "multi_asset_prices.db", "savage22.db"]
-    for db in expected_symlinks:
-        dbpath = os.path.join(SCRIPT_DIR, db)
-        if os.path.exists(dbpath) or os.path.islink(dbpath):
-            if os.path.islink(dbpath):
-                target = os.readlink(dbpath)
-                if os.path.exists(dbpath):
-                    check(f"Symlink {db} -> {target}", True)
-                else:
-                    check(f"Symlink {db} -> {target}", False, "Broken symlink!")
-        else:
-            warn(f"DB symlink {db} in v3.3/", False,
-                 "Missing. Run: ln -sf /workspace/*.db /workspace/v3.3/")
+    if managed_run_active():
+        release_manifest = os.path.join(RUN_ROOT, "release_manifest.json")
+        check("RUN_ROOT release manifest exists", os.path.isfile(release_manifest),
+              f"Missing: {release_manifest}")
+        heartbeat_path = os.path.join(RUN_ROOT, f"cloud_run_{tf}_heartbeat.json")
+        check("Heartbeat path stays inside RUN_ROOT", is_under(heartbeat_path, RUN_ROOT),
+              f"heartbeat path escaped RUN_ROOT: {heartbeat_path}")
 
     # Check parquet for this TF
-    parquet_path = os.path.join(SCRIPT_DIR, f"features_BTC_{tf}.parquet")
+    parquet_path = os.path.join(ARTIFACT_ROOT, f"features_BTC_{tf}.parquet")
     if os.path.exists(parquet_path):
         sz_mb = os.path.getsize(parquet_path) / (1024 * 1024)
         check(f"features_BTC_{tf}.parquet exists ({sz_mb:.1f} MB)", sz_mb > 0.1,
@@ -640,7 +730,10 @@ def main():
 
     print("=" * 60)
     print(f"  DEPLOYMENT VERIFICATION -- TF: {tf}")
-    print(f"  Script dir: {SCRIPT_DIR}")
+    print(f"  CODE_ROOT: {CODE_ROOT}")
+    print(f"  SHARED_DB_ROOT: {SHARED_DB_ROOT}")
+    print(f"  RUN_ROOT: {RUN_ROOT}")
+    print(f"  ARTIFACT_ROOT: {ARTIFACT_ROOT}")
     print(f"  CWD: {os.getcwd()}")
     print(f"  Python: {sys.version.split()[0]}")
     print("=" * 60)
@@ -650,6 +743,7 @@ def main():
     # Run all checks
     check_python_version()      # K
     check_pip_packages()         # L
+    check_root_contract(tf)
     check_manifest()             # A
     check_pycache()              # B
     check_opencl_icd()           # C

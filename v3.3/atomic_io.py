@@ -7,8 +7,102 @@ If process crashes mid-write, no corrupt files left behind.
 """
 
 import os
+import re
+import shutil
+import time
+import uuid
+import json
 import numpy as np
 from contextlib import contextmanager
+
+from path_contract import artifact_path, is_under
+
+
+_SCRATCH_OWNER_FILE = ".scratch_owner.json"
+
+
+def _safe_token(value, default="unknown"):
+    text = str(value or default).strip()
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    return text or default
+
+
+def get_crossgen_run_id():
+    run_id = os.environ.get("SAVAGE22_RUN_ID") or os.environ.get("RUN_ID")
+    if not run_id:
+        run_id = f"local_{int(time.time())}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    run_id = _safe_token(run_id, default="local")
+    os.environ.setdefault("SAVAGE22_RUN_ID", run_id)
+    return run_id
+
+
+def get_crossgen_namespace(symbol=None, tf=None, prefix=None, run_id=None):
+    return "__".join([
+        _safe_token(run_id or get_crossgen_run_id(), default="local"),
+        _safe_token(symbol or os.environ.get("SAVAGE22_XGEN_SYMBOL"), default="GLOBAL"),
+        _safe_token(tf or os.environ.get("SAVAGE22_XGEN_TF"), default="tf"),
+        _safe_token(prefix, default="shared"),
+    ])
+
+
+def crossgen_scratch_dir(kind, symbol=None, tf=None, prefix=None, run_id=None):
+    namespace = get_crossgen_namespace(symbol=symbol, tf=tf, prefix=prefix, run_id=run_id)
+    root = artifact_path("_runtime", "cross_generation", _safe_token(run_id or get_crossgen_run_id(), "local"))
+    path = os.path.join(root, kind, namespace)
+    os.makedirs(path, exist_ok=True)
+    owner = {
+        "run_id": _safe_token(run_id or get_crossgen_run_id(), "local"),
+        "namespace": namespace,
+        "kind": _safe_token(kind),
+        "pid": os.getpid(),
+    }
+    with open(os.path.join(path, _SCRATCH_OWNER_FILE), "w", encoding="utf-8") as fh:
+        json.dump(owner, fh, indent=2)
+    return path
+
+
+def cleanup_crossgen_scratch_dir(path, run_id=None):
+    if not path or not os.path.isdir(path):
+        return False
+    owner_path = os.path.join(path, _SCRATCH_OWNER_FILE)
+    if not os.path.exists(owner_path):
+        return False
+    try:
+        with open(owner_path, "r", encoding="utf-8") as fh:
+            owner = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return False
+    expected_run = _safe_token(run_id or get_crossgen_run_id(), "local")
+    if owner.get("run_id") != expected_run:
+        return False
+    runtime_root = artifact_path("_runtime", "cross_generation", expected_run)
+    if not is_under(path, runtime_root):
+        return False
+    shutil.rmtree(path, ignore_errors=True)
+    return True
+
+
+def validate_sparse_names_contract(sparse_mat, feature_names, expected_prefix=None):
+    from scipy import sparse
+
+    if not sparse.issparse(sparse_mat):
+        raise ValueError("Expected scipy sparse matrix for cross artifact")
+    if sparse_mat.shape[1] != len(feature_names):
+        raise ValueError(
+            f"Sparse/name mismatch: matrix has {sparse_mat.shape[1]} cols "
+            f"but names list has {len(feature_names)} entries"
+        )
+    normalized = [str(name) for name in feature_names]
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("Cross feature names contain duplicates")
+    if expected_prefix:
+        required = f"{expected_prefix.rstrip('_')}_"
+        bad = [name for name in normalized if not name.startswith(required)]
+        if bad:
+            raise ValueError(
+                f"Cross feature names do not match expected prefix {required}: {bad[:3]}"
+            )
+    return normalized
 
 
 @contextmanager

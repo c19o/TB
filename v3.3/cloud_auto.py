@@ -99,7 +99,8 @@ CHECKPOINT_INTERVAL = 300  # seconds between artifact downloads
 
 # Remote paths
 REMOTE_WORKSPACE = '/workspace'
-REMOTE_V33_DIR   = '/workspace/v3.3'
+REMOTE_CURRENT_LINK = '/workspace/current_v3.3'
+REMOTE_V33_DIR = REMOTE_CURRENT_LINK
 
 # Pipeline artifacts to download after each critical step
 CRITICAL_ARTIFACTS = {

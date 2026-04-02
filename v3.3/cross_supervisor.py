@@ -34,9 +34,17 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from multiprocessing.connection import Connection, wait as mp_wait
+from multiprocessing.shared_memory import SharedMemory
 from typing import Optional
 
 import numpy as np
+
+from atomic_io import (
+    cleanup_crossgen_scratch_dir,
+    crossgen_scratch_dir,
+    get_crossgen_namespace,
+    get_crossgen_run_id,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +60,7 @@ def _print(msg: str):
 # ---------------------------------------------------------------------------
 # supervisor -> daemon:
 #   ('RELOAD', left_npy_path, right_npy_path, n_left_cols)
+#   ('RELOAD_SHM', left_meta, right_meta, n_left_cols)
 #   ('BATCH',  batch_id, pairs_ndarray, out_path, pair_id_offset)
 #   None                          # poison pill
 #
@@ -249,6 +258,65 @@ def _detect_gpu_count() -> int:
         return 1
 
 
+def _shared_meta_from_array(prefix: str, arr: np.ndarray):
+    arr = np.ascontiguousarray(arr)
+    shm = SharedMemory(create=True, size=arr.nbytes)
+    np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)[:] = arr
+    meta = {
+        'name': shm.name,
+        'shape': arr.shape,
+        'dtype': str(arr.dtype),
+        'prefix': prefix,
+    }
+    return shm, meta
+
+
+def _open_reload_arrays(msg_tag, left_ref, right_ref, np):
+    """Open RELOAD payload from shared memory or .npy files."""
+    _left_shm = None
+    _right_shm = None
+    if msg_tag == 'RELOAD_SHM':
+        _left_shm = SharedMemory(name=left_ref['name'])
+        _right_shm = SharedMemory(name=right_ref['name'])
+        left = np.ndarray(tuple(left_ref['shape']), dtype=np.dtype(left_ref['dtype']), buffer=_left_shm.buf)
+        right = np.ndarray(tuple(right_ref['shape']), dtype=np.dtype(right_ref['dtype']), buffer=_right_shm.buf)
+    else:
+        left = np.load(left_ref, mmap_mode='r')
+        right = np.load(right_ref, mmap_mode='r')
+    return left, right, _left_shm, _right_shm
+
+
+def _build_combined_csc_from_binary(left, right, n_left_cols, np):
+    """Build CSC for [left|right] without allocating a combined dense matrix."""
+    n_rows = int(left.shape[0])
+    left_n_cols = int(left.shape[1])
+    right_n_cols = int(right.shape[1])
+    n_cols = left_n_cols + right_n_cols
+    col_nnz = np.empty(n_cols, dtype=np.int64)
+
+    for j in range(left_n_cols):
+        col_nnz[j] = int(np.count_nonzero(left[:, j]))
+    for j in range(right_n_cols):
+        col_nnz[n_left_cols + j] = int(np.count_nonzero(right[:, j]))
+
+    indptr = np.zeros(n_cols + 1, dtype=np.int64)
+    np.cumsum(col_nnz, out=indptr[1:])
+    total_nnz = int(indptr[-1])
+    indices = np.empty(total_nnz, dtype=np.int32)
+
+    for j in range(left_n_cols):
+        start = int(indptr[j])
+        rows = np.where(left[:, j] != 0)[0].astype(np.int32)
+        indices[start:start + len(rows)] = rows
+    for j in range(right_n_cols):
+        out_col = n_left_cols + j
+        start = int(indptr[out_col])
+        rows = np.where(right[:, j] != 0)[0].astype(np.int32)
+        indices[start:start + len(rows)] = rows
+
+    return indptr, indices, col_nnz, n_rows
+
+
 # ---------------------------------------------------------------------------
 # GPU Daemon Main (runs in spawned child process)
 # ---------------------------------------------------------------------------
@@ -314,8 +382,8 @@ def _gpu_daemon_main(conn: Connection, gpu_id: int, vram_limit_pct: float):
 
         tag = msg[0]
 
-        if tag == 'RELOAD':
-            _, left_npy_path, right_npy_path, n_left_cols = msg
+        if tag in ('RELOAD', 'RELOAD_SHM'):
+            _, left_ref, right_ref, n_left_cols = msg
             try:
                 # Free prior GPU arrays BEFORE loading new ones (memory leak fix)
                 if indptr_gpu is not None:
@@ -323,10 +391,16 @@ def _gpu_daemon_main(conn: Connection, gpu_id: int, vram_limit_pct: float):
                     cp.cuda.Stream.null.synchronize()
                     mempool.free_all_blocks()
                     pinned_pool.free_all_blocks()
-
-                indptr_gpu, indices_gpu, col_nnz_cpu, n_rows = _reload_csc_to_gpu(
-                    left_npy_path, right_npy_path, n_left_cols, cp, _np
-                )
+                left, right, _left_shm, _right_shm = _open_reload_arrays(tag, left_ref, right_ref, _np)
+                try:
+                    indptr_gpu, indices_gpu, col_nnz_cpu, n_rows = _reload_csc_to_gpu(
+                        left, right, n_left_cols, cp, _np
+                    )
+                finally:
+                    if _left_shm is not None:
+                        _left_shm.close()
+                    if _right_shm is not None:
+                        _right_shm.close()
                 conn.send(('READY', gpu_id))
             except Exception as e:
                 conn.send(('RESULT', -1, '', 0, 'error', f'RELOAD failed: {e}'))
@@ -390,30 +464,13 @@ def _compile_sparse_and_kernel(cp):
     return cp.RawKernel(kernel_code, 'sparse_and_batch')
 
 
-def _reload_csc_to_gpu(left_npy_path, right_npy_path, n_left_cols, cp, np):
+def _reload_csc_to_gpu(left, right, n_left_cols, cp, np):
     """Upload combined [left|right] CSC to GPU. No scipy.
 
     Binary features -> only need indptr + indices, no data array.
     Returns (indptr_gpu, indices_gpu, col_nnz_cpu, n_rows).
     """
-    left = np.load(left_npy_path, mmap_mode='r')
-    right = np.load(right_npy_path, mmap_mode='r')
-    combined = np.hstack([np.asarray(left), np.asarray(right)])
-    del left, right
-
-    n_rows, n_cols = combined.shape
-    col_nnz = np.count_nonzero(combined, axis=0).astype(np.int64)
-    indptr = np.zeros(n_cols + 1, dtype=np.int64)
-    np.cumsum(col_nnz, out=indptr[1:])
-    total_nnz = int(indptr[-1])
-
-    indices = np.empty(total_nnz, dtype=np.int32)
-    for j in range(n_cols):
-        rows = np.where(combined[:, j] != 0)[0].astype(np.int32)
-        start = int(indptr[j])
-        indices[start:start + len(rows)] = rows
-
-    del combined
+    indptr, indices, col_nnz, n_rows = _build_combined_csc_from_binary(left, right, n_left_cols, np)
 
     # Upload to GPU — int64 indptr required (NNZ > 2^31 support, matches gpu_daemon.py)
     indptr_gpu = cp.asarray(indptr, dtype=cp.int64)
@@ -558,6 +615,9 @@ def run_cross_step(
     left_names=None,
     right_names=None,
     batch_size=_BATCH_SIZE,
+    symbol=None,
+    tf=None,
+    run_id=None,
 ):
     """Execute one cross step across persistent GPU daemons.
 
@@ -584,28 +644,58 @@ def run_cross_step(
         batch_size: Pairs per batch (default 5000).
 
     Returns:
-        (idx_file_paths: list[str], total_feature_count: int)
+        (idx_file_paths: list[str], total_nnz: int, total_feature_count: int)
     """
     n_pairs = len(valid_pairs)
     if n_pairs == 0:
         _print(f"[{prefix}] No valid pairs — skipping")
-        return [], 0
+        return [], 0, 0
 
     alive_handles = [h for h in handles if h.status not in ('dead', 'error')]
     if not alive_handles:
         raise RuntimeError(f"[{prefix}] All daemons dead — cannot proceed")
 
     # Create idx output directory
-    idx_dir = os.path.join(out_dir, '_idx', prefix.rstrip('_'))
-    os.makedirs(idx_dir, exist_ok=True)
-
-    # Save left/right matrices as .npy for daemon RELOAD
-    left_npy = os.path.join(out_dir, f'_left_{prefix.rstrip("_")}.npy')
-    right_npy = os.path.join(out_dir, f'_right_{prefix.rstrip("_")}.npy')
-    np.save(left_npy, np.ascontiguousarray(left_mat))
-    np.save(right_npy, np.ascontiguousarray(right_mat))
+    _prefix_token = prefix.rstrip('_')
+    _run_id = run_id or get_crossgen_run_id()
+    _namespace = get_crossgen_namespace(
+        symbol=symbol, tf=tf, prefix=_prefix_token, run_id=_run_id
+    )
+    idx_dir = crossgen_scratch_dir(
+        'idx', symbol=symbol, tf=tf, prefix=_prefix_token, run_id=_run_id
+    )
+    _reload_dir = None
 
     n_left_cols = left_mat.shape[1]
+    _reload_use_shm = os.environ.get('V3_CROSS_RELOAD_SHM', '1') == '1'
+    _reload_shms = []
+    left_npy = None
+    right_npy = None
+    if _reload_use_shm:
+        try:
+            _left_shm, _left_meta = _shared_meta_from_array(f'{_namespace}_left', left_mat)
+            _right_shm, _right_meta = _shared_meta_from_array(f'{_namespace}_right', right_mat)
+            _reload_shms = [_left_shm, _right_shm]
+            _reload_msg = ('RELOAD_SHM', _left_meta, _right_meta, n_left_cols)
+        except Exception as _shm_err:
+            _print(f"[{prefix}] SharedMemory RELOAD unavailable ({_shm_err}) — falling back to .npy handoff")
+            for _shm in _reload_shms:
+                try:
+                    _shm.close()
+                    _shm.unlink()
+                except FileNotFoundError:
+                    pass
+            _reload_shms = []
+            _reload_use_shm = False
+    if not _reload_use_shm:
+        _reload_dir = crossgen_scratch_dir(
+            'reload', symbol=symbol, tf=tf, prefix=_prefix_token, run_id=_run_id
+        )
+        left_npy = os.path.join(_reload_dir, f'{_namespace}__left.npy')
+        right_npy = os.path.join(_reload_dir, f'{_namespace}__right.npy')
+        np.save(left_npy, np.ascontiguousarray(left_mat))
+        np.save(right_npy, np.ascontiguousarray(right_mat))
+        _reload_msg = ('RELOAD', left_npy, right_npy, n_left_cols)
 
     # Register pairs and get global IDs
     if pair_registry is not None and left_names is not None and right_names is not None:
@@ -626,7 +716,7 @@ def run_cross_step(
 
     for h in alive_handles:
         try:
-            h.pipe.send(('RELOAD', left_npy, right_npy, n_left_cols))
+            h.pipe.send(_reload_msg)
         except (BrokenPipeError, OSError):
             h.status = 'dead'
 
@@ -652,13 +742,20 @@ def run_cross_step(
     if not alive_handles:
         raise RuntimeError(f"[{prefix}] All daemons dead after RELOAD")
 
+    for _shm in _reload_shms:
+        try:
+            _shm.close()
+            _shm.unlink()
+        except FileNotFoundError:
+            pass
+
     # ── Build batch messages ──
     all_batches = []
     for i in range(0, n_pairs, batch_size):
         end = min(i + batch_size, n_pairs)
         batch_pairs = remapped_pairs[i:end]
         bid = len(all_batches)
-        idx_path = os.path.join(idx_dir, f'batch_{bid:05d}.idx')
+        idx_path = os.path.join(idx_dir, f'{_namespace}__batch_{bid:05d}.idx')
         pair_id_offset = int(global_ids[i])
         all_batches.append(
             ('BATCH', bid, batch_pairs, idx_path, pair_id_offset)
@@ -675,15 +772,18 @@ def run_cross_step(
 
     # Cleanup temp .npy files
     for p in [left_npy, right_npy]:
-        try:
-            os.remove(p)
-        except OSError:
-            pass
+        if p:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    if _reload_dir:
+        cleanup_crossgen_scratch_dir(_reload_dir, run_id=_run_id)
 
     _print(f"[{prefix}] Done — {len(idx_paths)} .idx files, "
            f"{n_pairs:,} features, {total_nnz:,} nnz")
 
-    return idx_paths, n_pairs
+    return idx_paths, total_nnz, n_pairs
 
 
 def _dispatch_and_collect(handles, all_batches, prefix):
@@ -701,6 +801,7 @@ def _dispatch_and_collect(handles, all_batches, prefix):
     total_nnz = 0
     total_batches = len(all_batches)
     completed = 0
+    failed = 0
 
     def _update_pipe_map():
         pipe_to_handle.clear()
@@ -772,6 +873,7 @@ def _dispatch_and_collect(handles, all_batches, prefix):
                 _print(f"[{prefix}] batch {result_bid} ERROR on GPU "
                        f"{daemon.gpu_id}: {err_msg}")
                 daemon.status = 'idle'  # still try to reuse
+                failed += 1
             else:
                 if result_path:
                     idx_paths.append(result_path)
@@ -799,9 +901,12 @@ def _dispatch_and_collect(handles, all_batches, prefix):
 
         _update_pipe_map()
 
-    if pending:
-        _print(f"[{prefix}] WARNING: {len(pending)} batches lost "
-               f"(all daemons dead)")
+    if pending or failed:
+        raise RuntimeError(
+            f"[{prefix}] daemon dispatch incomplete: "
+            f"succeeded={completed}/{total_batches}, failed={failed}, "
+            f"lost={len(pending)}"
+        )
 
     return idx_paths, total_nnz
 
@@ -842,7 +947,6 @@ def shutdown_daemons(handles, timeout=60):
 _ASSEMBLY_SCRIPT = r'''
 """CSR assembly from .idx files — fresh subprocess, zero pymalloc inheritance."""
 import argparse
-import glob
 import json
 import os
 import struct
@@ -852,22 +956,22 @@ import time
 import numpy as np
 
 
-def build_csr(idx_dir, n_rows, n_cols, pair_id_to_col_path, names_path,
+def build_csr(idx_files_path, n_rows, n_cols, pair_id_to_col_path, names_path,
               output_npz, tmp_dir):
     from scipy import sparse
 
     t0 = time.time()
     pair_id_to_col = np.load(pair_id_to_col_path)
-
-    idx_files = sorted(glob.glob(os.path.join(idx_dir, '**', '*.idx'),
-                                  recursive=True))
+    with open(idx_files_path, 'r', encoding='utf-8') as fh:
+        idx_files = json.load(fh)
+    idx_files = [p for p in idx_files if os.path.isfile(p)]
     if not idx_files:
-        print(f"[csr_assembler] No .idx files in {idx_dir}", flush=True)
+        print(f"[csr_assembler] No .idx files listed in {idx_files_path}", flush=True)
         json.dump({'npz_path': '', 'n_cols': 0, 'total_nnz': 0, 'elapsed_s': 0},
                   open(output_npz + '.result.json', 'w'))
         return
 
-    print(f"[csr_assembler] Scanning {len(idx_files)} .idx files...", flush=True)
+    print(f"[csr_assembler] Scanning {len(idx_files)} step-local .idx files...", flush=True)
 
     # PASS 1: Pre-scan for total NNZ (headers only)
     total_nnz = 0
@@ -879,9 +983,16 @@ def build_csr(idx_dir, n_rows, n_cols, pair_id_to_col_path, names_path,
                 continue
             _ver = struct.unpack('<H', fh.read(2))[0]
             n_records = struct.unpack('<I', fh.read(4))[0]
+            _n_rows = struct.unpack('<I', fh.read(4))[0]
             for _ in range(n_records):
-                _pair_id = struct.unpack('<i', fh.read(4))[0]
-                nnz = struct.unpack('<i', fh.read(4))[0]
+                pair_buf = fh.read(4)
+                nnz_buf = fh.read(4)
+                if len(pair_buf) < 4 or len(nnz_buf) < 4:
+                    raise RuntimeError(
+                        f"[csr_assembler] Truncated idx record header in {fpath}"
+                    )
+                _pair_id = struct.unpack('<i', pair_buf)[0]
+                nnz = struct.unpack('<i', nnz_buf)[0]
                 total_nnz += nnz
                 fh.seek(nnz * 4, 1)
 
@@ -908,7 +1019,7 @@ def build_csr(idx_dir, n_rows, n_cols, pair_id_to_col_path, names_path,
             magic = fh.read(4)
             if magic != b'IDX1':
                 continue
-            fh.seek(12)  # skip full header (magic + ver + n_records + n_rows)
+            fh.seek(14)  # skip full header (magic + ver + n_records + n_rows)
             while True:
                 hdr = fh.read(8)
                 if len(hdr) < 8:
@@ -984,7 +1095,7 @@ def build_csr(idx_dir, n_rows, n_cols, pair_id_to_col_path, names_path,
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--idx-dir', required=True)
+    parser.add_argument('--idx-files-path', required=True)
     parser.add_argument('--n-rows', type=int, required=True)
     parser.add_argument('--n-cols', type=int, required=True)
     parser.add_argument('--pair-id-to-col', required=True)
@@ -992,7 +1103,7 @@ if __name__ == '__main__':
     parser.add_argument('--output-npz', required=True)
     parser.add_argument('--tmp-dir', required=True)
     args = parser.parse_args()
-    build_csr(args.idx_dir, args.n_rows, args.n_cols,
+    build_csr(args.idx_files_path, args.n_rows, args.n_cols,
               args.pair_id_to_col, args.names_path,
               args.output_npz, args.tmp_dir)
 '''
@@ -1006,6 +1117,10 @@ def build_csr_from_idx_files(
     pair_registry=None,
     tmp_dir=None,
     timeout=3600,
+    symbol=None,
+    tf=None,
+    prefix=None,
+    run_id=None,
 ):
     """Build CSR from .idx files in a FRESH subprocess (scipy allowed there).
 
@@ -1029,12 +1144,6 @@ def build_csr_from_idx_files(
         _print("build_csr_from_idx_files: no .idx files — returning empty")
         return [], '', 0
 
-    # Determine idx root directory
-    idx_dir = os.path.join(out_dir, '_idx')
-    if not os.path.isdir(idx_dir):
-        # Fallback: use parent of first .idx file
-        idx_dir = os.path.dirname(idx_files[0])
-
     if pair_registry is not None:
         n_cols = pair_registry.total_features
         names = pair_registry.get_names_ordered()
@@ -1047,27 +1156,37 @@ def build_csr_from_idx_files(
     if n_cols == 0:
         return [], '', 0
 
+    _run_id = run_id or get_crossgen_run_id()
+    _prefix_token = (prefix or 'merged').rstrip('_')
+    _namespace = get_crossgen_namespace(
+        symbol=symbol, tf=tf, prefix=_prefix_token, run_id=_run_id
+    )
     if tmp_dir is None:
-        tmp_dir = tempfile.mkdtemp(prefix='csr_asm_')
+        tmp_dir = crossgen_scratch_dir(
+            'assembly', symbol=symbol, tf=tf, prefix=_prefix_token, run_id=_run_id
+        )
 
     # Serialize inputs for child process
     os.makedirs(tmp_dir, exist_ok=True)
     pid_to_col_path = os.path.join(tmp_dir, '_pair_id_to_col.npy')
+    idx_files_path = os.path.join(tmp_dir, '_idx_files.json')
     names_path = os.path.join(tmp_dir, '_names.json')
-    output_npz = os.path.join(out_dir, 'v2_crosses_merged.npz')
+    output_npz = os.path.join(tmp_dir, f'{_namespace}__assembled.npz')
     script_path = os.path.join(tmp_dir, '_csr_assembler.py')
 
     np.save(pid_to_col_path, pair_id_to_col)
+    with open(idx_files_path, 'w', encoding='utf-8') as f:
+        json.dump(list(idx_files), f)
     with open(names_path, 'w') as f:
         json.dump(names, f)
     with open(script_path, 'w') as f:
         f.write(_ASSEMBLY_SCRIPT)
 
-    _print(f"CSR assembly subprocess: {n_cols:,} cols, N={N}, idx_dir={idx_dir}")
+    _print(f"CSR assembly subprocess: {n_cols:,} cols, N={N}, idx_files={len(idx_files)}")
 
     cmd = [
         sys.executable, script_path,
-        '--idx-dir', idx_dir,
+        '--idx-files-path', idx_files_path,
         '--n-rows', str(N),
         '--n-cols', str(n_cols),
         '--pair-id-to-col', pid_to_col_path,

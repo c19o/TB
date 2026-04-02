@@ -26,7 +26,7 @@ Usage:
   python v2_cross_generator.py --tf 1h --save-sparse
 """
 
-import os, time, argparse, warnings, gc, glob, tempfile, queue, threading
+import os, sys, time, argparse, warnings, gc, glob, tempfile, queue, threading, shutil
 import ctypes
 from gpu_worker_estimator import preflight_check as _preflight_check
 try:
@@ -40,6 +40,13 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from atomic_io import (
+    cleanup_crossgen_scratch_dir,
+    crossgen_scratch_dir,
+    get_crossgen_namespace,
+    get_crossgen_run_id,
+    validate_sparse_names_contract,
+)
 # ── Bitpacked POPCNT co-occurrence pre-filter (Phase 1D) ──
 _USE_BITPACK_COOCCURRENCE = os.environ.get('USE_BITPACK_COOCCURRENCE', '1') == '1'
 try:
@@ -143,7 +150,12 @@ except (ImportError, Exception) as _gpu_err:
 
 
 def log(msg):
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        safe = line.encode(sys.stdout.encoding or 'utf-8', errors='replace').decode(sys.stdout.encoding or 'utf-8', errors='replace')
+        print(safe, flush=True)
 
 
 def _mkl_dot(a, b):
@@ -1577,7 +1589,13 @@ def gpu_batch_cross(left_names, left_arrays, right_names, right_arrays, prefix,
     _ram_gb = _get_available_ram_gb()
     # Flush when accumulated chunks hit this count. Lower = less RAM, more disk I/O.
     MAX_CHUNKS_IN_RAM = max(100, min(2000, int(_ram_gb * 0.25 / max(0.01, N * 0.001))))
-    _tmp_dir = os.path.join(os.environ.get('V30_DATA_DIR', '.'), f'_sub_ckpt_{prefix}_{os.getpid()}')
+    _tmp_dir = crossgen_scratch_dir(
+        'sub_checkpoint',
+        symbol=os.environ.get('SAVAGE22_XGEN_SYMBOL'),
+        tf=os.environ.get('SAVAGE22_XGEN_TF'),
+        prefix=prefix,
+        run_id=os.environ.get('SAVAGE22_RUN_ID'),
+    )
     # Opt #7H: Time-based flush interval (seconds). Flush accumulated chunks to disk
     # even if count threshold not reached, preventing data loss during long cross types.
     _FLUSH_INTERVAL = int(os.environ.get('V2_FLUSH_INTERVAL_SEC', '1200'))
@@ -1829,6 +1847,9 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
 
                 N = left_mat.shape[0]
                 _out_dir = os.environ.get('V30_DATA_DIR', '.')
+                _run_id = os.environ.get('SAVAGE22_RUN_ID')
+                _symbol = os.environ.get('SAVAGE22_XGEN_SYMBOL')
+                _tf = os.environ.get('SAVAGE22_XGEN_TF')
 
                 _step_result = run_cross_step(
                     handles=daemon_handles,
@@ -1839,6 +1860,9 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                     N=N,
                     out_dir=_out_dir,
                     prefix=prefix,
+                    symbol=_symbol,
+                    tf=_tf,
+                    run_id=_run_id,
                 )
                 # IPC contract drift guard: accept both legacy 2-tuple and
                 # newer 3-tuple return signatures from run_cross_step().
@@ -1860,35 +1884,52 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                     return all_names[:0], [], [], [], 0
 
                 # Build CSR from .idx files (Stage 3)
-                _idx_dir = os.path.dirname(idx_files[0])
-                final_csr = build_csr_from_idx_files(
-                    idx_dir=_idx_dir,
-                    n_rows=N,
-                    all_names=all_names
+                merged_names, merged_npz, total_cols = build_csr_from_idx_files(
+                    idx_files=idx_files,
+                    all_names=all_names,
+                    N=N,
+                    out_dir=_out_dir,
+                    symbol=_symbol,
+                    tf=_tf,
+                    prefix=prefix,
+                    run_id=_run_id,
                 )
+                if not merged_npz:
+                    raise RuntimeError("build_csr_from_idx_files returned empty output path")
 
-                # Save CSR to disk (same format as old multi-GPU path)
-                _csr_out_dir = os.path.join(_out_dir, f'_gpu_csr_{prefix}_{os.getpid()}')
-                os.makedirs(_csr_out_dir, exist_ok=True)
-                out_path = os.path.join(_csr_out_dir, 'gpu_csr_0000.npz')
-                sparse.save_npz(out_path, final_csr, compressed=False)
-                total_cols = final_csr.shape[1]
-                del final_csr
+                # Persist each assembled chunk under a unique name so later checkpoint
+                # assembly does not accidentally reference the same merged file path
+                # multiple times after subsequent dispatches overwrite it.
+                _dispatch_dir = crossgen_scratch_dir(
+                    'dispatch_merge',
+                    symbol=_symbol,
+                    tf=_tf,
+                    prefix=prefix,
+                    run_id=_run_id,
+                )
+                out_path = os.path.join(
+                    _dispatch_dir,
+                    f"{get_crossgen_namespace(symbol=_symbol, tf=_tf, prefix=prefix, run_id=_run_id)}__dispatch_{time.time_ns()}.npz"
+                )
+                os.replace(merged_npz, out_path)
                 gc.collect()
-
-                # Clean up .idx files
-                import shutil
-                shutil.rmtree(_idx_dir, ignore_errors=True)
 
                 log(f"  V4 DAEMON DONE: {total_cols:,} features from {n_active} GPUs, "
                     f"{total_nnz:,} total nnz")
-                return all_names[:total_cols], [out_path], 'disk', _csr_out_dir, total_cols
+                _scratch_dirs = []
+                if idx_files:
+                    _scratch_dirs.append(os.path.dirname(idx_files[0]))
+                _assembly_dir = os.path.dirname(merged_npz)
+                if _assembly_dir != _dispatch_dir:
+                    _scratch_dirs.append(_assembly_dir)
+                _scratch_dirs.append(_dispatch_dir)
+                return merged_names[:total_cols], [out_path], 'disk', _scratch_dirs, total_cols
 
             except Exception as _v4_err:
-                log(f"  V4 daemon dispatch FAILED ({_v4_err}), falling back to legacy path")
+                log(f"  V4 daemon dispatch FAILED ({_v4_err}), aborting fast-path run")
                 import traceback
                 traceback.print_exc()
-                # Fall through to legacy multi-GPU or single-GPU paths
+                raise RuntimeError(f"Persistent GPU daemon path failed for {prefix}: {_v4_err}") from _v4_err
 
     # ── Legacy Multi-GPU dispatch (Step 2 across N GPUs) ──
     available_gpus = _detect_available_gpus()
@@ -1911,9 +1952,13 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             log(f"  PREFLIGHT THROTTLE: capping workers {n_gpus} → {_max_conc}")
             n_gpus = _max_conc
             available_gpus = available_gpus[:n_gpus]
-        _mgpu_tmp = os.path.join(os.environ.get('V30_DATA_DIR', '.'),
-                                 f'_mgpu_{prefix}_{os.getpid()}')
-        os.makedirs(_mgpu_tmp, exist_ok=True)
+        _mgpu_tmp = crossgen_scratch_dir(
+            'legacy_mgpu',
+            symbol=os.environ.get('SAVAGE22_XGEN_SYMBOL'),
+            tf=os.environ.get('SAVAGE22_XGEN_TF'),
+            prefix=prefix,
+            run_id=os.environ.get('SAVAGE22_RUN_ID'),
+        )
 
         # Save shared data to temp .npy for workers (mmap-friendly)
         _left_path = os.path.join(_mgpu_tmp, 'left_mat.npy')
@@ -2000,7 +2045,6 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
                 p.terminate()
 
         if failed:
-            import shutil
             shutil.rmtree(_mgpu_tmp, ignore_errors=True)
             raise RuntimeError("GPU server cross gen failed. Check logs above.")
 
@@ -2040,7 +2084,6 @@ def _gpu_cross_chunk(left_names, left_mat, right_names, right_mat, prefix,
             final_csr = sparse.csr_matrix((N, 0), dtype=np.float32)
 
         # Clean up index files + temp dir
-        import shutil
         shutil.rmtree(_mgpu_tmp, ignore_errors=True)
 
         log(f"  MULTI-GPU done: {total_cols:,} features from {n_gpus} GPUs")
@@ -2708,6 +2751,11 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     t0 = time.time()
     N = len(df)
     out_dir = output_dir or V2_DIR
+    symbol_tag = getattr(df, '_v2_symbol', None) or df.attrs.get('symbol') or 'GLOBAL'
+    run_id = get_crossgen_run_id()
+    os.environ['SAVAGE22_RUN_ID'] = run_id
+    os.environ['SAVAGE22_XGEN_SYMBOL'] = str(symbol_tag)
+    os.environ['SAVAGE22_XGEN_TF'] = str(tf)
 
     # Pin to GPU — CUDA_VISIBLE_DEVICES remaps, so always use Device(0) when set
     print(f"[XGEN-DEBUG] GPU={GPU}, about to pin device", flush=True)
@@ -2720,6 +2768,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     log(f"V2 Cross Generator — {tf.upper()}")
     log(f"  Input: {N:,} rows × {len(df.columns):,} cols")
+    log(f"  Run scope: {run_id} | symbol={symbol_tag}")
 
     # ── GPU daemons (V4 architecture: persistent daemons, zero scipy) ──
     # If daemon_handles passed from __main__, use them directly.
@@ -2745,28 +2794,28 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                 )
                 _active = sum(1 for h in _daemon_handles if h.status == 'idle')
                 if _active < 2:
-                    log(f"  WARNING: Only {_active}/{n_gpus} daemons active, falling back to old path")
+                    log(f"  ERROR: Only {_active}/{n_gpus} daemons active; persistent GPU path unavailable")
                     from gpu_daemon import shutdown_daemons
                     shutdown_daemons(_daemon_handles, timeout=10)
-                    _daemon_handles = None
+                    raise RuntimeError("Persistent GPU daemons failed to prestart")
                 else:
                     log(f"  {_active}/{n_gpus} GPU daemons ready (CUDA init hidden behind binarization)")
             except Exception as _daemon_err:
                 import traceback as _tb
                 print(f"[XGEN-DEBUG] DAEMON PRESTAGE EXCEPTION: {_daemon_err}", flush=True)
                 _tb.print_exc()
-                log(f"  WARNING: GPU daemon prestage failed ({_daemon_err}), using legacy path")
-                _daemon_handles = None
+                log(f"  ERROR: GPU daemon prestage failed ({_daemon_err})")
+                raise
     else:
         # Daemons passed from __main__ — validate they're alive
         _active = sum(1 for h in _daemon_handles if h.status == 'idle')
         log(f"  Using {_active}/{len(_daemon_handles)} pre-started GPU daemons from __main__")
         print(f"[XGEN-DEBUG] Pre-started daemons: {_active}/{len(_daemon_handles)} active", flush=True)
         if _active < 2:
-            log(f"  WARNING: Only {_active} daemons alive, falling back to legacy path")
+            log(f"  ERROR: Only {_active} daemons alive; persistent GPU path unavailable")
             from gpu_daemon import shutdown_daemons
             shutdown_daemons(_daemon_handles, timeout=10)
-            _daemon_handles = None
+            raise RuntimeError("Persistent GPU daemons unavailable at cross-gen start")
 
     # ── Step 1: Binarize all contexts (4-tier) ──
     log("  Step 1: Binarizing contexts (4-tier)...")
@@ -2812,26 +2861,31 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     # Each completed cross type is saved as an individual NPZ + JSON checkpoint.
     # On OOM at cross 12, types 1-11 are recoverable from checkpoint files.
     import json as _json_mod
-    _ckpt_dir = out_dir
-    _ckpt_pattern = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*.npz')
+    _ckpt_dir = crossgen_scratch_dir(
+        'checkpoints', symbol=symbol_tag, tf=tf, prefix='checkpoint', run_id=run_id
+    )
+    _ckpt_pattern = os.path.join(_ckpt_dir, '*__checkpoint.npz')
     _completed_prefixes = set()
     _checkpoint_files = sorted(glob.glob(_ckpt_pattern))
+    _saved_checkpoint_files = []
     if _checkpoint_files:
         log(f"  Found {len(_checkpoint_files)} checkpoint(s), resuming...")
         for _cf in _checkpoint_files:
             _cf_base = os.path.basename(_cf)
-            # Pattern: _cross_checkpoint_{tf}_{prefix}.npz
-            _cf_prefix = _cf_base.replace(f'_cross_checkpoint_{tf}_', '').replace('.npz', '')
-            # Skip names json files that might match glob
-            if '_names' in _cf_prefix:
+            if not _cf_base.endswith('__checkpoint.npz'):
                 continue
+            _cf_prefix = _cf_base[:-len('__checkpoint.npz')].split('__')[-1]
             _completed_prefixes.add(_cf_prefix)
             # Load the CSR chunk (backward-compat: handles both scipy and indices-only formats)
             from atomic_io import load_npz_auto
             _resume_csr = load_npz_auto(_cf)
             _csr_chunks.append(_resume_csr)
+            _saved_checkpoint_files.append(_cf)
             # Load matching names
-            _cf_names_path = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{_cf_prefix}_names.json')
+            _cf_names_path = os.path.join(
+                _ckpt_dir,
+                f"{get_crossgen_namespace(symbol=symbol_tag, tf=tf, prefix=_cf_prefix, run_id=run_id)}__names.json",
+            )
             if os.path.exists(_cf_names_path):
                 with open(_cf_names_path, 'r') as _f:
                     _resume_names = _json_mod.load(_f)
@@ -2890,7 +2944,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     def _save_checkpoint(cross_prefix):
         """Save checkpoint from in-memory CSR chunks + disk-backed sub-checkpoints.
         Streams from disk to avoid loading all sub-checkpoints at once."""
-        import shutil as _shutil
+        from atomic_io import atomic_save_json, atomic_save_npz
         _has_memory = bool(_csr_chunks)
         _has_disk = bool(_pending_disk_groups)
         if not _has_memory and not _has_disk:
@@ -2915,19 +2969,23 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
                 _merged = _streaming_csc_splice(_sources, N)
 
             _n_cols_this = _merged.shape[1]
-            _these_names = all_cross_names[-_n_cols_this:]
-            _ckpt_npz = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}.npz')
-            _ckpt_names = os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_{cross_prefix}_names.json')
-            # Atomic write: temp file + os.replace() prevents corrupt checkpoints on crash
-            _ckpt_tmp = _ckpt_npz + '.tmp'
-            sparse.save_npz(_ckpt_tmp, _merged, compressed=False)
-            if not _ckpt_tmp.endswith('.npz'):
-                os.rename(_ckpt_tmp + '.npz', _ckpt_tmp)
-            os.replace(_ckpt_tmp, _ckpt_npz)
-            _names_tmp = _ckpt_names + '.tmp'
-            with open(_names_tmp, 'w') as _f:
-                _json_mod.dump([str(n) for n in _these_names], _f)
-            os.replace(_names_tmp, _ckpt_names)
+            _these_names = validate_sparse_names_contract(
+                _merged,
+                all_cross_names[-_n_cols_this:],
+                expected_prefix=cross_prefix,
+            )
+            _ckpt_stem = get_crossgen_namespace(
+                symbol=symbol_tag, tf=tf, prefix=cross_prefix, run_id=run_id
+            )
+            _ckpt_npz = os.path.join(_ckpt_dir, f'{_ckpt_stem}__checkpoint.npz')
+            _ckpt_names = os.path.join(_ckpt_dir, f'{_ckpt_stem}__names.json')
+            atomic_save_npz(_merged, _ckpt_npz)
+            atomic_save_json(_these_names, _ckpt_names)
+            if not os.path.exists(_ckpt_npz):
+                raise RuntimeError(f"Checkpoint save missing after write: {_ckpt_npz}")
+            if not os.path.exists(_ckpt_names):
+                raise RuntimeError(f"Checkpoint names missing after write: {_ckpt_names}")
+            _saved_checkpoint_files.append(_ckpt_npz)
             log(f"    Checkpoint saved: {cross_prefix} ({_n_cols_this:,} features)")
             del _merged
         finally:
@@ -2935,7 +2993,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             _csr_chunks.clear()
             _pending_disk_groups.clear()
             for _td in _tmp_dirs_to_clean:
-                _shutil.rmtree(_td, ignore_errors=True)
+                cleanup_crossgen_scratch_dir(_td, run_id=run_id)
             gc.collect()
             _malloc_trim()
             log(f"    RAM freed (all chunks offloaded to disk)")
@@ -2954,15 +3012,10 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
 
     def _cleanup_checkpoints():
         """Delete all checkpoint files after successful final save."""
-        _removed = 0
-        for _f in glob.glob(os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*.npz')):
-            os.remove(_f)
-            _removed += 1
-        for _f in glob.glob(os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*_names.json')):
-            os.remove(_f)
-            _removed += 1
+        _removed = 1 if cleanup_crossgen_scratch_dir(_ckpt_dir, run_id=run_id) else 0
+        _saved_checkpoint_files.clear()
         if _removed:
-            log(f"  Cleaned up {_removed} checkpoint files")
+            log("  Cleaned up checkpoint scratch")
 
     def _collect_cross(label, names, rows_list, cols_list, data_list, n_new_cols):
         """Convert cross type results to CSR. Handles CSR-flushed, disk-backed, and legacy COO paths."""
@@ -3450,8 +3503,9 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
     t_assign = time.time()
 
     # Final assembly: stream from checkpoint files (one at a time) to bound peak RAM
-    _ckpt_files = sorted(glob.glob(os.path.join(_ckpt_dir, f'_cross_checkpoint_{tf}_*.npz')))
-    _ckpt_files = [f for f in _ckpt_files if '_names.json' not in f]
+    _ckpt_files = list(dict.fromkeys(_saved_checkpoint_files)) or sorted(
+        glob.glob(os.path.join(_ckpt_dir, '*__checkpoint.npz'))
+    )
 
     if total_crosses > 0 and (_ckpt_files or _csr_chunks):
         cross_names = all_cross_names
@@ -3508,16 +3562,10 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             cross_names = all_cross_names
 
         # Save sparse matrix + column names
-        import json
-        symbol_tag = ''
-        if hasattr(df, 'attrs') and 'symbol' in df.attrs:
-            symbol_tag = f"_{df.attrs['symbol']}"
-
-        # Per-symbol naming for modular builds
-        symbol_tag = getattr(df, '_v2_symbol', None) or ''
-        if symbol_tag:
-            npz_path = os.path.join(out_dir, f'v2_crosses_{symbol_tag}_{tf}.npz')
-            names_path = os.path.join(out_dir, f'v2_cross_names_{symbol_tag}_{tf}.json')
+        symbol_file_tag = getattr(df, '_v2_symbol', None) or ''
+        if symbol_file_tag:
+            npz_path = os.path.join(out_dir, f'v2_crosses_{symbol_file_tag}_{tf}.npz')
+            names_path = os.path.join(out_dir, f'v2_cross_names_{symbol_file_tag}_{tf}.json')
         else:
             npz_path = os.path.join(out_dir, f'v2_crosses_{tf}.npz')
             names_path = os.path.join(out_dir, f'v2_cross_names_{tf}.json')
@@ -3542,6 +3590,7 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             sparse_mat = sparse_mat[:, dedup_indices]
         else:
             cross_names = [str(n) for n in cross_names]
+        cross_names = validate_sparse_names_contract(sparse_mat, cross_names)
         if _NPZ_INDICES_ONLY:
             save_npz_indices_only(sparse_mat, npz_path)
             log(f"  Saved indices-only NPZ (no data array — all 1.0)")
@@ -3560,11 +3609,17 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
             os.remove(npz_path)
             raise
         atomic_save_json(cross_names, names_path)
+        with open(names_path, 'r', encoding='utf-8') as _fh:
+            _saved_names = _json_mod.load(_fh)
+        if len(_saved_names) != sparse_mat.shape[1]:
+            raise RuntimeError(
+                f"Final sparse/name mismatch after save: {len(_saved_names)} names vs {sparse_mat.shape[1]} cols"
+            )
 
         # FIX 14: Also save as separate .npy files for mmap loading
         # NPZ silently ignores mmap_mode — .npy enables zero-copy load
-        if symbol_tag:
-            npy_dir = os.path.join(out_dir, f'v2_crosses_{symbol_tag}_{tf}_npy')
+        if symbol_file_tag:
+            npy_dir = os.path.join(out_dir, f'v2_crosses_{symbol_file_tag}_{tf}_npy')
         else:
             npy_dir = os.path.join(out_dir, f'v2_crosses_{tf}_npy')
         try:
@@ -3608,6 +3663,11 @@ def generate_all_crosses(df, tf='1d', gpu_id=0, save_sparse=False, output_dir=No
         except Exception as e:
             log(f"  WARNING: EFB pre-bundling failed (non-fatal): {e}")
             log(f"  Training will use raw sparse + LightGBM internal EFB")
+    elif total_crosses > 0:
+        raise RuntimeError(
+            f"Cross generation produced {total_crosses:,} features but no durable sparse sources "
+            f"(checkpoints={len(_ckpt_files)}, in_memory={len(_csr_chunks)})"
+        )
 
     log(f"  Sparse build: {time.time()-t_assign:.1f}s")
 
@@ -3709,6 +3769,7 @@ if __name__ == '__main__':
 
         # Save expanded parquet
         out_path = os.path.join(V2_DIR, f'features_{args.symbol}_{tf}_v2.parquet')
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
         df.to_parquet(out_path)
         log(f"Saved: {out_path}")
 

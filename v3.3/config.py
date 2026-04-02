@@ -5,28 +5,34 @@ Multi-asset universal matrix. 2.9M+ sparse features. BTC 2010-2026.
 V3.3: LightGBM + Optuna, no 5m, institutional risk framework, pip + SCP deploy.
 """
 import os
+from path_contract import (
+    CODE_ROOT as PROJECT_DIR,
+    SHARED_DB_ROOT,
+    V1_ROOT as V1_DIR,
+    ARTIFACT_ROOT as V30_DATA_DIR,
+    artifact_path,
+    db_path,
+)
 
 # Sparse CSR NNZ overflow threshold — LightGBM PR #1719 fixed int64 indptr support
 INT32_MAX = 2_147_483_647
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-V1_DIR = os.environ.get("SAVAGE22_V1_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
 
 # ── Shared Data Directory ──
 # v3.1 reads feature parquets/npz from v3.0 to avoid duplicating ~30GB of data.
 # Training outputs (models, configs, predictions) are written to PROJECT_DIR.
-V30_DATA_DIR = os.environ.get("V30_DATA_DIR",
-    os.path.join(os.path.dirname(PROJECT_DIR), "v3.0 (LGBM)"))
+V30_DATA_DIR = V30_DATA_DIR
 
 # Pipeline manifest for checkpoint/resume
-PIPELINE_MANIFEST = os.path.join(PROJECT_DIR, "pipeline_manifest.json")
+PIPELINE_MANIFEST = artifact_path("pipeline_manifest.json")
 
 # ── Databases ──
-SAVAGE_DB = os.path.join(PROJECT_DIR, "savage22.db")
-BTC_DB = os.path.join(PROJECT_DIR, "btc_prices.db")
-MULTI_ASSET_DB = os.path.join(PROJECT_DIR, "multi_asset_prices.db")
-V2_SIGNALS_DB = os.path.join(PROJECT_DIR, "v2_signals.db")
-CHROMA_DIR = os.path.join(PROJECT_DIR, "chroma_db")
+SAVAGE_DB = db_path("savage22.db")
+BTC_DB = db_path("btc_prices.db")
+MULTI_ASSET_DB = db_path("multi_asset_prices.db")
+V2_SIGNALS_DB = db_path("v2_signals.db")
+CHROMA_DIR = os.path.join(SHARED_DB_ROOT, "chroma_db")
 
 # V1 databases (shared — tweets, news, sports, astro, etc.)
 V1_TWEETS_DB = os.path.join(V1_DIR, "tweets.db")
@@ -127,7 +133,7 @@ TF_SLIPPAGE = {
 def load_tf_allocation():
     """Load capital allocation from optimal_allocation.json or use defaults."""
     import json as _json
-    alloc_path = os.path.join(PROJECT_DIR, 'optimal_allocation.json')
+    alloc_path = artifact_path('optimal_allocation.json')
     if os.path.exists(alloc_path):
         with open(alloc_path, 'r') as f:
             return _json.load(f)
@@ -654,12 +660,15 @@ OPTUNA_WARMSTART_PHASE1_TRIALS = 15    # fewer trials needed
 OPTUNA_WARMSTART_VALIDATION_TOP_K = 2  # fewer validation runs
 
 # Row subsampling for search (final model always uses ALL rows)
+# Accuracy note:
+# These are search-speed tradeoffs only. If a timeframe needs more search fidelity,
+# set its subsample back to 1.0 and rerun Optuna for that timeframe.
 OPTUNA_TF_ROW_SUBSAMPLE = {
     '1w': 1.0,    # 1158 rows — can't subsample
     '1d': 1.0,    # 5733 rows — use all
-    '4h': 1.0,    # 23K rows — sparse fix eliminates OOM, use all data
-    '1h': 0.50,   # 75K → ~38K rows (sparse OK, subsample for speed)
-    '15m': 0.25,  # 294K → ~74K rows (sparse OK, subsample for speed)
+    '4h': 1.0,    # 23K rows — full-row search for maximum search fidelity
+    '1h': 1.0,    # 75K rows — full-row search for maximum search fidelity
+    '15m': 1.0,   # 294K rows — full-row search for maximum search fidelity
 }
 
 # Per-TF trial count overrides
@@ -791,7 +800,7 @@ WARMUP_BARS = {
 }
 
 # ── Database Paths ──
-TRADES_DB = os.path.join(PROJECT_DIR, "trades.db")
+TRADES_DB = artifact_path("trades.db")
 
 # ══════════════════════════════════════════════════════════════════════
 # TIER 1 — INSTITUTIONAL RISK FRAMEWORK (v3.1)
@@ -846,7 +855,7 @@ MODEL_VERSION_SCHEMA = {
     'fields': ['code_hash', 'model_id', 'feature_schema_version',
                'config_hash', 'training_date', 'cpcv_oos_sharpe',
                'optuna_best_trial', 'n_features', 'n_training_rows'],
-    'version_file': os.path.join(PROJECT_DIR, 'model_version.json'),
+    'version_file': artifact_path('model_version.json'),
 }
 
 # ── Promotion Pipeline ──

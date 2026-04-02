@@ -23,6 +23,13 @@ import argparse
 import logging
 import multiprocessing
 import warnings
+from path_contract import (
+    ARTIFACT_ROOT,
+    CODE_ROOT,
+    SHARED_DB_ROOT,
+    artifact_path,
+    ensure_runtime_dirs,
+)
 
 try:
     from hardware_detect import get_cpu_count, get_available_ram_gb
@@ -52,9 +59,10 @@ try:
 except ImportError:
     pass
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-os.environ.setdefault('SAVAGE22_DB_DIR', PROJECT_DIR)
+PROJECT_DIR = CODE_ROOT
+os.environ.setdefault('SAVAGE22_DB_DIR', SHARED_DB_ROOT)
 os.environ.setdefault('SKIP_LLM', '1')
+ensure_runtime_dirs()
 
 import optuna
 from optuna.pruners import MedianPruner
@@ -103,7 +111,8 @@ from config import (
 )
 from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
 from multi_gpu_optuna import (
-    get_multi_gpu_config, apply_gpu_params, create_gpu_safe_sampler,
+    get_multi_gpu_config, apply_gpu_params, assign_trial_to_gpu,
+    claim_gpu_slot, release_gpu_slot, create_gpu_safe_sampler,
     gpu_oom_handler, get_gpu_trial_summary, clear_gpu_trial_map, MultiGPUConfig,
     _detect_lgbm_device_type,
 )
@@ -116,13 +125,87 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(os.path.join(PROJECT_DIR, 'optuna_search.log'), mode='a'),
+        logging.FileHandler(artifact_path('optuna_search.log'), mode='a'),
     ],
 )
 log = logging.getLogger(__name__)
 
-DB_DIR = os.environ.get('SAVAGE22_DB_DIR', PROJECT_DIR)
+ARTIFACT_DIR = ARTIFACT_ROOT
+SHARED_INPUT_DIR = SHARED_DB_ROOT
+DB_DIR = ARTIFACT_DIR
 TF_ORDER = ['1w', '1d', '4h', '1h', '15m']
+_LOWER_TF_PARALLEL = frozenset({'4h', '1h', '15m'})
+
+
+def _existing_paths(*paths):
+    seen = set()
+    ordered = []
+    for path in paths:
+        if not path:
+            continue
+        norm = os.path.normcase(os.path.abspath(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ordered.append(path)
+    return ordered
+
+
+def _first_existing_path(*paths):
+    for path in _existing_paths(*paths):
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _artifact_output_path(name):
+    return artifact_path(name)
+
+
+def _artifact_input_candidates(*names):
+    candidates = []
+    for name in names:
+        candidates.extend([
+            artifact_path(name),
+            os.path.join(ARTIFACT_DIR, name),
+            os.path.join(SHARED_INPUT_DIR, name),
+            os.path.join(V30_DATA_DIR, name),
+            os.path.join(PROJECT_DIR, name),
+            name,
+        ])
+    return _existing_paths(*candidates)
+
+
+def _is_large_machine_profile(total_cores, gpu_cfg):
+    return (
+        int(total_cores or 0) >= 256
+        and bool(getattr(gpu_cfg, 'enabled', False))
+        and int(getattr(gpu_cfg, 'num_gpus', 0) or 0) >= 8
+    )
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        log.warning(f"  Invalid {name}={os.environ.get(name)!r} — using default {default}")
+        return default
+
+
+FINAL_RETRAIN_PARALLEL_POLICY = os.environ.get(
+    'OPTUNA_FINAL_RETRAIN_PARALLEL_POLICY',
+    os.environ.get('FINAL_RETRAIN_PARALLEL_POLICY', 'auto'),
+).strip().lower()
+FINAL_RETRAIN_PARALLEL_MIN_ROWS = _env_int(
+    'OPTUNA_FINAL_RETRAIN_MIN_ROWS_FOR_PARALLEL',
+    _env_int('FINAL_RETRAIN_PARALLEL_MIN_ROWS', 512),
+)
+FINAL_RETRAIN_MAX_PARALLEL_FOLDS = _env_int(
+    'OPTUNA_FINAL_RETRAIN_MAX_PARALLEL_FOLDS',
+    0,
+)
+OPTUNA_SKIP_FINAL_RETRAIN = os.environ.get('OPTUNA_SKIP_FINAL_RETRAIN', '0') == '1'
+OPTUNA_MULTI_GPU_SEARCH = os.environ.get('OPTUNA_MULTI_GPU_SEARCH', '0') == '1'
 
 
 # ============================================================
@@ -174,6 +257,63 @@ def _detect_n_gpus():
     except Exception:
         pass
     return 1
+
+
+def _detect_n_gpus_with_context():
+    """Detect GPU count and retain the exact decision path for logging."""
+    context = {
+        'multi_gpu_env': os.environ.get('MULTI_GPU', '<unset>'),
+        'cpcv_parallel_gpus_override': CPCV_PARALLEL_GPUS,
+        'has_external_csr': hasattr(lgb.Booster, 'set_external_csr'),
+        'detection_source': '',
+        'reason': '',
+        'visible_gpus': 0,
+    }
+
+    if context['multi_gpu_env'] == '0':
+        context['detection_source'] = 'env'
+        context['reason'] = 'MULTI_GPU=0 disables multi-GPU final retrain'
+        return 0, context
+
+    if not context['has_external_csr']:
+        context['detection_source'] = 'lightgbm_capability'
+        context['reason'] = 'set_external_csr unavailable; using non-parallel-compatible LightGBM path'
+        return 0, context
+
+    if context['cpcv_parallel_gpus_override'] > 0:
+        context['detection_source'] = 'config_override'
+        context['visible_gpus'] = context['cpcv_parallel_gpus_override']
+        context['reason'] = f"CPCV_PARALLEL_GPUS override -> {context['visible_gpus']}"
+        return context['visible_gpus'], context
+
+    try:
+        import subprocess as _sp
+        _nv = _sp.run(['nvidia-smi', '-L'], capture_output=True, text=True, timeout=5)
+        if _nv.returncode == 0 and _nv.stdout.strip():
+            context['detection_source'] = 'nvidia-smi'
+            context['visible_gpus'] = _nv.stdout.strip().count('\n') + 1
+            context['reason'] = f"nvidia-smi detected {context['visible_gpus']} GPU(s)"
+            return context['visible_gpus'], context
+        context['detection_source'] = 'nvidia-smi'
+        context['reason'] = f"nvidia-smi returned code {_nv.returncode}; falling back to 1 visible GPU"
+    except Exception as e:
+        context['detection_source'] = 'nvidia-smi_exception'
+        context['reason'] = f"nvidia-smi probe failed ({type(e).__name__}); falling back to 1 visible GPU"
+
+    context['visible_gpus'] = 1
+    return 1, context
+
+
+def _split_cost(split):
+    train_rel, test_rel = split
+    return len(train_rel) + len(test_rel)
+
+
+def _ordered_parallel_splits(splits):
+    """Schedule the heaviest folds first so large machines stay busy longer."""
+    indexed = list(enumerate(splits))
+    indexed.sort(key=lambda item: _split_cost(item[1]), reverse=True)
+    return indexed
 
 
 def _generate_cpcv_splits(n_samples, n_groups=6, n_test_groups=2,
@@ -308,15 +448,15 @@ def _apply_binary_mode(params, tf_name):
 def load_tf_data(tf_name):
     """Load features + crosses + labels for a timeframe. Returns (X_all, y, sample_weights, feature_cols, is_sparse)."""
     # Find parquet
-    parquet_path = os.path.join(DB_DIR, f'features_{tf_name}.parquet')
-    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
-    v30_parquet = os.path.join(V30_DATA_DIR, f'features_BTC_{tf_name}.parquet')
-
-    for p in [parquet_path, v2_parquet, v30_parquet]:
-        if os.path.exists(p):
-            parquet_path = p
-            break
-    else:
+    parquet_path = _first_existing_path(
+        artifact_path(f'features_{tf_name}.parquet'),
+        os.path.join(DB_DIR, f'features_{tf_name}.parquet'),
+        os.path.join(PROJECT_DIR, f'features_{tf_name}.parquet'),
+        artifact_path(f'features_BTC_{tf_name}.parquet'),
+        os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet'),
+        os.path.join(V30_DATA_DIR, f'features_BTC_{tf_name}.parquet'),
+    )
+    if parquet_path is None:
         raise FileNotFoundError(f"No feature parquet found for {tf_name}")
 
     df = pd.read_parquet(parquet_path)
@@ -375,16 +515,16 @@ def load_tf_data(tf_name):
     # Load sparse crosses — prefer .npy memmap (zero-copy) over NPZ (full RAM load)
     cross_matrix = None
     cross_cols = None
-    npy_dir = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy')
-    if not os.path.isdir(npy_dir):
-        npy_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy')
-        if os.path.isdir(npy_v30):
-            npy_dir = npy_v30
-    npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
-    if not os.path.exists(npz_path):
-        npz_v30 = os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz')
-        if os.path.exists(npz_v30):
-            npz_path = npz_v30
+    npy_dir = _first_existing_path(
+        artifact_path(f'v2_crosses_BTC_{tf_name}_npy'),
+        os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+        os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+    ) or os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy')
+    npz_path = _first_existing_path(
+        artifact_path(f'v2_crosses_BTC_{tf_name}.npz'),
+        os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+        os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+    ) or os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
 
     _loaded_from_npy = False
     if os.path.isdir(npy_dir) and os.path.exists(os.path.join(npy_dir, 'indptr.npy')):
@@ -400,7 +540,7 @@ def load_tf_data(tf_name):
                     f"FATAL: cross_matrix column index > int32 max")
                 cross_matrix.indices = cross_matrix.indices.astype(np.int32)
             # Load column names (same logic as NPZ path)
-            for cols_dir in [DB_DIR, V30_DATA_DIR]:
+            for cols_dir in [ARTIFACT_ROOT, DB_DIR, V30_DATA_DIR]:
                 cols_path = os.path.join(cols_dir, f'v2_cross_names_BTC_{tf_name}.json')
                 if os.path.exists(cols_path):
                     with open(cols_path) as f:
@@ -431,7 +571,7 @@ def load_tf_data(tf_name):
             _basename = os.path.basename(npz_path)
             _parts = _basename.replace('v2_crosses_', '').replace('.npz', '').rsplit('_', 1)
             _sym, _tfn = (_parts[0], _parts[1]) if len(_parts) == 2 else ('BTC', tf_name)
-            for cols_dir in [DB_DIR, V30_DATA_DIR]:
+            for cols_dir in [ARTIFACT_ROOT, DB_DIR, V30_DATA_DIR]:
                 cols_path = os.path.join(cols_dir, f'v2_cross_names_{_sym}_{_tfn}.json')
                 if os.path.exists(cols_path):
                     with open(cols_path) as f:
@@ -639,6 +779,8 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
 
     def _objective_inner(trial):
         trial_start = time.time()
+        _reserved_gpu_id = None
+        _assigned_gpu_id = None
         _tf_mdil = TF_MIN_DATA_IN_LEAF.get(tf_name, 3)
         _tf_nl_cap = TF_NUM_LEAVES.get(tf_name, 63)
 
@@ -703,28 +845,33 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
             params.pop('force_col_wise', None)
 
         # Multi-GPU: assign trial to a GPU via round-robin
-        if gpu_cfg is not None and gpu_cfg.enabled:
-            apply_gpu_params(params, trial.number, gpu_cfg)
-            n_gpus = gpu_cfg.num_gpus
-        else:
-            n_gpus = int(os.environ.get('LGBM_NUM_GPUS', '0'))
-            if n_gpus > 0:
-                params['device_type'] = _detect_lgbm_device_type()
-                params['gpu_device_id'] = trial.number % n_gpus
-                params['gpu_use_dp'] = False  # FP32 histograms: 15-20x faster on consumer GPUs
-                params['histogram_pool_size'] = 1024
-                params.pop('force_col_wise', None)
-                params.pop('force_row_wise', None)
-                params.pop('device', None)
-        # T-3 FIX: Dict class weights are folded into sample_weights in load_tf_data().
-        # Only set is_unbalance for 'balanced' TFs (no current TF uses this).
-        if TF_CLASS_WEIGHT.get(tf_name) == 'balanced':
-            params['is_unbalance'] = True
-
-        fold_scores = []
-        fold_sortinos = []
-
         try:
+            if gpu_cfg is not None and gpu_cfg.enabled:
+                _reserved_gpu_id, _gpu_name = claim_gpu_slot(gpu_cfg)
+                assign_trial_to_gpu(params, trial.number, gpu_cfg, gpu_id=_reserved_gpu_id)
+                _assigned_gpu_id = params.get('gpu_device_id')
+                n_gpus = gpu_cfg.num_gpus
+                log.info(f"  Trial #{trial.number} reserved GPU {_assigned_gpu_id} ({_gpu_name}) for {tf_name}")
+            else:
+                n_gpus = int(os.environ.get('LGBM_NUM_GPUS', '0'))
+                if n_gpus > 0:
+                    params['device_type'] = _detect_lgbm_device_type()
+                    params['gpu_device_id'] = trial.number % n_gpus
+                    params['gpu_use_dp'] = False  # FP32 histograms: 15-20x faster on consumer GPUs
+                    params['histogram_pool_size'] = 1024
+                    params.pop('force_col_wise', None)
+                    params.pop('force_row_wise', None)
+                    params.pop('device', None)
+                    _assigned_gpu_id = params.get('gpu_device_id')
+
+            # T-3 FIX: Dict class weights are folded into sample_weights in load_tf_data().
+            # Only set is_unbalance for 'balanced' TFs (no current TF uses this).
+            if TF_CLASS_WEIGHT.get(tf_name) == 'balanced':
+                params['is_unbalance'] = True
+
+            fold_scores = []
+            fold_sortinos = []
+
             for fold_i, fold in enumerate(fold_data):
                 X_test = fold['X_test']
                 y_test = fold['y_test']
@@ -743,7 +890,9 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                     gpu_params.pop('force_row_wise', None)
                     gpu_params.pop('device', None)
                     gpu_params['histogram_pool_size'] = 1024
-                    if n_gpus > 0:
+                    if _assigned_gpu_id is not None:
+                        gpu_params['gpu_device_id'] = _assigned_gpu_id
+                    elif n_gpus > 0:
                         gpu_params['gpu_device_id'] = trial.number % n_gpus
 
                     dtrain.construct()
@@ -778,7 +927,9 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
                     gpu_params.pop('force_row_wise', None)
                     gpu_params.pop('device', None)
                     gpu_params['histogram_pool_size'] = 1024
-                    if n_gpus > 0:
+                    if _assigned_gpu_id is not None:
+                        gpu_params['gpu_device_id'] = _assigned_gpu_id
+                    elif n_gpus > 0:
                         gpu_params['gpu_device_id'] = trial.number % n_gpus
 
                     _train_kwargs = dict(
@@ -861,6 +1012,9 @@ def build_phase1_objective(X_all, y, sample_weights, feature_cols, is_sparse, tf
             log.warning(f"  Trial {trial.number} objective error (returning inf): "
                         f"{type(_obj_err).__name__}: {_obj_err}")
             return float('inf')
+        finally:
+            if _reserved_gpu_id is not None and gpu_cfg is not None and gpu_cfg.enabled:
+                release_gpu_slot(gpu_cfg, _reserved_gpu_id)
 
         if not fold_scores:
             return float('inf')
@@ -1010,7 +1164,7 @@ def _run_single_validation_fold(fold_i, train_rel, test_rel, valid_indices, X_al
 
 
 def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
-                    max_hold, parent_ds, use_gpu=False, n_val_workers=1):
+                    max_hold, parent_ds, use_gpu=False, n_val_workers=1, gpu_cfg=None):
     """Validate a single config with 4-fold CPCV, 200 rounds, LR=0.08.
 
     Folds are distributed across GPUs when n_gpus > 1 (round-robin by fold_i).
@@ -1055,7 +1209,10 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
     params['max_bin'] = 7  # LOCKED — binary features need 2 bins, 4-tier needs ~5
 
     # Detect GPU count for per-fold distribution
-    n_gpus = _detect_n_gpus()
+    if gpu_cfg is not None and getattr(gpu_cfg, 'enabled', False):
+        n_gpus = int(getattr(gpu_cfg, 'num_gpus', 0) or 0)
+    else:
+        n_gpus = _detect_n_gpus()
     n_parallel = max(1, n_gpus) if n_gpus > 1 else 1
 
     fold_scores = []
@@ -1065,8 +1222,9 @@ def validate_config(params_dict, X_all, y, sample_weights, is_sparse, tf_name,
         from concurrent.futures import ThreadPoolExecutor
         log.info(f"      Distributing {len(splits)} validation folds across {n_gpus} GPUs")
         futures = {}
+        ordered_splits = _ordered_parallel_splits(splits)
         with ThreadPoolExecutor(max_workers=n_parallel) as pool:
-            for fold_i, (train_rel, test_rel) in enumerate(splits):
+            for fold_i, (train_rel, test_rel) in ordered_splits:
                 fut = pool.submit(
                     _run_single_validation_fold,
                     fold_i, train_rel, test_rel, valid_indices, X_all, y,
@@ -1124,8 +1282,13 @@ def load_warmstart_params(tf_name):
     if parent_tf is None:
         return None, None
 
-    parent_config_path = os.path.join(PROJECT_DIR, f'optuna_configs_{parent_tf}.json')
-    if not os.path.exists(parent_config_path):
+    parent_config_path = _first_existing_path(
+        artifact_path(f'optuna_configs_{parent_tf}.json'),
+        os.path.join(DB_DIR, f'optuna_configs_{parent_tf}.json'),
+        os.path.join(V30_DATA_DIR, f'optuna_configs_{parent_tf}.json'),
+        os.path.join(PROJECT_DIR, f'optuna_configs_{parent_tf}.json'),
+    )
+    if parent_config_path is None:
         return None, None
 
     with open(parent_config_path) as f:
@@ -1173,7 +1336,7 @@ def build_default_enqueue_params(tf_name):
         'min_data_in_leaf': _tf_mdil,
         'feature_fraction': V3_LGBM_PARAMS.get('feature_fraction', 0.9),
         'feature_fraction_bynode': V3_LGBM_PARAMS.get('feature_fraction_bynode', 0.8),
-        'bagging_fraction': V3_LGBM_PARAMS.get('bagging_fraction', 0.8),
+        'bagging_fraction': V3_LGBM_PARAMS.get('bagging_fraction', 0.95),
         'lambda_l1': V3_LGBM_PARAMS.get('lambda_l1', 0.5),
         'lambda_l2': V3_LGBM_PARAMS.get('lambda_l2', 3.0),
         'min_gain_to_split': V3_LGBM_PARAMS.get('min_gain_to_split', 2.0),
@@ -1191,7 +1354,7 @@ def build_default_enqueue_params(tf_name):
 # ============================================================
 def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
                            params, is_sparse, use_gpu, parent_ds, _final_rounds,
-                           n_gpus, n_total_folds):
+                           n_gpus, n_total_folds, gpu_cfg=None, threads_per_fold=None):
     """Worker: train one final CPCV fold. Returns dict with fold results."""
     import gc
 
@@ -1218,15 +1381,21 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
 
     # FIX #5: Assign each fold to a different GPU (round-robin)
     fold_params = params.copy()
-    if n_gpus > 1:
+    if threads_per_fold is not None:
+        fold_params['num_threads'] = threads_per_fold
+    elif n_gpus > 1:
         fold_params['num_threads'] = max(1, (get_cpu_count() or 8) // n_gpus)
     best_iter = None
+
+    _device_type = _detect_lgbm_device_type()
+    if gpu_cfg is not None and getattr(gpu_cfg, 'device_type', 'cpu') != 'cpu':
+        _device_type = gpu_cfg.device_type
 
     if use_gpu and is_sparse and _HAS_GPU_FORK:
         # GPU fork path — cuda_sparse with set_external_csr
         _gpu_train_data = X_all[valid_indices[parent_train_idx[:-val_size]]]
         gpu_params = fold_params.copy()
-        gpu_params['device_type'] = _detect_lgbm_device_type()
+        gpu_params['device_type'] = _device_type
         gpu_params['gpu_use_dp'] = False
         gpu_params.pop('force_col_wise', None)
         gpu_params.pop('force_row_wise', None)
@@ -1263,7 +1432,7 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
     elif (use_gpu or n_gpus > 0) and is_sparse:
         # Standard LightGBM GPU (OpenCL) — fork not available or multi-GPU
         gpu_params = fold_params.copy()
-        gpu_params['device_type'] = _detect_lgbm_device_type()
+        gpu_params['device_type'] = _device_type
         gpu_params['gpu_use_dp'] = False
         if n_gpus > 1:
             gpu_params['tree_learner'] = 'voting'
@@ -1332,7 +1501,8 @@ def _run_single_final_fold(fold_i, train_rel, test_rel, valid_indices, X_all, y,
 
 
 def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
-                  tf_name, max_hold, best_params, use_gpu=False, parent_ds=None):
+                  tf_name, max_hold, best_params, use_gpu=False, parent_ds=None,
+                  gpu_cfg=None):
     """Retrain with best params using full CPCV + full rounds + final LR.
 
     FIX #5: Folds run in parallel across all available GPUs (or CPU threads).
@@ -1373,20 +1543,132 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         if k in best_params:
             params[k] = best_params[k]
 
-    # Detect GPU count for parallel fold distribution
-    n_gpus = _detect_n_gpus()
-    # Parallelize when: multiple GPUs available AND enough data (>2000 rows).
-    # Small datasets (e.g. 1w) train so fast that thread overhead dominates.
-    _use_parallel = n_gpus > 1 and n_valid > 2000
+    # Reuse the same GPU config object Optuna trusted when available so final
+    # retrain does not silently make a different hardware decision.
+    _gpu_context = {
+        'multi_gpu_env': os.environ.get('MULTI_GPU', '<unset>'),
+        'cpcv_parallel_gpus_override': CPCV_PARALLEL_GPUS,
+        'has_external_csr': hasattr(lgb.Booster, 'set_external_csr'),
+        'detection_source': 'shared gpu_cfg',
+        'reason': 'shared gpu_cfg enabled',
+        'visible_gpus': 0,
+    }
+
+    if gpu_cfg is not None and getattr(gpu_cfg, 'enabled', False):
+        n_gpus = int(getattr(gpu_cfg, 'num_gpus', 0) or 0)
+        _gpu_source = 'shared gpu_cfg'
+        _gpu_context['visible_gpus'] = n_gpus
+        _gpu_context['reason'] = f"shared gpu_cfg enabled with {n_gpus} GPU(s)"
+    elif gpu_cfg is not None and int(getattr(gpu_cfg, 'num_gpus', 0) or 0) > 0:
+        n_gpus = 1
+        _gpu_source = 'shared gpu_cfg (parallel disabled)'
+        _gpu_context['visible_gpus'] = int(getattr(gpu_cfg, 'num_gpus', 0) or 0)
+        _gpu_context['reason'] = (
+            f"shared gpu_cfg saw {_gpu_context['visible_gpus']} GPU(s) but parallel mode is disabled there"
+        )
+    else:
+        n_gpus, _gpu_context = _detect_n_gpus_with_context()
+        _gpu_source = 'local detector'
+
+    # Preserve current default policy, but make the threshold explicit and easy
+    # to tune after owner approval.
+    _parallel_policy = FINAL_RETRAIN_PARALLEL_POLICY
+    if _parallel_policy not in {'auto', 'parallel', 'sequential'}:
+        log.warning(f"  Invalid FINAL_RETRAIN_PARALLEL_POLICY={_parallel_policy!r} — using 'auto'")
+        _parallel_policy = 'auto'
+
+    _parallel_min_rows = FINAL_RETRAIN_PARALLEL_MIN_ROWS
+    _max_candidate_parallel = min(max(1, n_gpus), len(splits))
+    if FINAL_RETRAIN_MAX_PARALLEL_FOLDS > 0:
+        _max_candidate_parallel = min(_max_candidate_parallel, FINAL_RETRAIN_MAX_PARALLEL_FOLDS)
+    _total_cores = get_cpu_count() or 8
+    _threads_if_parallel = max(1, _total_cores // max(1, _max_candidate_parallel))
+    _machine_parallel_ok = _threads_if_parallel >= 8 or _total_cores >= 24
+    _n_features = 0
+    if parent_ds is not None:
+        try:
+            _n_features = int(parent_ds.num_feature())
+        except Exception:
+            _n_features = 0
+    if _n_features <= 0 and hasattr(X_all, 'shape'):
+        _n_features = int(X_all.shape[1])
+    _small_dataset_gpu_ok = (
+        n_gpus > 1
+        and is_sparse
+        and _gpu_context['has_external_csr']
+        and n_valid >= min(_parallel_min_rows, 512)
+        and _machine_parallel_ok
+    )
+    _wide_sparse_gpu_ok = (
+        n_gpus > 1
+        and is_sparse
+        and _gpu_context['has_external_csr']
+        and _machine_parallel_ok
+        and _n_features >= 100_000
+        and n_valid >= max(256, min(_parallel_min_rows, 512) // 2)
+    )
+    _large_machine_lower_tf_ok = (
+        tf_name in _LOWER_TF_PARALLEL
+        and n_gpus >= 4
+        and _total_cores >= 64
+        and is_sparse
+        and _gpu_context['has_external_csr']
+        and _n_features >= 100_000
+        and n_valid >= 128
+    )
+    _auto_parallel = n_gpus > 1 and (
+        n_valid > _parallel_min_rows
+        or _small_dataset_gpu_ok
+        or _wide_sparse_gpu_ok
+        or _large_machine_lower_tf_ok
+    )
+    if _parallel_policy == 'parallel':
+        _use_parallel = n_gpus > 1
+    elif _parallel_policy == 'sequential':
+        _use_parallel = False
+    else:
+        _use_parallel = _auto_parallel
+
     n_parallel = min(n_gpus, len(splits)) if _use_parallel else 1
+    if FINAL_RETRAIN_MAX_PARALLEL_FOLDS > 0:
+        n_parallel = min(n_parallel, FINAL_RETRAIN_MAX_PARALLEL_FOLDS) if _use_parallel else 1
+    log.info(f"  FINAL RETRAIN DECISION: gpu_source={_gpu_source}, "
+             f"visible_gpus={n_gpus}, n_valid={n_valid}, "
+             f"n_features={_n_features}, "
+             f"parallel_min_rows={_parallel_min_rows}, use_gpu={use_gpu}, "
+             f"policy={_parallel_policy}, "
+             f"max_parallel_folds={'auto' if FINAL_RETRAIN_MAX_PARALLEL_FOLDS <= 0 else FINAL_RETRAIN_MAX_PARALLEL_FOLDS}, "
+             f"multi_gpu_env={_gpu_context['multi_gpu_env']}, "
+             f"cpcv_parallel_gpus_override={_gpu_context['cpcv_parallel_gpus_override']}, "
+             f"has_external_csr={_gpu_context['has_external_csr']}, "
+             f"detection_source={_gpu_context['detection_source']}")
     if _use_parallel:
         # Partition CPU threads across concurrent folds so they don't over-subscribe
         _threads_per_fold = max(1, (get_cpu_count() or 8) // n_parallel)
         params['num_threads'] = _threads_per_fold
+        if _parallel_policy == 'auto' and n_valid <= _parallel_min_rows:
+            if _large_machine_lower_tf_ok:
+                _parallel_reason = ("large-machine lower-TF path: sparse workload is approved for full overlap "
+                                    f"({tf_name}, {n_gpus} GPUs, {_total_cores} cores, {_n_features:,} features)")
+            elif _wide_sparse_gpu_ok:
+                _parallel_reason = ("machine-aware exception: wide sparse workload justifies overlap "
+                                    f"({_n_features:,} features, {_total_cores} cores, {_threads_per_fold} threads/fold)")
+            else:
+                _parallel_reason = ("machine-aware exception: small dataset, but multi-GPU sparse path "
+                                    f"is viable on this box ({_total_cores} cores, {_threads_per_fold} threads/fold)")
+        else:
+            _parallel_reason = f"dataset passed threshold; {_gpu_context['reason']}"
         log.info(f"  PARALLEL FINAL RETRAIN: {len(splits)} folds across {n_gpus} GPUs "
-                 f"({n_parallel} concurrent, {_threads_per_fold} threads/fold)")
+                 f"({n_parallel} concurrent, {_threads_per_fold} threads/fold) "
+                 f"[reason: {_parallel_reason}]")
     else:
-        _reason = "single GPU" if n_gpus <= 1 else f"small dataset ({n_valid} rows <= 2000)"
+        _threads_per_fold = max(1, params.get('num_threads', 0) or (get_cpu_count() or 8))
+        if _parallel_policy == 'sequential':
+            _reason = "policy override"
+        elif n_gpus <= 1:
+            _reason = f"GPU visibility/policy path -> {_gpu_context['reason']}"
+        else:
+            _reason = f"dataset threshold policy ({n_valid} rows <= {_parallel_min_rows})"
         log.info(f"  SEQUENTIAL FINAL RETRAIN: {len(splits)} folds ({_reason})")
 
     oos_predictions = []
@@ -1402,13 +1684,14 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         # GPU assignment is handled by gpu_device_id = fold_i % n_gpus in each fold.
         from concurrent.futures import ThreadPoolExecutor, as_completed
         futures = {}
+        indexed_splits = _ordered_parallel_splits(splits)
         with ThreadPoolExecutor(max_workers=n_parallel) as pool:
-            for fold_i, (train_rel, test_rel) in enumerate(splits):
+            for fold_i, (train_rel, test_rel) in indexed_splits:
                 fut = pool.submit(
                     _run_single_final_fold,
                     fold_i, train_rel, test_rel, valid_indices, X_all, y,
                     params, is_sparse, use_gpu, parent_ds, _final_rounds,
-                    n_gpus, len(splits),
+                    n_gpus, len(splits), gpu_cfg, _threads_per_fold,
                 )
                 futures[fut] = fold_i
 
@@ -1437,7 +1720,7 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
             result = _run_single_final_fold(
                 fold_i, train_rel, test_rel, valid_indices, X_all, y,
                 params, is_sparse, use_gpu, parent_ds, _final_rounds,
-                n_gpus, len(splits),
+                n_gpus, len(splits), gpu_cfg, _threads_per_fold,
             )
             if result is None:
                 continue
@@ -1454,6 +1737,17 @@ def final_retrain(X_all, y, sample_weights, feature_cols, is_sparse,
         'mean_accuracy': float(np.mean(fold_accs)) if fold_accs else 0,
         'mean_sortino': float(np.mean(fold_sortinos)) if fold_sortinos else 0,
         'n_folds': len(fold_accs),
+        'parallel_policy': {
+            'requested': _parallel_policy,
+            'effective_parallel': bool(_use_parallel),
+            'detected_gpus': int(n_gpus),
+            'parallel_folds': int(n_parallel),
+            'threads_per_fold': int(_threads_per_fold),
+            'min_rows_for_parallel': int(_parallel_min_rows),
+            'max_parallel_folds': int(FINAL_RETRAIN_MAX_PARALLEL_FOLDS),
+            'gpu_cfg_enabled': bool(getattr(gpu_cfg, 'enabled', False)),
+            'gpu_device_type': getattr(gpu_cfg, 'device_type', 'cpu'),
+        },
     }
 
 
@@ -1555,7 +1849,7 @@ def _parallel_dataset_construct(X_csr, y, sample_weights=None, n_workers=None):
 # ============================================================
 # MAIN SEARCH FOR ONE TF
 # ============================================================
-def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
+def run_search_for_tf(tf_name, n_jobs=1, warmstart=True, search_only=False):
     """Run Phase 1 + Validation Gate + Final Retrain for one timeframe.
 
     Args:
@@ -1597,13 +1891,20 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         except Exception as e:
             log.warning(f"  GPU fork detection failed: {e}")
 
-    if gpu_cfg.enabled and gpu_cfg.num_gpus > 0:
-        search_use_gpu = False  # GPU handled via apply_gpu_params in objective
+    search_gpu_cfg = MultiGPUConfig()
+    if gpu_cfg.enabled and gpu_cfg.num_gpus > 0 and tf_name in _LOWER_TF_PARALLEL and OPTUNA_MULTI_GPU_SEARCH:
+        search_gpu_cfg = gpu_cfg
+        search_use_gpu = False  # GPU handled via explicit reservation in objective
         final_use_gpu = False   # Same — handled via gpu_cfg
         # Override n_jobs to match GPU count for trial-level parallelism
         n_jobs = gpu_cfg.n_jobs
-        log.info(f"  MULTI-GPU MODE: {gpu_cfg.num_gpus} GPUs, {n_jobs} parallel trials, "
+        log.info(f"  LOWER-TF MULTI-GPU SEARCH MODE: {gpu_cfg.num_gpus} GPUs, {n_jobs} parallel trials, "
                  f"device={gpu_cfg.device_type}, {gpu_cfg.threads_per_trial} threads/trial")
+    elif gpu_cfg.enabled and gpu_cfg.num_gpus > 0:
+        search_use_gpu = False
+        final_use_gpu = False
+        _reason = "OPTUNA_MULTI_GPU_SEARCH=0" if tf_name in _LOWER_TF_PARALLEL else f"{tf_name} is not in lower-TF GPU-search set"
+        log.info(f"  GPU box detected, but {tf_name} search stays CPU/host-driven to avoid OOM-sensitive GPU search ({_reason})")
     elif gpu_available:
         search_use_gpu = False  # GPU fork for final only
         final_use_gpu = True
@@ -1650,7 +1951,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         sys.exit(1)
 
     valid_mask = ~np.isnan(y)
-    bin_path = os.path.join(PROJECT_DIR, f'lgbm_dataset_{tf_name}.bin')
+    bin_path = artifact_path(f'lgbm_dataset_{tf_name}.bin')
 
     # T-3 FIX: If this TF has explicit dict class weights (folded into sample_weights
     # by load_tf_data), any existing binary Dataset was built WITHOUT those weights.
@@ -1670,7 +1971,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         _stale_sources = []
         for _src_pattern in [f'features_{tf_name}.parquet', f'features_BTC_{tf_name}.parquet',
                              f'v2_crosses_BTC_{tf_name}.npz']:
-            for _src_dir in [DB_DIR, V30_DATA_DIR]:
+            for _src_dir in [ARTIFACT_ROOT, DB_DIR, V30_DATA_DIR]:
                 _src_path = os.path.join(_src_dir, _src_pattern)
                 if os.path.exists(_src_path) and os.path.getmtime(_src_path) > bin_mtime:
                     _stale_sources.append(_src_pattern)
@@ -1847,7 +2148,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         max_hold, parent_ds=_parent_ds,
         row_subsample=row_subsample,
         use_gpu=search_use_gpu,
-        gpu_cfg=gpu_cfg if gpu_cfg.enabled else None,
+        gpu_cfg=search_gpu_cfg if search_gpu_cfg.enabled else None,
         actual_n_jobs=n_jobs,
     )
 
@@ -1994,6 +2295,11 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
     # Each validation uses num_threads=0 (full cores), so we cap workers to avoid
     # oversubscription: max 2 concurrent validations (each gets half the cores).
     _val_max_workers = min(len(top_trials), max(1, n_jobs))
+    _gpu_validation_trials = bool(search_gpu_cfg.enabled and tf_name in _LOWER_TF_PARALLEL)
+    if _gpu_validation_trials:
+        _val_max_workers = 1
+        log.info(f"    Validation GPU mode: serialize top-{validation_top_k} trials so each trial can use all {search_gpu_cfg.num_gpus} GPUs")
+
     if _val_max_workers > 1:
         log.info(f"    Parallel validation: {_val_max_workers} workers")
         from concurrent.futures import ThreadPoolExecutor
@@ -2005,7 +2311,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
                     validate_config,
                     trial.params, X_all, y, sample_weights, is_sparse, tf_name,
                     max_hold, parent_ds=_parent_ds, use_gpu=search_use_gpu,
-                    n_val_workers=_val_max_workers,
+                    n_val_workers=_val_max_workers, gpu_cfg=search_gpu_cfg if search_gpu_cfg.enabled else None,
                 )
                 _val_futures[fut] = trial
 
@@ -2029,6 +2335,7 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
             val_score = validate_config(
                 trial.params, X_all, y, sample_weights, is_sparse, tf_name,
                 max_hold, parent_ds=_parent_ds, use_gpu=search_use_gpu,
+                gpu_cfg=search_gpu_cfg if search_gpu_cfg.enabled else None,
             )
             val_results.append({
                 'trial_number': trial.number,
@@ -2051,36 +2358,61 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
     # FINAL RETRAIN with best config
     # ═══════════════════════════════════════════════════════════
     _tf_final_rounds = OPTUNA_TF_FINAL_ROUNDS.get(tf_name, OPTUNA_FINAL_ROUNDS)
-    log.info(f"\n  FINAL RETRAIN: best params with lr={OPTUNA_FINAL_LR}, rounds={_tf_final_rounds}")
-    final_start = time.time()
+    final_elapsed = 0.0
+    if OPTUNA_SKIP_FINAL_RETRAIN or search_only:
+        _skip_reason = '--search-only' if search_only else 'OPTUNA_SKIP_FINAL_RETRAIN=1'
+        log.info(f"\n  FINAL RETRAIN: skipped by {_skip_reason} "
+                 f"(launcher runs production retrain separately)")
+        final_result = {
+            'best_model': None,
+            'oos_predictions': [],
+            'mean_accuracy': None,
+            'mean_sortino': None,
+            'n_folds': 0,
+            'parallel_policy': {
+                'requested': FINAL_RETRAIN_PARALLEL_POLICY,
+                'effective_parallel': False,
+                'detected_gpus': int(getattr(gpu_cfg, 'num_gpus', 0) or 0),
+                'parallel_folds': 0,
+                'threads_per_fold': 0,
+                'min_rows_for_parallel': int(FINAL_RETRAIN_PARALLEL_MIN_ROWS),
+                'max_parallel_folds': int(FINAL_RETRAIN_MAX_PARALLEL_FOLDS),
+                'gpu_cfg_enabled': bool(getattr(gpu_cfg, 'enabled', False)),
+                'gpu_device_type': getattr(gpu_cfg, 'device_type', 'cpu'),
+                'skipped': True,
+            },
+        }
+    else:
+        log.info(f"\n  FINAL RETRAIN: best params with lr={OPTUNA_FINAL_LR}, rounds={_tf_final_rounds}")
+        final_start = time.time()
 
-    final_result = final_retrain(
-        X_all, y, sample_weights, feature_cols, is_sparse,
-        tf_name, max_hold, best_params,
-        use_gpu=final_use_gpu, parent_ds=_parent_ds,
-    )
-    final_elapsed = time.time() - final_start
+        final_result = final_retrain(
+            X_all, y, sample_weights, feature_cols, is_sparse,
+            tf_name, max_hold, best_params,
+            use_gpu=final_use_gpu, parent_ds=_parent_ds, gpu_cfg=gpu_cfg,
+        )
+        final_elapsed = time.time() - final_start
 
-    log.info(f"  Final retrain done in {final_elapsed:.0f}s: "
-             f"mean_acc={final_result['mean_accuracy']:.4f} "
-             f"mean_sortino={final_result['mean_sortino']:.2f}")
+        log.info(f"  Final retrain done in {final_elapsed:.0f}s: "
+                 f"mean_acc={final_result['mean_accuracy']:.4f} "
+                 f"mean_sortino={final_result['mean_sortino']:.2f}")
 
-    # Save best model
-    if final_result['best_model'] is not None:
-        model_path = os.path.join(PROJECT_DIR, f'optuna_model_{tf_name}.json')
-        final_result['best_model'].save_model(model_path)
-        log.info(f"  LightGBM model saved: {model_path}")
-        log.info(f"  NOTE: This is a LightGBM model for analysis only. "
-                 f"Production model (model_{tf_name}.json) is LightGBM from ml_multi_tf.py.")
+        # Save best model
+        if final_result['best_model'] is not None:
+            model_path = artifact_path(f'optuna_model_{tf_name}.json')
+            final_result['best_model'].save_model(model_path)
+            log.info(f"  LightGBM model saved: {model_path}")
+            log.info(f"  NOTE: This is a LightGBM model for analysis only. "
+                     f"Production model (model_{tf_name}.json) is LightGBM from ml_multi_tf.py.")
 
-    # Save OOS predictions for meta-labeling
-    oos_path = os.path.join(PROJECT_DIR, f'cpcv_oos_predictions_{tf_name}.pkl')
-    with open(oos_path, 'wb') as f:
-        pickle.dump(final_result['oos_predictions'], f)
-    log.info(f"  OOS predictions saved: {oos_path}")
+        # Save OOS predictions for meta-labeling
+        oos_path = artifact_path(f'cpcv_oos_predictions_{tf_name}.pkl')
+        with open(oos_path, 'wb') as f:
+            pickle.dump(final_result['oos_predictions'], f)
+        log.info(f"  OOS predictions saved: {oos_path}")
 
     # Save optimal config
-    config_path = os.path.join(PROJECT_DIR, f'optuna_configs_{tf_name}.json')
+    config_path = artifact_path(f'optuna_configs_{tf_name}.json')
     config_out = {
         'best_params': best_params,
         'phase1_best_value': float(best_p1.value),
@@ -2097,6 +2429,8 @@ def run_search_for_tf(tf_name, n_jobs=1, warmstart=True):
         'phase1_trials': phase1_trials,
         'validation_top_k': validation_top_k,
         'row_subsample': row_subsample,
+        'final_parallel_policy': final_result.get('parallel_policy', {}),
+        'final_retrain_skipped': bool(OPTUNA_SKIP_FINAL_RETRAIN or search_only),
     }
     with open(config_path, 'w') as f:
         json.dump(config_out, f, indent=2)
@@ -2133,6 +2467,8 @@ def main():
                         help='Parallel Optuna trials (default: cpu_count // threads_per_trial)')
     parser.add_argument('--no-warmstart', action='store_true',
                         help='Disable warm-start from parent TF (use full wide ranges + full trial count)')
+    parser.add_argument('--search-only', action='store_true',
+                        help='Run search + validation only; skip Optuna final retrain')
     args = parser.parse_args()
 
     timeframes = args.tf if args.tf else TF_ORDER
@@ -2152,6 +2488,7 @@ def main():
 
     # Multi-GPU auto-detection for n_jobs
     _gpu_cfg = get_multi_gpu_config(total_cores)
+    _large_machine = _is_large_machine_profile(total_cores, _gpu_cfg)
 
     if args.n_jobs is not None:
         n_jobs = args.n_jobs
@@ -2161,6 +2498,11 @@ def main():
     else:
         n_jobs = OPTUNA_N_JOBS if OPTUNA_N_JOBS > 0 else max(1, total_cores // 8)
 
+    if _large_machine and args.n_jobs is None:
+        n_jobs = min(int(getattr(_gpu_cfg, 'num_gpus', 0) or 8), 8)
+        os.environ.setdefault('CPCV_PARALLEL_GPUS', str(n_jobs))
+        os.environ.setdefault('OPTUNA_FINAL_RETRAIN_MAX_PARALLEL_FOLDS', str(n_jobs))
+
     log.info(f"Optuna LightGBM Search v3.3 (Phase 1 + Validation Gate)")
     # FIX #18: Cap num_threads to prevent oversubscription (total_cores / n_parallel_workers)
     _threads_per_trial = max(1, total_cores // n_jobs)
@@ -2169,6 +2511,8 @@ def main():
     log.info(f"  Cores: {total_cores}, Parallel trials: {n_jobs}, Threads/trial: {_threads_per_trial}")
     if _gpu_cfg.enabled:
         log.info(f"  GPUs: {_gpu_cfg.num_gpus} ({', '.join(_gpu_cfg.gpu_names[:4])})")
+    if _large_machine:
+        log.info(f"  Large-machine profile: ENABLED (>=8 GPUs, >=256 cores) -> CPCV_PARALLEL_GPUS={os.environ.get('CPCV_PARALLEL_GPUS')}, OPTUNA_FINAL_RETRAIN_MAX_PARALLEL_FOLDS={os.environ.get('OPTUNA_FINAL_RETRAIN_MAX_PARALLEL_FOLDS')}")
     log.info(f"  Timeframes: {timeframes}")
     log.info(f"  Warm-start: {'ENABLED (cascade: 1w->1d->4h->1h->15m)' if use_warmstart else 'DISABLED'}")
     log.info(f"  Phase 1 (cold): per-TF {OPTUNA_TF_PHASE1_TRIALS} | (warm): {OPTUNA_WARMSTART_PHASE1_TRIALS} trials")
@@ -2187,14 +2531,15 @@ def main():
 
     for tf in timeframes:
         try:
-            result = run_search_for_tf(tf, n_jobs=n_jobs, warmstart=use_warmstart)
+            result = run_search_for_tf(tf, n_jobs=n_jobs, warmstart=use_warmstart,
+                                       search_only=args.search_only)
             if result:
                 all_results[tf] = result
         except Exception as e:
             log.error(f"FAILED {tf}: {e}", exc_info=True)
 
     # Save summary
-    summary_path = os.path.join(PROJECT_DIR, 'optuna_search_results.json')
+    summary_path = artifact_path('optuna_search_results.json')
     with open(summary_path, 'w') as f:
         json.dump(all_results, f, indent=2, default=str)
 

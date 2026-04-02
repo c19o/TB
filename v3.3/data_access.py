@@ -16,8 +16,9 @@ import time
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
+from path_contract import SHARED_DB_ROOT
 
-DB_DIR = os.environ.get("SAVAGE22_DB_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DB_DIR = os.environ.get("SAVAGE22_DB_DIR", SHARED_DB_ROOT)
 
 
 # ============================================================

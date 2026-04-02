@@ -48,6 +48,7 @@ except Exception as e:
     )
 
 import lightgbm as lgb
+from path_contract import ARTIFACT_ROOT, CODE_ROOT, SHARED_DB_ROOT, artifact_path, ensure_runtime_dirs
 try:
     from hardware_detect import detect_hardware
 except ImportError:
@@ -68,7 +69,9 @@ print(f"[HW] {_N_GPUS} GPU(s) detected for parallel TF optimization")
 # ---------------------------------------------------------------------------
 # Paths & constants
 # ---------------------------------------------------------------------------
-DB_DIR = os.environ.get('SAVAGE22_DB_DIR', os.path.dirname(os.path.abspath(__file__)))
+DB_DIR = SHARED_DB_ROOT
+PROJECT_DIR = CODE_ROOT
+ensure_runtime_dirs()
 START_TIME = time.time()
 TOTAL_COST_PER_TRADE = CONFIG_FEE_RATE  # from config.py (single source of truth)
 STARTING_BALANCE = CONFIG_STARTING_BALANCE
@@ -91,6 +94,27 @@ SOBOL_PHASE2_TRIALS = int(os.environ.get('SOBOL_PHASE2_TRIALS', '200'))   # Baye
 
 def elapsed():
     return f"[{time.time() - START_TIME:.0f}s]"
+
+
+def _existing_paths(*paths):
+    seen = set()
+    ordered = []
+    for path in paths:
+        if not path:
+            continue
+        norm = os.path.normcase(os.path.abspath(path))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ordered.append(path)
+    return ordered
+
+
+def _first_existing_path(*paths):
+    for path in _existing_paths(*paths):
+        if os.path.exists(path):
+            return path
+    return None
 
 # ---------------------------------------------------------------------------
 # Per-TF parameter grids
@@ -184,14 +208,34 @@ def load_tf_data(tf_name: str):
     Returns: (confidences, directions, returns, closes, atrs, highs, lows, n_bars) or None
     """
     cfg = TF_DB_MAP[tf_name]
-    db_path = f"{DB_DIR}/{cfg['db']}"
-    model_path = f"{DB_DIR}/model_{tf_name}.json"
-    features_all_path = f"{DB_DIR}/features_{tf_name}_all.json"
-    features_pruned_path = f"{DB_DIR}/features_{tf_name}_pruned.json"
+    db_path = _first_existing_path(
+        artifact_path(cfg['db']),
+        os.path.join(DB_DIR, cfg['db']),
+        os.path.join(PROJECT_DIR, cfg['db']),
+    ) or os.path.join(DB_DIR, cfg['db'])
+    model_path = _first_existing_path(
+        artifact_path(f'model_{tf_name}.json'),
+        os.path.join(DB_DIR, f'model_{tf_name}.json'),
+        os.path.join(PROJECT_DIR, f'model_{tf_name}.json'),
+    ) or artifact_path(f'model_{tf_name}.json')
+    features_all_path = _first_existing_path(
+        artifact_path(f'features_{tf_name}_all.json'),
+        os.path.join(DB_DIR, f'features_{tf_name}_all.json'),
+        os.path.join(PROJECT_DIR, f'features_{tf_name}_all.json'),
+    ) or artifact_path(f'features_{tf_name}_all.json')
+    features_pruned_path = _first_existing_path(
+        artifact_path(f'features_{tf_name}_pruned.json'),
+        os.path.join(DB_DIR, f'features_{tf_name}_pruned.json'),
+        os.path.join(PROJECT_DIR, f'features_{tf_name}_pruned.json'),
+    ) or artifact_path(f'features_{tf_name}_pruned.json')
 
     # V2 naming: features_BTC_{tf}.parquet
-    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
-    if not os.path.exists(db_path) and not os.path.exists(db_path.replace('.db', '.parquet')) and not os.path.exists(v2_parquet):
+    v2_parquet = _first_existing_path(
+        artifact_path(f'features_BTC_{tf_name}.parquet'),
+        os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet'),
+        os.path.join(PROJECT_DIR, f'features_BTC_{tf_name}.parquet'),
+    )
+    if not os.path.exists(db_path) and not os.path.exists(db_path.replace('.db', '.parquet')) and not (v2_parquet and os.path.exists(v2_parquet)):
         print(f"  SKIP {tf_name} — {cfg['db']} not found")
         return None
     if not os.path.exists(model_path):
@@ -315,13 +359,37 @@ def load_tf_data(tf_name: str):
     print(f"  Walk-forward last window: test [{vs}:{ve}] ({ve - vs} bars)")
 
     # Try to load saved CPCV OOS predictions (avoids data leakage from re-prediction)
-    cpcv_oos_path = f"{DB_DIR}/cpcv_oos_{tf_name}.pkl"
+    cpcv_oos_candidates = [
+        artifact_path(f'cpcv_oos_predictions_{tf_name}.pkl'),
+        artifact_path(f'cpcv_oos_{tf_name}.pkl'),
+        os.path.join(DB_DIR, f'cpcv_oos_predictions_{tf_name}.pkl'),
+        os.path.join(DB_DIR, f'cpcv_oos_{tf_name}.pkl'),
+        os.path.join(PROJECT_DIR, f'cpcv_oos_predictions_{tf_name}.pkl'),
+        os.path.join(PROJECT_DIR, f'cpcv_oos_{tf_name}.pkl'),
+    ]
+    cpcv_oos_path = next((p for p in cpcv_oos_candidates if os.path.exists(p)), None)
     used_cpcv_oos = False
-    if os.path.exists(cpcv_oos_path):
+    if cpcv_oos_path:
         try:
             with open(cpcv_oos_path, 'rb') as f:
                 cpcv_oos = pickle.load(f)
-            if isinstance(cpcv_oos, dict) and 'predictions' in cpcv_oos:
+            if isinstance(cpcv_oos, list):
+                _pred_blocks = [
+                    np.asarray(p.get('y_pred_probs'))
+                    for p in cpcv_oos
+                    if isinstance(p, dict) and p.get('y_pred_probs') is not None and len(np.asarray(p.get('y_pred_probs'))) > 0
+                ]
+                oos_preds = np.concatenate(_pred_blocks, axis=0) if _pred_blocks else np.empty((0,), dtype=np.float32)
+                n_test = ve - vs
+                if len(oos_preds) >= n_test:
+                    raw_preds = oos_preds[-n_test:]
+                    print(f"  Using saved CPCV OOS predictions list ({len(oos_preds)} samples, using last {n_test})")
+                    used_cpcv_oos = True
+                elif len(oos_preds) > 0:
+                    print(f"  CPCV OOS list has {len(oos_preds)} samples but need {n_test} â€” falling back to re-prediction")
+                else:
+                    print(f"  CPCV OOS list empty â€” falling back to re-prediction")
+            elif isinstance(cpcv_oos, dict) and 'predictions' in cpcv_oos:
                 oos_preds = np.array(cpcv_oos['predictions'], dtype=np.float32)
                 oos_indices = cpcv_oos.get('indices', list(range(len(oos_preds))))
                 # Check if OOS predictions cover the test window
@@ -1342,7 +1410,7 @@ def run_sobol_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars,
         return sortino_val
 
     # Seed Optuna with top-K Sobol results via enqueue_trial
-    storage = f"sqlite:///{DB_DIR}/sobol_optimizer_{tf_name}.db"
+    storage = f"sqlite:///{artifact_path(f'sobol_optimizer_{tf_name}.db')}"
     study = optuna.create_study(
         study_name=f"sobol_optimizer_{tf_name}",
         storage=storage,
@@ -1514,7 +1582,7 @@ def run_optuna_search(tf_name, confs, dirs, closes, atrs, highs, lows, n_bars, n
             return sortino_val
 
     # Create Optuna study with TPE sampler — persisted to SQLite for resume
-    storage = f"sqlite:///{DB_DIR}/optuna_optimizer_{tf_name}.db"
+    storage = f"sqlite:///{artifact_path(f'optuna_optimizer_{tf_name}.db')}"
     study = optuna.create_study(
         study_name=f"optimizer_{tf_name}",
         storage=storage,
@@ -1633,7 +1701,7 @@ def _optimize_single_tf(args_tuple):
 
         # Save per-TF config immediately (atomic)
         if tf_config:
-            per_tf_path = f"{DB_DIR}/{config_prefix}_{tf_name}.json"
+            per_tf_path = artifact_path(f'{config_prefix}_{tf_name}.json')
             with open(per_tf_path, 'w') as f:
                 json.dump({tf_name: tf_config}, f, indent=2)
             print(f"  {elapsed()} Saved per-TF config: {per_tf_path}", flush=True)
@@ -1730,7 +1798,7 @@ def main(n_trials=200):
             if tf_config:
                 all_configs[tf_name] = tf_config
 
-                per_tf_path = f"{DB_DIR}/{config_prefix}_{tf_name}.json"
+                per_tf_path = artifact_path(f'{config_prefix}_{tf_name}.json')
                 with open(per_tf_path, 'w') as f:
                     json.dump({tf_name: tf_config}, f, indent=2)
                 print(f"  Saved: {per_tf_path}")
@@ -1739,7 +1807,7 @@ def main(n_trials=200):
 
     # Save combined results — same JSON format as exhaustive_configs.json
     tf_suffix = '_'.join(sorted(all_configs.keys())) if all_configs else 'all'
-    output_path = f"{DB_DIR}/{config_prefix}_{tf_suffix}.json" if len(TF_GRIDS) < 6 else f"{DB_DIR}/{config_prefix}.json"
+    output_path = artifact_path(f'{config_prefix}_{tf_suffix}.json') if len(TF_GRIDS) < 6 else artifact_path(f'{config_prefix}.json')
     with open(output_path, 'w') as f:
         json.dump(all_configs, f, indent=2)
     print(f"\n{elapsed()} Results saved to: {output_path}")

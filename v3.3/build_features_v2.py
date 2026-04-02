@@ -1,9 +1,9 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 """
-build_features_v2.py — V2 Unified Multi-Asset Feature Builder
+build_features_v2.py â€” V2 Unified Multi-Asset Feature Builder
 ===============================================================
 Builds features for ANY asset at ANY timeframe.
-Pipeline: OHLCV → V1 base features → V2 layers → V2 crosses → sparse output.
+Pipeline: OHLCV â†’ V1 base features â†’ V2 layers â†’ V2 crosses â†’ sparse output.
 
 Usage:
   python build_features_v2.py --symbol BTC --tf 1d
@@ -22,7 +22,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 warnings.filterwarnings('ignore')
 
-# ── CUDA 13 detection — CuPy works with PTX JIT, cuDF does NOT ──
+# â”€â”€ CUDA 13 detection â€” CuPy works with PTX JIT, cuDF does NOT â”€â”€
 # Set CUPY_COMPILE_WITH_PTX=1 so CuPy JIT-compiles for Blackwell sm_120
 os.environ.setdefault('CUPY_COMPILE_WITH_PTX', '1')
 if os.environ.get('V2_SKIP_GPU') != '1':
@@ -35,14 +35,14 @@ if os.environ.get('V2_SKIP_GPU') != '1':
         if os.environ.get('ALLOW_CPU', '0') != '1':
             raise RuntimeError(f"GPU REQUIRED: CuPy GPU test failed ({_e}). Set ALLOW_CPU=1 to force CPU mode.")
         os.environ['V2_SKIP_GPU'] = '1'
-        print(f"[build_features_v2] ALLOW_CPU=1 — GPU unavailable ({_e}). Using CPU mode.")
+        print(f"[build_features_v2] ALLOW_CPU=1 â€” GPU unavailable ({_e}). Using CPU mode.")
 
 # Force CuPy memory pool cleanup helper
 def _gpu_gc():
     """Release GPU memory pool + Python GC."""
     gc.collect()
     if os.environ.get('V2_SKIP_GPU') == '1':
-        return  # CUDA 13+ — CuPy GPU ops segfault, skip entirely
+        return  # CUDA 13+ â€” CuPy GPU ops segfault, skip entirely
     try:
         import cupy as cp
         cp.get_default_memory_pool().free_all_blocks()
@@ -51,6 +51,7 @@ def _gpu_gc():
 
 V2_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, V2_DIR)
+from path_contract import ARTIFACT_ROOT, artifact_path, ensure_runtime_dirs
 
 from config import (ALL_TRAINING, TRAINING_CRYPTO,
                     TIMEFRAMES_ALL_ASSETS, TIMEFRAMES_CRYPTO_ONLY)
@@ -67,7 +68,7 @@ def build_base_features(ohlcv_df, symbol, tf, astro_cache, tweets=None, news=Non
                         sports=None, onchain=None, macro=None, htf_data=None):
     """
     Build base features using v2/feature_library.py.
-    ALL assets get ALL esoteric data — the matrix is universal.
+    ALL assets get ALL esoteric data â€” the matrix is universal.
     Returns DataFrame with ~1000-3000 base features.
     """
     from feature_library import build_all_features
@@ -82,13 +83,13 @@ def build_base_features(ohlcv_df, symbol, tf, astro_cache, tweets=None, news=Non
         if isinstance(sports, dict):
             esoteric_frames['sports'] = sports
         else:
-            esoteric_frames['sports'] = sports  # DataFrame fallback — feature_library handles both
+            esoteric_frames['sports'] = sports  # DataFrame fallback â€” feature_library handles both
     if onchain is not None:
         # feature_library expects esoteric_frames['onchain'] as dict with 'daily'/'timestamped' keys
         if isinstance(onchain, dict):
             esoteric_frames['onchain'] = onchain
         else:
-            esoteric_frames['onchain'] = onchain  # DataFrame fallback — feature_library handles both
+            esoteric_frames['onchain'] = onchain  # DataFrame fallback â€” feature_library handles both
     if macro is not None and not macro.empty:
         esoteric_frames['macro'] = macro
 
@@ -123,7 +124,7 @@ def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=Fa
 
     t0 = time.time()
     log(f"\n{'='*60}")
-    log(f"Building {symbol} — {tf}")
+    log(f"Building {symbol} â€” {tf}")
     log(f"{'='*60}")
 
     # Load data
@@ -136,17 +137,18 @@ def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=Fa
         return None
 
     # Checkpoint: skip if already built
-    out_path = os.path.join(V2_DIR, f'features_{symbol}_{tf}.parquet')
-    sparse_path = os.path.join(V2_DIR, f'v2_crosses_{symbol}_{tf}.npz')
+    ensure_runtime_dirs()
+    out_path = artifact_path(f'features_{symbol}_{tf}.parquet')
+    sparse_path = artifact_path(f'v2_crosses_{symbol}_{tf}.npz')
     if not force and os.path.exists(out_path) and os.path.exists(sparse_path):
         log(f"  [SKIP] Already built: {out_path}")
         return None
 
     log(f"  OHLCV: {len(ohlcv):,} bars, {ohlcv.index[0].date()} to {ohlcv.index[-1].date()}")
 
-    # Step 1: Base features (full V1 pipeline — NO fallback, NO TA-only mode)
+    # Step 1: Base features (full V1 pipeline â€” NO fallback, NO TA-only mode)
     log("  Step 1: Base features...")
-    # ALL assets get the full pipeline — the matrix is universal.
+    # ALL assets get the full pipeline â€” the matrix is universal.
     # Same sky, same tweets, same energy, same calendar = same features.
     # Only TA differs (computed from each asset's OHLCV).
     # Only on-chain/funding is crypto-specific.
@@ -186,13 +188,13 @@ def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=Fa
     # Save base features BEFORE cross gen (prevents OOM from killing unsaved parquet)
     if save:
         from atomic_io import atomic_save_parquet
-        out_path = os.path.join(V2_DIR, f'features_{symbol}_{tf}.parquet')
+        out_path = artifact_path(f'features_{symbol}_{tf}.parquet')
         atomic_save_parquet(df, out_path)
         size_mb = os.path.getsize(out_path) / 1e6
         log(f"  Saved base: {out_path} ({size_mb:.1f} MB)")
 
-    # Step 3: Cross generation (everything × everything → sparse)
-    # Runs as SEPARATE step in cloud_run_tf.py (Step 3) — skip here to avoid OOM
+    # Step 3: Cross generation (everything Ã— everything â†’ sparse)
+    # Runs as SEPARATE step in cloud_run_tf.py (Step 3) â€” skip here to avoid OOM
     # Cross gen materializes large dense intermediates; running it separately gives
     # cloud_run_tf.py control over memory and resumability.
     _skip_inline_cross = os.environ.get('V2_SKIP_INLINE_CROSS', '1') == '1'
@@ -202,11 +204,11 @@ def build_single_asset(symbol, tf, loader, save=True, max_crosses=None, force=Fa
         log("  Step 3: Cross generation (inline)...")
         df._v2_symbol = symbol
         _gpu_id = int(os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')[0])
-        df = generate_all_crosses(df, tf=tf, gpu_id=_gpu_id, save_sparse=True, output_dir=V2_DIR,
+        df = generate_all_crosses(df, tf=tf, gpu_id=_gpu_id, save_sparse=True, output_dir=ARTIFACT_ROOT,
                                   max_crosses=max_crosses)
 
     elapsed = time.time() - t0
-    log(f"  DONE: {symbol} {tf} — {len(df):,} rows × {len(df.columns):,} cols ({elapsed:.0f}s)")
+    log(f"  DONE: {symbol} {tf} â€” {len(df):,} rows Ã— {len(df.columns):,} cols ({elapsed:.0f}s)")
 
     # Force memory cleanup between assets (GPU + CPU)
     del df
@@ -255,9 +257,9 @@ def main():
     args = parser.parse_args()
 
     if args.full:
-        # FULL BUILD — parallel workers, all GPUs visible per process, fault-tolerant
+        # FULL BUILD â€” parallel workers, all GPUs visible per process, fault-tolerant
         log("=" * 70)
-        log("V2 FULL BUILD — ALL ASSETS, ALL TIMEFRAMES")
+        log("V2 FULL BUILD â€” ALL ASSETS, ALL TIMEFRAMES")
         log("  Strategy: parallel builds (ProcessPoolExecutor), ALL GPUs visible per worker")
         log("=" * 70)
 
@@ -288,7 +290,7 @@ def main():
         results.extend(_parallel_build(daily_tasks, max_workers, label='daily builds'))
         gc.collect()
 
-        # GC between TF phases — flush accumulated RAM
+        # GC between TF phases â€” flush accumulated RAM
         log("\n  [GC] Flushing memory before intraday builds...")
         del loader
         _gpu_gc()
@@ -337,7 +339,7 @@ def main():
         failed = [r for r in results if r[2] != 'OK']
         log(f"  OK: {ok}, Failed: {len(failed)}")
         for r in failed:
-            log(f"  FAILED: {r[0]} {r[1]} — {r[2]}")
+            log(f"  FAILED: {r[0]} {r[1]} â€” {r[2]}")
 
         # Verify outputs
         import glob
@@ -402,3 +404,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

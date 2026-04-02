@@ -22,6 +22,7 @@ import os
 import time
 import gc
 import multiprocessing
+from multiprocessing import shared_memory
 from multiprocessing import Process
 from multiprocessing.connection import Connection
 from dataclasses import dataclass, field
@@ -155,6 +156,36 @@ def _print(msg):
     print(f"[{time.strftime('%H:%M:%S')}] [gpu_daemon] {msg}", flush=True)
 
 
+def _build_combined_csc_from_binary(left, right, n_left_cols, np):
+    n_rows = int(left.shape[0])
+    left_n_cols = int(left.shape[1])
+    right_n_cols = int(right.shape[1])
+    n_cols = left_n_cols + right_n_cols
+    col_nnz = np.empty(n_cols, dtype=np.int64)
+
+    for j in range(left_n_cols):
+        col_nnz[j] = int(np.count_nonzero(left[:, j]))
+    for j in range(right_n_cols):
+        col_nnz[n_left_cols + j] = int(np.count_nonzero(right[:, j]))
+
+    indptr = np.zeros(n_cols + 1, dtype=np.int64)
+    np.cumsum(col_nnz, out=indptr[1:])
+    total_nnz = int(indptr[-1])
+    indices = np.empty(total_nnz, dtype=np.int32)
+
+    for j in range(left_n_cols):
+        start = int(indptr[j])
+        rows = np.where(left[:, j] != 0)[0].astype(np.int32)
+        indices[start:start + len(rows)] = rows
+    for j in range(right_n_cols):
+        out_col = n_left_cols + j
+        start = int(indptr[out_col])
+        rows = np.where(right[:, j] != 0)[0].astype(np.int32)
+        indices[start:start + len(rows)] = rows
+
+    return indptr, indices, col_nnz, n_rows
+
+
 # ============================================================
 # DAEMON ENTRY POINT (forked process)
 # ============================================================
@@ -244,13 +275,22 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
             else:
                 tag = getattr(msg, 'tag', None)
 
-            if tag == 'RELOAD':
+            if tag in ('RELOAD', 'RELOAD_SHM'):
                 # Extract fields from either tuple or dataclass format
-                if isinstance(msg, tuple):
+                _left_shm = None
+                _right_shm = None
+                if isinstance(msg, tuple) and tag == 'RELOAD':
                     _, left_npy_path, right_npy_path, n_left_cols = msg
+                elif isinstance(msg, tuple) and tag == 'RELOAD_SHM':
+                    _, left_meta, right_meta, n_left_cols = msg
+                    _left_shm = shared_memory.SharedMemory(name=left_meta['name'])
+                    _right_shm = shared_memory.SharedMemory(name=right_meta['name'])
+                    left = np.ndarray(tuple(left_meta['shape']), dtype=np.dtype(left_meta['dtype']), buffer=_left_shm.buf)
+                    right = np.ndarray(tuple(right_meta['shape']), dtype=np.dtype(right_meta['dtype']), buffer=_right_shm.buf)
                 else:
                     left_npy_path = msg.left_npy_path
                     right_npy_path = msg.right_npy_path
+                    n_left_cols = msg.n_left_cols
 
                 # Free prior GPU arrays BEFORE loading new ones (memory leak fix)
                 if indptr_gpu is not None:
@@ -262,26 +302,21 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                     indices_gpu = None
 
                 # Upload new CSC to GPU (happens once per cross step)
-                _log(f"RELOAD: loading matrices from {left_npy_path}")
-                left = np.load(left_npy_path, mmap_mode='r')
-                right = np.load(right_npy_path, mmap_mode='r')
-                combined = np.hstack([np.asarray(left), np.asarray(right)])
-                n_rows = combined.shape[0]
-
-                # Build CSC indptr + indices WITHOUT scipy
-                n_r, n_cols = combined.shape
-                col_nnz_local = np.count_nonzero(combined, axis=0).astype(np.int64)
-                indptr_np = np.zeros(n_cols + 1, dtype=np.int64)
-                np.cumsum(col_nnz_local, out=indptr_np[1:])
-                total_nnz_csc = int(indptr_np[-1])
-
-                indices_np = np.empty(total_nnz_csc, dtype=np.int32)
-                for j in range(n_cols):
-                    rows = np.where(combined[:, j] != 0)[0].astype(np.int32)
-                    start = int(indptr_np[j])
-                    indices_np[start:start + len(rows)] = rows
-
-                del combined, left, right
+                if tag == 'RELOAD':
+                    _log(f"RELOAD: loading matrices from {left_npy_path}")
+                    left = np.load(left_npy_path, mmap_mode='r')
+                    right = np.load(right_npy_path, mmap_mode='r')
+                else:
+                    _log(f"RELOAD_SHM: attaching shared matrices {left_meta['name']} / {right_meta['name']}")
+                indptr_np, indices_np, col_nnz_local, n_rows = _build_combined_csc_from_binary(
+                    left, right, n_left_cols, np
+                )
+                n_cols = int(len(col_nnz_local))
+                del left, right
+                if _left_shm is not None:
+                    _left_shm.close()
+                if _right_shm is not None:
+                    _right_shm.close()
 
                 # Upload to GPU
                 indptr_gpu = cp.asarray(indptr_np, dtype=cp.int64)
@@ -331,6 +366,9 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
 
                 total_nnz = 0
                 idx_path = out_path
+                idx_parent = os.path.dirname(idx_path)
+                if idx_parent:
+                    os.makedirs(idx_parent, exist_ok=True)
 
                 with open(idx_path, 'wb') as f:
                     # Write header
@@ -406,8 +444,24 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                     mempool.free_all_blocks()
                     pinned_pool.free_all_blocks()
 
+                # SAV-4/SAV-12 runtime IPC contract note:
+                # KB_GAP: local KB searches returned no direct evidence for this
+                # exact tuple/dataclass contract drift failure mode.
+                # PERPLEXITY_SOURCE: Python multiprocessing docs (Connection.recv/
+                # wait semantics), used to verify Pipe message handling assumptions:
+                # https://docs.python.org/3/library/multiprocessing.html
+                # Expected contract: BATCH may arrive as tuple
+                # ('BATCH', batch_id, pairs, out_path, pair_id_offset) OR BatchMsg,
+                # and daemon must always respond with RESULT without process death.
+                # Broken behavior: logging used msg.batch_id (dataclass-only field),
+                # which raises AttributeError for tuple IPC payloads and can kill the
+                # daemon loop mid-run, forcing false fallback on later steps.
+                # Fix scope: logging now uses normalized local batch_id from parsed
+                # IPC payload; no feature-generation math or model logic changed.
+                # QA still needed: multi-step RELOAD + BATCH soak to confirm no
+                # step-3+ daemon deaths and no unintended legacy fallback.
                 if batches_done % 3 == 0:
-                    _log(f"Batch {msg.batch_id}: {n_pairs} pairs → {total_nnz:,} nnz "
+                    _log(f"Batch {batch_id}: {n_pairs} pairs → {total_nnz:,} nnz "
                          f"in {dt:.1f}s ({batches_done} done)")
 
     except Exception as e:
