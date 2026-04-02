@@ -49,7 +49,7 @@ Injected into every agent session. These are non-negotiable.
 - OMP_NUM_THREADS=4 for thread exhaustion prevention
 - Download artifacts at EVERY checkpoint (machines die without warning)
 - killall python before launching new training
-- NEVER use nohup bash wrappers — use cloud_run_tf.py directly
+- NEVER use nohup bash wrappers for maintained runs. Use the maintained timeframe contract launcher instead. For `1w`, `CLOUD_1W_LAUNCH_CONTRACT.md` is the authority and `TRAINING_1W.md` is historical/local-only. Direct `cloud_run_tf.py` is legacy/ad-hoc only.
 
 ## OWNER APPROVAL GATES
 
@@ -184,7 +184,7 @@ ALWAYS trust the KB over Perplexity. The KB has OUR books, OUR papers, OUR archi
 cd "C:/Users/C/Documents/Savage22 Server/v3.3"
 python validate.py
 ```
-ALL 96 checks must pass. If any fail → fix BEFORE committing.
+All validate.py checks must pass. If any fail, fix BEFORE committing.
 
 ### Step 4: Self-Review Checklist
 Before committing, answer YES to ALL:

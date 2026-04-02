@@ -16,9 +16,11 @@ import time
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
-from path_contract import SHARED_DB_ROOT
+from path_contract import SHARED_DB_ROOT, V1_ROOT
 
-DB_DIR = os.environ.get("SAVAGE22_DB_DIR", SHARED_DB_ROOT)
+INPUT_DB_ROOT = os.environ.get("SAVAGE22_DB_DIR", SHARED_DB_ROOT)
+DB_DIR = INPUT_DB_ROOT
+V1_DB_ROOT = V1_ROOT
 
 
 # ============================================================
@@ -27,7 +29,7 @@ DB_DIR = os.environ.get("SAVAGE22_DB_DIR", SHARED_DB_ROOT)
 
 def _connect(db_name, db_dir=None):
     """Open a read-only SQLite connection."""
-    path = os.path.join(db_dir or DB_DIR, db_name)
+    path = os.path.join(db_dir or INPUT_DB_ROOT, db_name)
     if not os.path.exists(path):
         return None
     return sqlite3.connect(path, timeout=10)
@@ -52,7 +54,7 @@ class OfflineDataLoader:
     """
 
     def __init__(self, db_dir: str = None):
-        self.db_dir = db_dir or DB_DIR
+        self.db_dir = db_dir or INPUT_DB_ROOT
 
     def load_ohlcv(self, tf: str, symbol: str = 'BTC/USDT') -> pd.DataFrame:
         """
@@ -339,14 +341,14 @@ class LiveDataLoader:
     """
 
     def __init__(self, db_dir: str = None):
-        self.db_dir = db_dir or DB_DIR
+        self.db_dir = db_dir or INPUT_DB_ROOT
         # V1 databases (tweets, news, sports, astro, etc.) live in the V1 parent dir,
         # not in the v3.1 project dir. Use config.py V1_DIR for those lookups.
         try:
             from config import V1_DIR
             self.v1_dir = V1_DIR
         except ImportError:
-            self.v1_dir = DB_DIR  # fallback: module-level DB_DIR already points to V1 parent
+            self.v1_dir = V1_DB_ROOT
         self._caches = {}       # per-source DataFrames
         self._last_seen = {}    # per-source last timestamp
         self._astro_cache = {}  # daily data (refreshed less often)
@@ -848,7 +850,8 @@ class LiveDataLoader:
 
 if __name__ == '__main__':
     print("data_access.py — Data Access Layer")
-    print(f"  DB_DIR: {DB_DIR}")
+    print(f"  INPUT_DB_ROOT: {INPUT_DB_ROOT}")
+    print(f"  V1_DB_ROOT: {V1_DB_ROOT}")
     print()
 
     # Quick test: offline loader

@@ -22,11 +22,17 @@ Read this file completely. Then read [CODEX.md](/C:/Users/C/Documents/Savage22%2
 
 ### 1w
 - Status: ready for real rerun on the updated path
+- Maintained launch authority:
+  - `CLOUD_1W_LAUNCH_CONTRACT.md`
+  - `TRAINING_1W.md` is historical/local-only and does not govern maintained runs
 - Launch protocol updated:
   - immutable remote release dirs under `/workspace/releases/v3.3_<run_id>`
   - per-run state under `/workspace/runs/<run_id>`
   - heartbeat now belongs in the run dir, not `/workspace/cloud_run_1w_heartbeat.json`
   - launcher preflight now hard-fails on missing release/artifact layout instead of trusting a mutable `/workspace/v3.3`
+- Maintained `1w` policy:
+  - base-features-only
+  - step2_crosses is a validated skip, not a generation step
 - Root cause of the earlier slowdown is known:
   - final retrain was slowed by conservative scheduling policy
   - Optuna used the machine better than final retrain
@@ -72,7 +78,7 @@ Read this file completely. Then read [CODEX.md](/C:/Users/C/Documents/Savage22%2
 ## Approved Owner Decisions Already Made
 
 1. Move from hidden hardcoded speed rules to explicit machine-aware speed policy: approved
-2. Benchmark and use more aggressive parallel final retrain behavior on the Washington `2x4090` machine if justified: approved
+2. Benchmark and use more aggressive parallel final retrain behavior on the approved `2x4090` cloud target if justified: approved
 3. Implement what we already know now instead of waiting for a perfect full audit: approved
 
 ---
@@ -80,14 +86,14 @@ Read this file completely. Then read [CODEX.md](/C:/Users/C/Documents/Savage22%2
 ## Cloud Target
 
 - Type ID: `33923286`
-- Region: `Washington, US`
+- Region: approved cloud target at time of writing
 - GPUs: `2x RTX 4090`
 - CPU: `AMD EPYC 7B13 64-Core Processor`
 - RAM: `516 GB`
 - Price: `$0.832/hr` plus bandwidth
 
 Important:
-- a Washington cloud machine was rented and used during this session
+- a cloud machine was rented and used during this session
 - the live `1w` run was intentionally paused/stopped
 - no active training progress should be assumed
 
@@ -158,7 +164,7 @@ Important:
 ## What Is Still Open
 
 1. Real runtime proof
-- rerun `1w` on Washington under the updated path
+- rerun `1w` on the approved cloud target under the updated path
 - collect stage times and confirm final retrain now overlaps the box correctly
 
 2. Lower-TF proof sequence after `1w`
@@ -179,7 +185,7 @@ Important:
 
 ## Next Steps
 
-1. Run `1w` on Washington using the updated launcher and current contract.
+1. Run `1w` on the approved cloud target using the maintained contract.
 2. During the run, capture:
 - wall time by stage
 - final retrain GPU / fold overlap behavior

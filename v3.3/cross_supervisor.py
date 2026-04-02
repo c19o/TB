@@ -44,6 +44,7 @@ from atomic_io import (
     crossgen_scratch_dir,
     get_crossgen_namespace,
     get_crossgen_run_id,
+    stable_cross_name,
 )
 
 
@@ -110,7 +111,15 @@ class PairRegistry:
         ids = np.arange(self._next_id, self._next_id + n, dtype=np.int32)
         for i in range(n):
             li, ri = int(valid_pairs[i, 0]), int(valid_pairs[i, 1])
-            self._names.append(f"{prefix}{left_names[li]}_x_{right_names[ri]}")
+            self._names.append(
+                stable_cross_name(
+                    prefix,
+                    left_names[li],
+                    right_names[ri],
+                    left_idx=li,
+                    right_idx=ri,
+                )
+            )
         self._next_id += n
         return ids
 
@@ -740,6 +749,15 @@ def run_cross_step(
 
     alive_handles = [h for h in handles if h.status == 'idle']
     if not alive_handles:
+        if _reload_dir:
+            cleanup_crossgen_scratch_dir(_reload_dir, run_id=_run_id)
+        for _shm in _reload_shms:
+            try:
+                _shm.close()
+                _shm.unlink()
+            except (FileNotFoundError, OSError):
+                pass
+        cleanup_crossgen_scratch_dir(idx_dir, run_id=_run_id)
         raise RuntimeError(f"[{prefix}] All daemons dead after RELOAD")
 
     for _shm in _reload_shms:
@@ -766,9 +784,15 @@ def run_cross_step(
            f"{len(alive_handles)} daemons")
 
     # ── Dispatch and collect via wait() multiplexing ──
-    idx_paths, total_nnz = _dispatch_and_collect(
-        alive_handles, all_batches, prefix
-    )
+    try:
+        idx_paths, total_nnz = _dispatch_and_collect(
+            alive_handles, all_batches, prefix
+        )
+    except Exception:
+        if _reload_dir:
+            cleanup_crossgen_scratch_dir(_reload_dir, run_id=_run_id)
+        cleanup_crossgen_scratch_dir(idx_dir, run_id=_run_id)
+        raise
 
     # Cleanup temp .npy files
     for p in [left_npy, right_npy]:
@@ -902,6 +926,12 @@ def _dispatch_and_collect(handles, all_batches, prefix):
         _update_pipe_map()
 
     if pending or failed:
+        for h in handles:
+            if h.status == 'computing':
+                try:
+                    h.pipe.close()
+                except OSError:
+                    pass
         raise RuntimeError(
             f"[{prefix}] daemon dispatch incomplete: "
             f"succeeded={completed}/{total_batches}, failed={failed}, "
@@ -959,6 +989,7 @@ import numpy as np
 def build_csr(idx_files_path, n_rows, n_cols, pair_id_to_col_path, names_path,
               output_npz, tmp_dir):
     from scipy import sparse
+    from atomic_io import atomic_save_json, atomic_save_npz
 
     t0 = time.time()
     pair_id_to_col = np.load(pair_id_to_col_path)
@@ -967,8 +998,8 @@ def build_csr(idx_files_path, n_rows, n_cols, pair_id_to_col_path, names_path,
     idx_files = [p for p in idx_files if os.path.isfile(p)]
     if not idx_files:
         print(f"[csr_assembler] No .idx files listed in {idx_files_path}", flush=True)
-        json.dump({'npz_path': '', 'n_cols': 0, 'total_nnz': 0, 'elapsed_s': 0},
-                  open(output_npz + '.result.json', 'w'))
+        atomic_save_json({'npz_path': '', 'n_cols': 0, 'total_nnz': 0, 'elapsed_s': 0},
+                         output_npz + '.result.json')
         return
 
     print(f"[csr_assembler] Scanning {len(idx_files)} step-local .idx files...", flush=True)
@@ -1070,7 +1101,7 @@ def build_csr(idx_files_path, n_rows, n_cols, pair_id_to_col_path, names_path,
 
     # Save (uncompressed for speed)
     print(f"[csr_assembler] Saving {output_npz}...", flush=True)
-    sparse.save_npz(output_npz, csr, compressed=False)
+    atomic_save_npz(csr, output_npz)
 
     elapsed = time.time() - t0
     result = {
@@ -1079,7 +1110,7 @@ def build_csr(idx_files_path, n_rows, n_cols, pair_id_to_col_path, names_path,
         'total_nnz': int(csr.nnz),
         'elapsed_s': round(elapsed, 1),
     }
-    json.dump(result, open(output_npz + '.result.json', 'w'))
+    atomic_save_json(result, output_npz + '.result.json')
 
     print(f"[csr_assembler] Done in {elapsed:.1f}s — {n_cols:,} cols, "
           f"{csr.nnz:,} nnz", flush=True)

@@ -28,6 +28,51 @@ _failures = []
 
 PROJECT_DIR = os.path.dirname(os.path.realpath(__file__))
 VALID_TFS = {'1w', '1d', '4h', '1h', '15m'}
+TF_CONTRACT_FILES = {
+    '1w': os.path.join(PROJECT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json'),
+}
+
+try:
+    import pipeline_contract as _pipeline_contract  # pragma: no cover
+except Exception:
+    _pipeline_contract = None
+
+
+def _load_tf_contract(tf):
+    """Load a timeframe contract from the shared helper if it exists, else JSON."""
+    contract_path = TF_CONTRACT_FILES.get(tf)
+    if _pipeline_contract is not None:
+        for attr in ('load_contract', 'load_tf_contract', 'get_contract'):
+            loader = getattr(_pipeline_contract, attr, None)
+            if not callable(loader):
+                continue
+            try:
+                loaded = loader(tf)
+            except TypeError:
+                try:
+                    loaded = loader(tf=tf)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            if isinstance(loaded, tuple) and len(loaded) == 2:
+                return loaded
+            return loaded, contract_path
+
+    if contract_path and os.path.isfile(contract_path):
+        try:
+            with open(contract_path, 'r', encoding='utf-8') as f:
+                return json.load(f), contract_path
+        except Exception:
+            return None, contract_path
+    return None, contract_path
+
+
+def _first_existing(paths):
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    return None
 
 
 def check(name, condition, fail_msg):
@@ -712,6 +757,17 @@ def check_data_integrity(tf):
 
     sys.path.insert(0, PROJECT_DIR)
     import config as cfg
+    tf_contract, tf_contract_path = _load_tf_contract(tf) if tf == '1w' else (None, None)
+    if tf == '1w':
+        check("1w contract is loadable",
+              tf_contract is not None,
+              f"Missing or unreadable 1w contract at {tf_contract_path}. "
+              f"FIX: restore WEEKLY_1W_ARTIFACT_CONTRACT.json or the contract helper.")
+        if tf_contract:
+            expected_statuses = ['running', 'validated', 'failed', 'complete']
+            check("1w contract heartbeat statuses are canonical",
+                  tf_contract.get('heartbeat_statuses') == expected_statuses,
+                  f"1w heartbeat statuses={tf_contract.get('heartbeat_statuses')} -- must be {expected_statuses}.")
 
     # -- Parquet existence and column count --
     managed_root_contract = any(os.environ.get(name) for name in ('SAVAGE22_RUN_DIR', 'SAVAGE22_ARTIFACT_DIR'))
@@ -744,6 +800,12 @@ def check_data_integrity(tf):
         warn("parquet exists", False,
              f"No parquet found for BTC {tf}. Features will need to be built.")
 
+    if managed_root_contract and parquet_found:
+        check("Maintained run feature parquet lives under ARTIFACT_ROOT",
+              path_contract.is_under(parquet_found, path_contract.ARTIFACT_ROOT),
+              f"feature parquet resolved to {parquet_found} instead of ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}. "
+              f"FIX: remove code-root/shared-root fallback reads for maintained runs.")
+
     # -- Cross features per-TF strategy --
     npz_candidates = [
         os.path.join(path_contract.ARTIFACT_ROOT, f'v2_crosses_BTC_{tf}.npz'),
@@ -755,27 +817,36 @@ def check_data_integrity(tf):
         os.path.join(cfg.V30_DATA_DIR, f'v2_cross_names_BTC_{tf}.json'),
         os.path.join(PROJECT_DIR, f'v2_cross_names_BTC_{tf}.json'),
     ]
-    npz_path = next((p for p in npz_candidates if os.path.exists(p)), npz_candidates[0])
-    json_path = next((p for p in json_candidates if os.path.exists(p)), json_candidates[0])
-    npz_exists = os.path.exists(npz_path)
-    json_exists = os.path.exists(json_path)
-
     if tf == '1w':
-        check("1w: no cross NPZ (base features only)",
-              not npz_exists,
-              f"1w should use base features only (380 cols, 1158 rows). "
-              f"Crosses violate row:feature ratio. FIX: delete {npz_path}")
+        stale_cross_paths = [p for p in (npz_candidates + json_candidates) if os.path.exists(p)]
+        check("1w: no cross artifacts present (base features only)",
+              len(stale_cross_paths) == 0,
+              f"1w maintained runs are base-features-only. Remove stale cross artifacts: "
+              f"{', '.join(stale_cross_paths[:6])}. FIX: clear cross outputs before validation.")
+        npz_path = npz_candidates[0]
+        json_path = json_candidates[0]
+        npz_exists = False
+        json_exists = False
     elif tf in ('4h', '1h', '15m'):
+        npz_path = _first_existing(npz_candidates) or npz_candidates[0]
+        json_path = _first_existing(json_candidates) or json_candidates[0]
+        npz_exists = os.path.exists(npz_path)
+        json_exists = os.path.exists(json_path)
         warn(f"{tf}: cross NPZ exists", npz_exists,
              f"Cross NPZ missing for {tf}. Run v2_cross_generator.py --symbol BTC --tf {tf}")
+    else:
+        npz_path = _first_existing(npz_candidates) or npz_candidates[0]
+        json_path = _first_existing(json_candidates) or json_candidates[0]
+        npz_exists = os.path.exists(npz_path)
+        json_exists = os.path.exists(json_path)
 
     # NPZ and JSON must exist together or not at all
-    if npz_exists != json_exists:
+    if tf != '1w' and npz_exists != json_exists:
         check("NPZ/JSON cross files paired",
               False,
               f"NPZ exists={npz_exists}, JSON exists={json_exists}. Must be both or neither. "
               f"FIX: regenerate crosses or delete both.")
-    else:
+    elif tf != '1w':
         check("NPZ/JSON cross files paired", True, "")
 
     # -- Sparse matrix dtypes --
@@ -801,6 +872,17 @@ def check_data_integrity(tf):
             del data
         except Exception as e:
             warn("cross NPZ loadable", False, f"Could not load {npz_path}: {e}")
+
+    if managed_root_contract and npz_exists:
+        check("Maintained run cross NPZ lives under ARTIFACT_ROOT",
+              path_contract.is_under(npz_path, path_contract.ARTIFACT_ROOT),
+              f"cross NPZ resolved to {npz_path} instead of ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}. "
+              f"FIX: remove fallback artifact reads for maintained runs.")
+    if managed_root_contract and json_exists:
+        check("Maintained run cross names JSON lives under ARTIFACT_ROOT",
+              path_contract.is_under(json_path, path_contract.ARTIFACT_ROOT),
+              f"cross names JSON resolved to {json_path} instead of ARTIFACT_ROOT={path_contract.ARTIFACT_ROOT}. "
+              f"FIX: remove fallback artifact reads for maintained runs.")
 
     # -- Parquet row count matches expected --
     tf_expected_rows = {'1w': 500, '1d': 3000, '4h': 8000, '1h': 50000, '15m': 200000}
@@ -845,21 +927,6 @@ def check_data_integrity(tf):
                       f"FIX: v2_cross_generator.py, set V2_RIGHT_CHUNK=500")
         except Exception:
             pass
-
-    # -- Stale cross files must not block TFs that skip cross gen --
-    # 1w skips cross gen (too few rows). Stale NPZ/JSON from previous runs
-    # can trick validation or cloud_run_tf.py into thinking crosses exist.
-    # If a TF is configured to skip cross gen, any existing cross files are stale.
-    tfs_no_cross = {'1w'}  # TFs that should NOT have cross gen
-    if tf in tfs_no_cross:
-        stale_npz = os.path.join(path_contract.ARTIFACT_ROOT, f'v2_crosses_BTC_{tf}.npz')
-        stale_json = os.path.join(path_contract.ARTIFACT_ROOT, f'v2_cross_names_BTC_{tf}.json')
-        if os.path.exists(stale_npz) or os.path.exists(stale_json):
-            warn(f"stale cross files for {tf} (no cross gen TF)",
-                 False,
-                 f"Cross files exist for {tf} but this TF skips cross gen. "
-                 f"Stale files from previous runs may confuse the pipeline. "
-                 f"FIX: rm {stale_npz} {stale_json}")
 
     # -- pipeline_manifest.json contamination --
     manifest_path = os.path.join(path_contract.ARTIFACT_ROOT, 'pipeline_manifest.json')

@@ -123,6 +123,231 @@ def _script(name):
 
 TF = sys.argv[sys.argv.index('--tf') + 1] if '--tf' in sys.argv else '1d'
 ASSEMBLY_LINE = ('--assembly-line' in sys.argv) or (os.environ.get('SAVAGE22_AUTO_ASSEMBLY', '0') == '1')
+
+_MANAGED_RUN = any(os.environ.get(name) for name in ('SAVAGE22_RUN_DIR', 'SAVAGE22_ARTIFACT_DIR'))
+if _MANAGED_RUN:
+    if ARTIFACT_ROOT == CODE_ROOT or RUN_ROOT == CODE_ROOT or RUN_ROOT == ARTIFACT_ROOT:
+        raise SystemExit(
+            f"Managed run requires separate roots: CODE_ROOT={CODE_ROOT}, "
+            f"ARTIFACT_ROOT={ARTIFACT_ROOT}, RUN_ROOT={RUN_ROOT}"
+        )
+
+def _load_first_json(paths):
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f), path
+        except Exception:
+            continue
+    return None, None
+
+def _default_tf_contract(tf_name):
+    cross_required = tf_name != '1w'
+    cross_artifacts = []
+    if cross_required:
+        cross_artifacts = [
+            f'v2_crosses_BTC_{tf_name}.npz',
+            f'v2_cross_names_BTC_{tf_name}.json',
+            f'inference_{tf_name}_thresholds.json',
+            f'inference_{tf_name}_cross_pairs.npz',
+            f'inference_{tf_name}_ctx_names.json',
+            f'inference_{tf_name}_base_cols.json',
+            f'inference_{tf_name}_cross_names.json',
+        ]
+    train_artifacts = [
+        f'model_{tf_name}.json',
+        f'cpcv_oos_predictions_{tf_name}.pkl',
+        f'platt_{tf_name}.pkl',
+    ]
+    optuna_artifacts = [
+        f'optuna_configs_{tf_name}.json',
+        f'lgbm_dataset_{tf_name}.bin',
+    ]
+    phases = {
+        'step0_preflight': {
+            'phase_seq': 0,
+            'required_artifacts': [],
+            'policy': 'required',
+        },
+        'step1_features': {
+            'phase_seq': 1,
+            'required_artifacts': [f'features_BTC_{tf_name}.parquet'],
+            'policy': 'required',
+        },
+        'step2_crosses': {
+            'phase_seq': 2,
+            'required_artifacts': cross_artifacts,
+            'policy': 'required' if cross_required else 'skip',
+            'notes': '1w maintained runs skip crosses by contract' if not cross_required else '',
+        },
+        'step3_baseline': {
+            'phase_seq': 3,
+            'required_artifacts': train_artifacts[:2],
+            'policy': 'required',
+        },
+        'step4_optuna': {
+            'phase_seq': 4,
+            'required_artifacts': optuna_artifacts,
+            'policy': 'required',
+        },
+        'step5_retrain': {
+            'phase_seq': 5,
+            'required_artifacts': train_artifacts,
+            'policy': 'required',
+        },
+        'step6_optimizer': {
+            'phase_seq': 6,
+            'required_artifacts': [f'optuna_configs_{tf_name}.json'],
+            'policy': 'required',
+        },
+        'complete': {
+            'phase_seq': 7,
+            'required_artifacts': (
+                [f'features_BTC_{tf_name}.parquet']
+                + cross_artifacts
+                + optuna_artifacts
+                + train_artifacts
+            ),
+            'policy': 'required',
+        },
+    }
+    return {
+        'tf': tf_name,
+        'heartbeat_statuses': ['running', 'validated', 'failed', 'complete'],
+        'skip_crosses': not cross_required,
+        'phases': phases,
+    }
+
+_TF_CONTRACT_PATHS = []
+if TF == '1w':
+    _TF_CONTRACT_PATHS = [
+        artifact_path('WEEKLY_1W_ARTIFACT_CONTRACT.json'),
+        os.path.join(_SCRIPT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json'),
+    ]
+
+_LOADED_TF_CONTRACT, _TF_CONTRACT_SOURCE = _load_first_json(_TF_CONTRACT_PATHS)
+if TF == '1w' and _LOADED_TF_CONTRACT is not None:
+    _TF_CONTRACT = dict(_LOADED_TF_CONTRACT)
+    _TF_CONTRACT['source'] = _TF_CONTRACT_SOURCE
+else:
+    _TF_CONTRACT = _default_tf_contract(TF)
+
+if TF == '1w':
+    _phases = dict(_TF_CONTRACT.get('phases', {}))
+    if 'step2_crosses' in _phases:
+        _phases['step2_crosses'] = dict(_phases['step2_crosses'])
+        _phases['step2_crosses']['required_artifacts'] = []
+        _phases['step2_crosses']['policy'] = 'skip'
+        _phases['step2_crosses']['notes'] = 'Maintained 1w run skips crosses by contract.'
+    if 'complete' in _phases:
+        _phases['complete'] = dict(_phases['complete'])
+        _phases['complete']['required_artifacts'] = [
+            a for a in _phases['complete'].get('required_artifacts', [])
+            if 'v2_cross' not in a and 'inference_1w_cross' not in a
+        ]
+    _TF_CONTRACT['phases'] = _phases
+
+_PHASE_ALIASES = {
+    'Deployment verification': 'step0_preflight',
+    'Pre-flight validation': 'step0_preflight',
+    'Install deps': 'step0_preflight',
+    'Install numactl': 'step0_preflight',
+    'Rebuild 1w features': 'step1_features',
+    'Build 1w features': 'step1_features',
+    'Rebuild 1d features': 'step1_features',
+    'Build 1d features': 'step1_features',
+    'Rebuild 4h features': 'step1_features',
+    'Build 4h features': 'step1_features',
+    'Rebuild 1h features': 'step1_features',
+    'Build 1h features': 'step1_features',
+    'Rebuild 15m features': 'step1_features',
+    'Build 15m features': 'step1_features',
+    'Build 1w crosses': 'step2_crosses',
+    'Build 1d crosses': 'step2_crosses',
+    'Build 4h crosses': 'step2_crosses',
+    'Build 1h crosses': 'step2_crosses',
+    'Build 15m crosses': 'step2_crosses',
+    'Optuna search 1w': 'step4_optuna',
+    'Optuna search 1d': 'step4_optuna',
+    'Optuna search 4h': 'step4_optuna',
+    'Optuna search 1h': 'step4_optuna',
+    'Optuna search 15m': 'step4_optuna',
+    'Train 1w': 'step5_retrain',
+    'Train 1d': 'step5_retrain',
+    'Train 4h': 'step5_retrain',
+    'Train 1h': 'step5_retrain',
+    'Train 15m': 'step5_retrain',
+    'Optimizer 1w': 'step6_optimizer',
+    'Optimizer 1d': 'step6_optimizer',
+    'Optimizer 4h': 'step6_optimizer',
+    'Optimizer 1h': 'step6_optimizer',
+    'Optimizer 15m': 'step6_optimizer',
+    'Meta 1w': 'step7_meta',
+    'Meta 1d': 'step7_meta',
+    'Meta 4h': 'step7_meta',
+    'Meta 1h': 'step7_meta',
+    'Meta 15m': 'step7_meta',
+    'LSTM 1w': 'step8_lstm',
+    'LSTM 1d': 'step8_lstm',
+    'LSTM 4h': 'step8_lstm',
+    'LSTM 1h': 'step8_lstm',
+    'LSTM 15m': 'step8_lstm',
+    'PBO 1w': 'step9_pbo',
+    'PBO 1d': 'step9_pbo',
+    'PBO 4h': 'step9_pbo',
+    'PBO 1h': 'step9_pbo',
+    'PBO 15m': 'step9_pbo',
+    'Audit 1w': 'step10_audit',
+    'Audit 1d': 'step10_audit',
+    'Audit 4h': 'step10_audit',
+    'Audit 1h': 'step10_audit',
+    'Audit 15m': 'step10_audit',
+    'SHAP cross feature analysis': 'step11_shap',
+    'final-summary': 'complete',
+}
+
+def _canonical_phase(name):
+    return _PHASE_ALIASES.get(name, name)
+
+def _phase_def(phase):
+    return _TF_CONTRACT.get('phases', {}).get(phase, {})
+
+def _phase_required_artifacts(phase):
+    return list(_phase_def(phase).get('required_artifacts', []))
+
+def _phase_artifact_paths(phase):
+    return [artifact_path(name) for name in _phase_required_artifacts(phase)]
+
+def _phase_sentinel_path(phase):
+    return run_path(f'{phase}.validated.json')
+
+def _write_phase_sentinel(phase, status='validated', note=None):
+    try:
+        payload = {
+            'run_id': RUN_ID,
+            'tf': TF,
+            'phase': phase,
+            'phase_seq': PHASE_SEQ,
+            'status': status,
+            'artifact_root': ARTIFACT_ROOT,
+            'run_root': RUN_ROOT,
+            'code_root': CODE_ROOT,
+            'shared_db_root': SHARED_DB_ROOT,
+            'artifact_contract': os.path.join(_SCRIPT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json') if TF == '1w' else None,
+            'release_manifest': run_path('release_manifest.json'),
+            'required_artifacts': _phase_required_artifacts(phase),
+            'required_artifact_paths': _phase_artifact_paths(phase),
+            'updated_at': time.time(),
+        }
+        if note:
+            payload['note'] = note
+        with open(_phase_sentinel_path(phase), 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        log(f"  WARNING: failed to write phase sentinel for {phase}: {e}")
+
 def _emit_runtime_contract():
     cudf_available = importlib.util.find_spec('cudf') is not None
     allow_cpu = os.environ.get('ALLOW_CPU') == '1'
@@ -247,8 +472,13 @@ def _detect_large_machine_profile():
 
 def _set_step(name):
     global CURRENT_STEP, PHASE_SEQ
-    CURRENT_STEP = name
-    PHASE_SEQ += 1
+    CURRENT_STEP = _canonical_phase(name)
+    _phase_info = _phase_def(CURRENT_STEP)
+    _contract_seq = _phase_info.get('phase_seq')
+    if isinstance(_contract_seq, int):
+        PHASE_SEQ = _contract_seq
+    else:
+        PHASE_SEQ += 1
     _mark_progress(f"step:{name}")
 
 def _mark_progress(reason=None):
@@ -264,13 +494,16 @@ def _write_heartbeat(reason=None):
         status = 'failed' if FAILURES else 'running'
         if reason == 'complete':
             status = 'complete'
+        elif reason and ('validated' in reason or reason.endswith(':validated')):
+            status = 'validated'
         payload = {
             'run_id': RUN_ID,
             'tf': TF,
             'pid': os.getpid(),
             'phase': CURRENT_STEP,
-            'step': CURRENT_STEP,
+            'canonical_phase': CURRENT_STEP,
             'phase_seq': PHASE_SEQ,
+            'contract_phase_seq': _phase_def(CURRENT_STEP).get('phase_seq', PHASE_SEQ),
             'status': status,
             'started_at': START,
             'updated_at': now,
@@ -281,6 +514,14 @@ def _write_heartbeat(reason=None):
             'failures': list(FAILURES),
             'allow_cpu': os.environ.get('ALLOW_CPU', ''),
             'resources': _resource_snapshot(),
+            'artifact_root': ARTIFACT_ROOT,
+            'run_root': RUN_ROOT,
+            'code_root': CODE_ROOT,
+            'shared_db_root': SHARED_DB_ROOT,
+            'heartbeat_path': HEARTBEAT_FILE,
+            'artifact_contract': os.path.join(_SCRIPT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json') if TF == '1w' else None,
+            'release_manifest': run_path('release_manifest.json'),
+            'expected_artifacts': _phase_required_artifacts(CURRENT_STEP),
         }
         if reason:
             payload['reason'] = reason
@@ -326,7 +567,9 @@ def run(cmd, name, critical=True):
     r = subprocess.run(cmd, shell=True)
     dt = time.time() - t0
     ok = r.returncode == 0
-    _mark_progress(f"{name}:{'ok' if ok else 'fail'}")
+    _mark_progress(f"{name}:{'validated' if ok else 'fail'}")
+    if ok:
+        _write_phase_sentinel(CURRENT_STEP, status='validated')
     log(f"{name}: {'OK' if ok else 'FAIL'} ({dt:.0f}s)")
     if not ok:
         FAILURES.append(name)
@@ -368,7 +611,9 @@ def run_tee(cmd, name, logfile, critical=True):
         rc = proc.wait()
     dt = time.time() - t0
     ok = rc == 0
-    _mark_progress(f"{name}:{'ok' if ok else 'fail'}")
+    _mark_progress(f"{name}:{'validated' if ok else 'fail'}")
+    if ok:
+        _write_phase_sentinel(CURRENT_STEP, status='validated')
     log(f"{name}: {'OK' if ok else 'FAIL'} ({dt:.0f}s)")
     if not ok:
         FAILURES.append(name)
@@ -396,29 +641,28 @@ def _print_summary():
             _status = 'OK' if _next_tf_build_ok else 'FAILED'
             print(f"  [ASSEMBLY-LINE] Next TF feature build: {_status}", flush=True)
     # List all artifacts
-    artifacts = [
-        f'model_{TF}.json', f'model_{TF}_cpcv_backup.json',
-        f'optuna_configs_{TF}.json',
-        f'lgbm_dataset_{TF}.bin',
-        f'meta_model_{TF}.pkl', f'platt_{TF}.pkl', f'lstm_{TF}.pt',
-        f'features_{TF}_all.json', f'cpcv_oos_predictions_{TF}.pkl',
-        f'v2_crosses_BTC_{TF}.npz', f'v2_cross_names_BTC_{TF}.json',
-        f'features_BTC_{TF}.parquet',
+    artifacts = list(dict.fromkeys(artifact_path(a) for a in (
+        *(_phase_required_artifacts('complete') or []),
+        f'model_{TF}_cpcv_backup.json',
+        f'meta_model_{TF}.pkl',
+        f'lstm_{TF}.pt',
         f'feature_importance_stability_{TF}.json',
         f'shap_analysis_{TF}.json',
         'ml_multi_tf_configs.json',
         # Inference cross artifacts (for live trading)
-        f'inference_{TF}_thresholds.json', f'inference_{TF}_cross_pairs.npz',
-        f'inference_{TF}_ctx_names.json', f'inference_{TF}_base_cols.json',
+        f'inference_{TF}_thresholds.json',
+        f'inference_{TF}_cross_pairs.npz',
+        f'inference_{TF}_ctx_names.json',
+        f'inference_{TF}_base_cols.json',
         f'inference_{TF}_cross_names.json',
-    ]
+    )))
     print("  Artifacts:", flush=True)
     for a in artifacts:
         if os.path.exists(a):
             sz = os.path.getsize(a) / (1024*1024)
-            print(f"    {sz:8.1f} MB  {a}", flush=True)
+            print(f"    {sz:8.1f} MB  {os.path.basename(a)}", flush=True)
         else:
-            print(f"    MISSING     {a}", flush=True)
+            print(f"    MISSING     {os.path.basename(a)}", flush=True)
 
 
 # ============================================================
@@ -509,7 +753,15 @@ for _pat in _stale_patterns:
     for _stale in glob.glob(os.path.join(ARTIFACT_ROOT, _pat)):
         # Keep current TF's artifacts  they may represent hours of cross gen work
         _basename = os.path.basename(_stale)
-        if f'_{TF}.' in _basename or f'_BTC_{TF}.' in _basename:
+        _keep_current = (
+            _basename.startswith(f'features_{TF}_')
+            or _basename.startswith(f'features_BTC_{TF}')
+            or (not _skip_crosses and (
+                _basename.startswith(f'v2_crosses_BTC_{TF}')
+                or _basename.startswith(f'v2_cross_names_BTC_{TF}')
+            ))
+        )
+        if _keep_current:
             log(f"  Keeping current TF artifact: {_basename}")
             _kept_count += 1
             continue
@@ -641,12 +893,12 @@ log(f"  All {len(_REQUIRED_DBS)} databases present  OK")
 # ============================================================
 # STEP 2: Rebuild features if parquet missing or incomplete
 # ============================================================
-parquet_path = f'features_BTC_{TF}.parquet'
+parquet_path = artifact_path(f'features_BTC_{TF}.parquet')
 need_rebuild = False
 
 if not os.path.exists(parquet_path):
     # Also check non-BTC name (some build scripts save without symbol)
-    alt_path = f'features_{TF}.parquet'
+    alt_path = artifact_path(f'features_{TF}.parquet')
     if os.path.exists(alt_path):
         os.rename(alt_path, parquet_path)
         log(f"Renamed {alt_path}  {parquet_path}")
@@ -713,13 +965,13 @@ if need_rebuild:
 
     log(f"Rebuilding {TF} features using {build_script}...")
     run_tee(build_cmd,
-            f'Rebuild {TF} features', f'rebuild_{TF}.log')
+            f'Rebuild {TF} features', run_path(f'logs/rebuild_{TF}.log'))
 
     # The build script may save to _SCRIPT_DIR instead of CWD  check both locations
     if not os.path.exists(parquet_path):
         # Check all possible locations
         candidates = [
-            f'features_{TF}.parquet',
+            artifact_path(f'features_{TF}.parquet'),
             os.path.join(_SCRIPT_DIR, f'features_BTC_{TF}.parquet'),
             os.path.join(_SCRIPT_DIR, f'features_{TF}.parquet'),
         ]
@@ -745,9 +997,16 @@ if need_rebuild:
         log(f"*** CRITICAL: Rebuilt parquet still only {pq.shape[1]} cols ***")
         sys.exit(1)
     del pq
+    _set_step('step1_features')
+    _write_phase_sentinel('step1_features', status='validated', note='rebuilt_features')
+    _mark_progress('step1_features:validated')
+elif os.path.exists(parquet_path):
+    _set_step('step1_features')
+    _write_phase_sentinel('step1_features', status='validated', note='reused_cached_features')
+    _mark_progress('step1_features:validated')
 
-# Create non-BTC symlink for scripts that look for features_{tf}.parquet (e.g. LSTM)
-plain_pq = f'features_{TF}.parquet'
+# Create non-BTC compatibility symlink inside ARTIFACT_ROOT for scripts that look for features_{tf}.parquet
+plain_pq = artifact_path(f'features_{TF}.parquet')
 if os.path.exists(parquet_path) and not os.path.exists(plain_pq):
     os.symlink(parquet_path, plain_pq)
     log(f"Symlinked {plain_pq}  {parquet_path}")
@@ -782,39 +1041,39 @@ os.environ.setdefault('OMP_PLACES', 'cores')
 os.environ.setdefault('OMP_SCHEDULE', 'static')
 log(f"Cross gen phase: OMP_NUM_THREADS=4, NUMBA_NUM_THREADS=4, MKL_DYNAMIC=FALSE (thread-safe for all TFs)")
 
-npz_path = f'v2_crosses_BTC_{TF}.npz'
-# Check both CWD and _SCRIPT_DIR for existing NPZ
-if not os.path.exists(npz_path):
-    alt_npz = os.path.join(_SCRIPT_DIR, npz_path)
-    if os.path.exists(alt_npz):
-        os.symlink(os.path.abspath(alt_npz), npz_path)
-        log(f"Symlinked {npz_path}  {alt_npz}")
-    # Also symlink cross names
-    cn = f'v2_cross_names_BTC_{TF}.json'
-    alt_cn = os.path.join(_SCRIPT_DIR, cn)
-    if not os.path.exists(cn) and os.path.exists(alt_cn):
-        os.symlink(os.path.abspath(alt_cn), cn)
+cross_phase = 'step2_crosses'
+npz_path = artifact_path(f'v2_crosses_BTC_{TF}.npz')
+cn_path = artifact_path(f'v2_cross_names_BTC_{TF}.json')
 
 _npz_valid = False
 _skip_crosses = TF in SKIP_CROSSES_TFS
 if _skip_crosses:
-    _npz_valid = True  # pretend NPZ exists  training will use base features only
+    _set_step(cross_phase)
+    _npz_valid = True  # maintained 1w run uses base features only
     log(f"  Crosses DISABLED for {TF}  training on base features only")
+    _write_phase_sentinel(cross_phase, status='validated', note='skipped_by_contract')
+    _mark_progress(f"{cross_phase}:validated")
 elif os.path.exists(npz_path) and os.path.getsize(npz_path) > 1000:
     npz_size = os.path.getsize(npz_path) / (1024*1024)
     # Validate NPZ col count  stale NPZs from v3.0 (min_nonzero=8) have far fewer crosses
     _MIN_CROSS_COLS = {'1w': 500_000, '1d': 1_000_000, '4h': 1_000_000, '1h': 1_000_000, '15m': 1_000_000}
     _min_cols = _MIN_CROSS_COLS.get(TF, 1_000_000)
     try:
+        if not os.path.exists(cn_path):
+            log(f"  Cross names JSON missing for cached NPZ  will rebuild")
+            os.remove(npz_path)
+            raise FileNotFoundError(cn_path)
         from scipy import sparse as _sp
         _npz_shape = _sp.load_npz(npz_path).shape
         if _npz_shape[1] >= _min_cols:
             _npz_valid = True
             log(f"Cross NPZ valid ({npz_size:.1f} MB, {_npz_shape[1]:,} cols >= {_min_cols:,} min)  SKIPPING cross gen")
+            _set_step(cross_phase)
+            _write_phase_sentinel(cross_phase, status='validated', note='reused_cached_cross_artifacts')
+            _mark_progress(f"{cross_phase}:validated")
         else:
             log(f"Cross NPZ STALE ({_npz_shape[1]:,} cols < {_min_cols:,} min)  will rebuild")
             os.remove(npz_path)
-            cn_path = npz_path.replace('v2_crosses_', 'v2_cross_names_').replace('.npz', '.json')
             if os.path.exists(cn_path):
                 os.remove(cn_path)
                 log(f"  Removed stale cross names: {cn_path}")
@@ -824,30 +1083,26 @@ if _npz_valid:
     pass  # NPZ valid, skip cross gen
 else:
     run_tee(f'python -X utf8 -u {_script("v2_cross_generator.py")} --tf {TF} --symbol BTC --save-sparse',
-            f'Build {TF} crosses', f'cross_{TF}.log')
-    # Check both locations for output
+            f'Build {TF} crosses', run_path(f'logs/cross_{TF}.log'))
+    # Check artifact-root output
     if not os.path.exists(npz_path):
-        alt_npz = os.path.join(_SCRIPT_DIR, npz_path)
-        if os.path.exists(alt_npz):
-            os.symlink(os.path.abspath(alt_npz), npz_path)
-            log(f"Symlinked {npz_path}  {alt_npz}")
-            cn = f'v2_cross_names_BTC_{TF}.json'
-            alt_cn = os.path.join(_SCRIPT_DIR, cn)
-            if not os.path.exists(cn) and os.path.exists(alt_cn):
-                os.symlink(os.path.abspath(alt_cn), cn)
-        else:
-            log(f"*** CRITICAL: {npz_path} not created by cross generator ***")
-            sys.exit(1)
+        log(f"*** CRITICAL: {npz_path} not created by cross generator ***")
+        sys.exit(1)
+    if not os.path.exists(cn_path):
+        log(f"*** CRITICAL: {cn_path} not created by cross generator ***")
+        sys.exit(1)
     npz_size = os.path.getsize(npz_path) / (1024*1024)
     log(f"Cross NPZ: {npz_size:.1f} MB")
 
 # Verify inference artifacts were created by cross generator
-_inf_artifacts = [f'inference_{TF}_thresholds.json', f'inference_{TF}_cross_pairs.npz',
-                  f'inference_{TF}_ctx_names.json', f'inference_{TF}_base_cols.json',
-                  f'inference_{TF}_cross_names.json']
+_inf_artifacts = [artifact_path(f'inference_{TF}_thresholds.json'),
+                  artifact_path(f'inference_{TF}_cross_pairs.npz'),
+                  artifact_path(f'inference_{TF}_ctx_names.json'),
+                  artifact_path(f'inference_{TF}_base_cols.json'),
+                  artifact_path(f'inference_{TF}_cross_names.json')]
 _inf_missing = [a for a in _inf_artifacts if not os.path.exists(a)]
 if _inf_missing:
-    log(f"  WARNING: Missing inference artifacts: {', '.join(_inf_missing)}")
+    log(f"  WARNING: Missing inference artifacts: {', '.join(os.path.basename(a) for a in _inf_missing)}")
     log(f"  Live trading will not have cross features for {TF}")
 else:
     log(f"  Inference artifacts OK: all {len(_inf_artifacts)} files present")
@@ -919,7 +1174,7 @@ def _assembly_line_build_next_tf():
     if _idx + 1 >= len(_TF_SEQUENCE):
         return  # Last TF, nothing to prefetch
     next_tf = _TF_SEQUENCE[_idx + 1]
-    next_parquet = f'features_BTC_{next_tf}.parquet'
+    next_parquet = artifact_path(f'features_BTC_{next_tf}.parquet')
 
     # Check if already built
     if os.path.exists(next_parquet):
@@ -958,7 +1213,7 @@ def _assembly_line_build_next_tf():
 
     log(f"  [ASSEMBLY-LINE] Starting background feature build: {next_tf}")
     t0 = time.time()
-    logfile = f'assembly_build_{next_tf}.log'
+    logfile = run_path(f'logs/assembly_build_{next_tf}.log')
     try:
         with open(logfile, 'w') as lf:
             proc = subprocess.Popen(
@@ -1000,12 +1255,25 @@ if ASSEMBLY_LINE:
     except ValueError:
         log(f"[ASSEMBLY-LINE] {TF} not in sequence {_TF_SEQUENCE}  skipping prefetch")
 
-optuna_config_path = f'optuna_configs_{TF}.json'
+optuna_config_path = artifact_path(f'optuna_configs_{TF}.json')
+_optuna_cached_ok = False
 if os.path.exists(optuna_config_path):
-    log(f"Optuna config already exists ({optuna_config_path})  skipping search")
-else:
+    try:
+        with open(optuna_config_path, 'r', encoding='utf-8') as _f_optuna:
+            _optuna_cached = json.load(_f_optuna)
+        _optuna_cached_ok = isinstance(_optuna_cached, dict) and 'best_params' in _optuna_cached
+    except Exception:
+        _optuna_cached_ok = False
+    if _optuna_cached_ok:
+        _set_step('step4_optuna')
+        log(f"Optuna config already exists ({optuna_config_path})  skipping search")
+        _write_phase_sentinel('step4_optuna', status='validated', note='reused_cached_optuna_config')
+        _mark_progress('step4_optuna:validated')
+    else:
+        log(f"Optuna config exists but is missing best_params  will rerun search")
+if not _optuna_cached_ok:
     run_tee(f'env OPTUNA_SKIP_FINAL_RETRAIN=1 {_NUMA_PREFIX}python -X utf8 -u {_script("run_optuna_local.py")} --tf {TF}',
-            f'Optuna search {TF}', f'optuna_{TF}.log', critical=False)
+            f'Optuna search {TF}', run_path(f'logs/optuna_{TF}.log'), critical=False)
     if os.path.exists(optuna_config_path):
         import json as _json_step5
         with open(optuna_config_path) as _f5:
@@ -1022,12 +1290,11 @@ else:
 
 # Clean stale CPCV checkpoint  prevents resuming from a previous run's completed folds
 # which would skip all training and produce results from old/different data
-_cpcv_ckpt = f'cpcv_checkpoint_{TF}.pkl'
+_cpcv_ckpt = artifact_path(f'cpcv_checkpoint_{TF}.pkl')
 if os.path.exists(_cpcv_ckpt):
-    os.remove(_cpcv_ckpt)
-    log(f"  Removed stale CPCV checkpoint: {_cpcv_ckpt}")
+    log(f"  Preserving CPCV checkpoint candidate: {_cpcv_ckpt}")
 
-train_log = f'train_{TF}.log'
+train_log = run_path(f'logs/train_{TF}.log')
 run_tee(f'env V3_HOT_PATH_TRAINING=1 V3_RUN_FI_STABILITY=1 {_NUMA_PREFIX}python -X utf8 -u {_script("ml_multi_tf.py")} --tf {TF}',
         f'Train {TF}', train_log)
 
@@ -1054,7 +1321,7 @@ else:
     sys.exit(1)
 
 # CRITICAL: Verify model was actually saved (accuracy floor can silently skip save)
-_model_path = f'model_{TF}.json'
+_model_path = artifact_path(f'model_{TF}.json')
 if not os.path.exists(_model_path):
     log(f"*** CRITICAL: model_{TF}.json NOT FOUND after training ***")
     log(f"  Training exited OK but model was not saved.")
@@ -1066,7 +1333,7 @@ if not os.path.exists(_model_path):
 
 # PROTECT Step 4 model from any downstream overwrite
 import shutil
-_backup_path = f'model_{TF}_cpcv_backup.json'
+_backup_path = artifact_path(f'model_{TF}_cpcv_backup.json')
 if os.path.exists(_model_path):
     shutil.copy2(_model_path, _backup_path)
     log(f"  Model backed up: {_backup_path} ({os.path.getsize(_model_path)/1024:.0f} KB)")
@@ -1095,7 +1362,7 @@ if _model_accuracy == 0.0:
     log("  WARNING: Could not extract accuracy from train log, using 0.0")
 
 # Check if features file exists
-_feat_path = f'features_{TF}_all.json'
+_feat_path = artifact_path(f'features_{TF}_all.json')
 _feat_arg = f'--features {_feat_path}' if os.path.exists(_feat_path) else ''
 
 # Deploy to version registry
@@ -1118,7 +1385,7 @@ except _sp.CalledProcessError as _e:
 # STEP 6: Exhaustive trade optimizer
 # ============================================================
 run_tee(f'python -X utf8 -u {_script("exhaustive_optimizer.py")} --tf {TF}',
-        f'Optimizer {TF}', f'optimizer_{TF}.log', critical=False)
+        f'Optimizer {TF}', run_path(f'logs/optimizer_{TF}.log'), critical=False)
 
 # ============================================================
 # STEPS 7,8,9  Run in PARALLEL (all depend only on Step 4)
@@ -1136,9 +1403,9 @@ def _run_step(name, cmd, logfile):
         return (name, False)
 
 _parallel_steps = [
-    (f'Meta {TF}',  f'python -X utf8 -u {_script("meta_labeling.py")} --tf {TF}',  f'meta_{TF}.log'),
-    (f'LSTM {TF}',  f'python -X utf8 -u {_script("lstm_sequence_model.py")} --tf {TF} --train',  f'lstm_{TF}.log'),
-    (f'PBO {TF}',   f'python -X utf8 -u {_script("backtest_validation.py")} --tf {TF}',  f'pbo_{TF}.log'),
+    (f'Meta {TF}',  f'python -X utf8 -u {_script("meta_labeling.py")} --tf {TF}',  run_path(f'logs/meta_{TF}.log')),
+    (f'LSTM {TF}',  f'python -X utf8 -u {_script("lstm_sequence_model.py")} --tf {TF} --train',  run_path(f'logs/lstm_{TF}.log')),
+    (f'PBO {TF}',   f'python -X utf8 -u {_script("backtest_validation.py")} --tf {TF}',  run_path(f'logs/pbo_{TF}.log')),
 ]
 
 log(f"=== Steps 7,8,9 launching in parallel ({len(_parallel_steps)} tasks) ===")
@@ -1152,7 +1419,7 @@ with ThreadPoolExecutor(max_workers=len(_parallel_steps)) as _step_pool:
 # STEP 10: Audit (sequential  depends on Step 6 optimizer output)
 # ============================================================
 run_tee(f'python -X utf8 -u {_script("backtesting_audit.py")} --tf {TF}',
-        f'Audit {TF}', f'audit_{TF}.log', critical=False)
+        f'Audit {TF}', run_path(f'logs/audit_{TF}.log'), critical=False)
 
 # ============================================================
 # STEP 11: SHAP Cross Feature Validation (non-fatal)
@@ -1255,10 +1522,19 @@ elif _next_tf_build_thread is not None and _next_tf_build_thread.is_alive():
 # FINAL SUMMARY
 # ============================================================
 _set_step('final-summary')
+if len(FAILURES) == 0:
+    _complete_missing = [a for a in _phase_required_artifacts('complete') if not os.path.exists(artifact_path(a))]
+    if _complete_missing:
+        log(f"*** CRITICAL: missing complete artifacts: {', '.join(_complete_missing)} ***")
+        FAILURES.append('complete-artifacts')
+    if TF in SKIP_CROSSES_TFS and not os.path.exists(_phase_sentinel_path('step2_crosses')):
+        log("*** CRITICAL: missing validated skip sentinel for step2_crosses ***")
+        FAILURES.append('step2_crosses-sentinel')
+
 _print_summary()
 
-# Signal completion  only write DONE marker if zero failures
 if len(FAILURES) == 0:
+    _write_phase_sentinel('complete', status='complete', note='run_complete')
     with open(run_path(f'DONE_{TF}'), 'w') as f:
         f.write(f"Completed at {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n")
         f.write(f"Total time: {time.time()-START:.0f}s\n")

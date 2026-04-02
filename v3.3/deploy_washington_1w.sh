@@ -45,6 +45,17 @@ ALLOW_TEMPLATE_MISMATCH="${ALLOW_TEMPLATE_MISMATCH:-0}"
 ALLOW_REGION_MISMATCH="${ALLOW_REGION_MISMATCH:-0}"
 SSH_BIN="${SSH_BIN:-}"
 SCP_BIN="${SCP_BIN:-}"
+USE_GCS_SHARED_DB="${USE_GCS_SHARED_DB:-1}"
+GCS_PROJECT_ID="${GCS_PROJECT_ID:-tbtb-492116}"
+GCS_BUCKET="${GCS_BUCKET:-tbtb}"
+GCS_PREFIX="${GCS_PREFIX:-savage22/shared-db/latest}"
+GCS_KEY_PATH="${GCS_KEY_PATH:-}"
+GCS_SHARED_SEED_PROJECT_ID=""
+GCS_SHARED_SEED_BUCKET=""
+GCS_SHARED_SEED_PREFIX=""
+GCS_SHARED_SEED_MANIFEST_SHA256=""
+GCS_SHARED_SEED_FILE_COUNT=""
+REMOTE_GCS_KEY_PATH="$REMOTE_RUN_DIR/gcs_service_account.json"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -173,7 +184,9 @@ validate_local_artifacts() {
     local required=(
         "$V33_DIR/CLOUD_1W_LAUNCH_CONTRACT.md"
         "$V33_DIR/CLOUD_TARGET_MACHINE.md"
+        "$V33_DIR/deploy_manifest.py"
         "$V33_DIR/deploy_verify.py"
+        "$V33_DIR/gcs_shared_seed.py"
         "$V33_DIR/deploy_model.py"
         "$V33_DIR/deploy_sichuan.sh"
         "$V33_DIR/deploy_washington_1w.sh"
@@ -199,6 +212,153 @@ validate_local_artifacts() {
         done
         exit 1
     fi
+}
+
+generate_deploy_manifest() {
+    log_step "Generating fresh deploy manifest from current local code"
+    (
+        cd "$V33_DIR"
+        "$LOCAL_PYTHON_BIN" deploy_manifest.py
+    )
+    [[ -f "$V33_DIR/deploy_manifest.json" ]] || {
+        log_error "deploy_manifest.py did not produce $V33_DIR/deploy_manifest.json"
+        exit 1
+    }
+}
+
+resolve_gcs_key_path() {
+    if [[ -n "$GCS_KEY_PATH" && -f "$GCS_KEY_PATH" ]]; then
+        return 0
+    fi
+    for candidate in \
+        "/mnt/c/Users/C/Desktop/tbtb-492116-586524867ff4.json" \
+        "/c/Users/C/Desktop/tbtb-492116-586524867ff4.json"
+    do
+        if [[ -f "$candidate" ]]; then
+            GCS_KEY_PATH="$candidate"
+            return 0
+        fi
+    done
+    log_error "GCS key file not found. Set GCS_KEY_PATH to the service account JSON."
+    exit 1
+}
+
+sync_shared_db_seed_to_gcs() {
+    [[ "$USE_GCS_SHARED_DB" == "1" ]] || return 0
+    resolve_gcs_key_path
+    log_step "Syncing shared DB seed to gs://$GCS_BUCKET/$GCS_PREFIX"
+    local manifest_out
+    manifest_out="$(mktemp "${TMPDIR:-/tmp}/savage22_shared_db_manifest.XXXXXX.json")"
+    trap 'rm -f "$manifest_out"' RETURN
+    "$LOCAL_PYTHON_BIN" "$V33_DIR/gcs_shared_seed.py" upload \
+        --bucket "$GCS_BUCKET" \
+        --prefix "$GCS_PREFIX" \
+        --key-file "$GCS_KEY_PATH" \
+        --project-root "$PROJECT_DIR" \
+        --manifest-out "$manifest_out"
+
+    IFS=$'\t' read -r GCS_SHARED_SEED_PROJECT_ID GCS_SHARED_SEED_BUCKET GCS_SHARED_SEED_PREFIX GCS_SHARED_SEED_MANIFEST_SHA256 GCS_SHARED_SEED_FILE_COUNT < <(
+        "$LOCAL_PYTHON_BIN" - "$manifest_out" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+digest = hashlib.sha256(path.read_bytes()).hexdigest()
+values = [
+    data.get("project_id", ""),
+    data.get("bucket", ""),
+    data.get("prefix", ""),
+    digest,
+    str(len(data.get("files", {}))),
+]
+print("\t".join(values))
+PY
+    )
+    rm -f "$manifest_out"
+    trap - RETURN
+
+    export GCS_SHARED_SEED_PROJECT_ID GCS_SHARED_SEED_BUCKET GCS_SHARED_SEED_PREFIX
+    export GCS_SHARED_SEED_MANIFEST_SHA256 GCS_SHARED_SEED_FILE_COUNT
+}
+
+should_ship_release_file() {
+    local base="$1"
+    case "$base" in
+        deploy_manifest.json|WEEKLY_1W_ARTIFACT_CONTRACT.json)
+            return 0
+            ;;
+        *.py|*.md|*.sh)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    case "$base" in
+        _cross_checkpoint_*|cpcv_oos_*|feature_importance_*|features_*|inference_*|lgbm_dataset_*|lgbm_parent_*|meta_model_*|ml_multi_tf_configs*|model_*|optuna_model_*|optuna_search*|pipeline_manifest*|shap_analysis_*|validation_report_*|v2_cross_names_*|v2_crosses_*)
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+upload_release_bundle() {
+    for f in "$V33_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        local base
+        base="$(basename "$f")"
+        if should_ship_release_file "$base"; then
+            upload_once "$f" "$REMOTE_RELEASE_STAGING/"
+        fi
+    done
+}
+
+write_release_manifest() {
+    local release_dir="$1"
+    local current_link="${2:-}"
+    remote "RELEASE_DIR='$release_dir' CURRENT_LINK='$current_link' RUN_ID='$RUN_ID' INSTANCE_ID='$INSTANCE_ID' SESSION_NAME='$SESSION_NAME' ARTIFACT_ROOT='$REMOTE_ARTIFACT_ROOT' RUN_ROOT='$REMOTE_RUN_DIR' HEARTBEAT_FILE='$REMOTE_HB' SHARED_DB_ROOT='/workspace' SEED_PROJECT_ID='$GCS_SHARED_SEED_PROJECT_ID' SEED_BUCKET='$GCS_SHARED_SEED_BUCKET' SEED_PREFIX='$GCS_SHARED_SEED_PREFIX' SEED_MANIFEST_SHA256='$GCS_SHARED_SEED_MANIFEST_SHA256' SEED_FILE_COUNT='$GCS_SHARED_SEED_FILE_COUNT' python - <<'PY'
+import json
+import os
+import pathlib
+import time
+
+payload = {
+    "run_id": os.environ["RUN_ID"],
+    "release_dir": os.environ["RELEASE_DIR"],
+    "run_dir": os.environ["RUN_ROOT"],
+    "artifact_root": os.environ["ARTIFACT_ROOT"],
+    "shared_db_root": os.environ["SHARED_DB_ROOT"],
+    "heartbeat_path": os.environ["HEARTBEAT_FILE"],
+}
+current_link = os.environ.get("CURRENT_LINK", "")
+if current_link:
+    payload["current_link"] = current_link
+seed = {}
+for env_key, payload_key in (
+    ("SEED_PROJECT_ID", "project_id"),
+    ("SEED_BUCKET", "bucket"),
+    ("SEED_PREFIX", "prefix"),
+    ("SEED_MANIFEST_SHA256", "manifest_sha256"),
+    ("SEED_FILE_COUNT", "file_count"),
+):
+    value = os.environ.get(env_key, "")
+    if value:
+        if payload_key == "file_count":
+            try:
+                seed[payload_key] = int(value)
+            except Exception:
+                seed[payload_key] = value
+        else:
+            seed[payload_key] = value
+if seed:
+    payload["shared_db_seed"] = seed
+path = pathlib.Path(os.environ["RUN_ROOT"]) / "release_manifest.json"
+path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+PY"
 }
 
 resolve_instance() {
@@ -548,6 +708,8 @@ EOF
 
 log_header "PHASE 0: Resolve and Validate Machine $INSTANCE_ID"
 validate_local_artifacts
+generate_deploy_manifest
+sync_shared_db_seed_to_gcs
 resolve_instance
 validate_machine
 
@@ -570,51 +732,55 @@ fi
 log_header "PHASE 1: Upload Current v3.3 Tree"
 if ! $DRY_RUN; then
     remote "rm -rf '$REMOTE_RELEASE_STAGING' && mkdir -p '$REMOTE_RELEASE_STAGING' '$REMOTE_RELEASES_DIR' '$REMOTE_RUN_DIR' '$REMOTE_ARTIFACT_ROOT' '$REMOTE_ARTIFACTS_DIR' '$REMOTE_CACHE_DIR'"
+    upload_release_bundle
 
-    for f in "$V33_DIR"/*.py; do
-        upload_once "$f" "$REMOTE_RELEASE_STAGING/" || true
-    done
-    for f in "$V33_DIR"/*.json; do
-        upload_once "$f" "$REMOTE_RELEASE_STAGING/" || true
-    done
-    for f in "$V33_DIR"/*.md; do
-        upload_once "$f" "$REMOTE_RELEASE_STAGING/" || true
-    done
-    for f in "$V33_DIR"/*.sh; do
-        upload_once "$f" "$REMOTE_RELEASE_STAGING/" || true
-    done
-    for f in "$V33_DIR"/*.txt; do
-        upload_once "$f" "$REMOTE_RELEASE_STAGING/" || true
-    done
-
-    if [[ -f "$PROJECT_DIR/kp_history_gfz.txt" ]]; then
-        upload_once "$PROJECT_DIR/kp_history_gfz.txt" "$REMOTE_DIR/"
+    if [[ "$USE_GCS_SHARED_DB" == "1" ]]; then
+        upload_once "$GCS_KEY_PATH" "$REMOTE_RUN_DIR/"
+        remote "cd '$REMOTE_RELEASE_STAGING' && trap 'rm -f \"$REMOTE_GCS_KEY_PATH\"' EXIT && python - <<'PY'
+import importlib.util, subprocess, sys
+mods = ('google.cloud.storage',)
+missing = [m for m in mods if importlib.util.find_spec(m) is None]
+if missing:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', 'google-cloud-storage'])
+PY"
+        remote "cd '$REMOTE_RELEASE_STAGING' && trap 'rm -f \"$REMOTE_GCS_KEY_PATH\"' EXIT && PYTHONUNBUFFERED=1 python -u gcs_shared_seed.py download --bucket '$GCS_BUCKET' --prefix '$GCS_PREFIX' --key-file '$REMOTE_GCS_KEY_PATH' --dest '$REMOTE_DIR'"
+    else
+        if [[ -f "$PROJECT_DIR/kp_history_gfz.txt" ]]; then
+            upload_once "$PROJECT_DIR/kp_history_gfz.txt" "$REMOTE_DIR/"
+        fi
+        for f in "$PROJECT_DIR"/*.db "$V33_DIR"/multi_asset_prices.db "$V33_DIR"/v2_signals.db "$V33_DIR"/llm_cache.db; do
+            [[ -f "$f" ]] || continue
+            upload_once "$f" "$REMOTE_DIR/"
+        done
     fi
-
-    for f in "$PROJECT_DIR"/*.db "$V33_DIR"/multi_asset_prices.db "$V33_DIR"/v2_signals.db "$V33_DIR"/llm_cache.db; do
-        [[ -f "$f" ]] || continue
-        upload_once "$f" "$REMOTE_DIR/"
-    done
-
-    remote "ln -sf $REMOTE_DIR/*.db '$REMOTE_RELEASE_STAGING/' 2>/dev/null || true"
-    remote "rm -rf '$REMOTE_RELEASE_DIR' && mv '$REMOTE_RELEASE_STAGING' '$REMOTE_RELEASE_DIR' && ln -sfn '$REMOTE_RELEASE_DIR' '$REMOTE_CURRENT_LINK'"
-    remote "printf '%s\n' '{\"run_id\":\"$RUN_ID\",\"release_dir\":\"$REMOTE_RELEASE_DIR\",\"current_link\":\"$REMOTE_CURRENT_LINK\",\"run_dir\":\"$REMOTE_RUN_DIR\",\"artifact_root\":\"$REMOTE_ARTIFACT_ROOT\",\"shared_db_root\":\"/workspace\",\"heartbeat_path\":\"$REMOTE_HB\"}' > '$REMOTE_RUN_DIR/release_manifest.json'"
-    log_step "Upload complete and atomically promoted to $REMOTE_RELEASE_DIR"
+    write_release_manifest "$REMOTE_RELEASE_STAGING"
+    log_step "Upload complete to staging: $REMOTE_RELEASE_STAGING"
 else
     log_info "[DRY RUN] Would upload repo files and databases"
 fi
 
 log_header "PHASE 2: Remote Preflight"
 if ! $DRY_RUN; then
-    remote "cd '$REMOTE_RELEASE_DIR' && mkdir -p '$REMOTE_RUN_DIR' '$REMOTE_RUN_DIR/logs' '$REMOTE_ARTIFACT_ROOT' '$REMOTE_CACHE_DIR' && touch '$REMOTE_RUN_DIR/.write_test' && rm -f '$REMOTE_RUN_DIR/.write_test' && touch '$REMOTE_ARTIFACT_ROOT/.write_test' && rm -f '$REMOTE_ARTIFACT_ROOT/.write_test'"
-    remote "cd '$REMOTE_RELEASE_DIR' && $REMOTE_ALLOW_CPU_DETECT && $REMOTE_ENV_BASE python -u deploy_verify.py --tf $TF"
-    remote "cd '$REMOTE_RELEASE_DIR' && $REMOTE_ALLOW_CPU_DETECT && $REMOTE_ENV_BASE python -u test_pipeline_plumbing.py --tf $TF"
+    remote "cd '$REMOTE_RELEASE_STAGING' && mkdir -p '$REMOTE_RUN_DIR' '$REMOTE_RUN_DIR/logs' '$REMOTE_ARTIFACT_ROOT' '$REMOTE_CACHE_DIR' && touch '$REMOTE_RUN_DIR/.write_test' && rm -f '$REMOTE_RUN_DIR/.write_test' && touch '$REMOTE_ARTIFACT_ROOT/.write_test' && rm -f '$REMOTE_ARTIFACT_ROOT/.write_test'"
+    write_release_manifest "$REMOTE_RELEASE_STAGING"
+    remote "cd '$REMOTE_RELEASE_STAGING' && $REMOTE_ALLOW_CPU_DETECT && $REMOTE_ENV_BASE python -u deploy_verify.py --tf $TF --allow-staged-release"
+    remote "cd '$REMOTE_RELEASE_STAGING' && $REMOTE_ALLOW_CPU_DETECT && $REMOTE_ENV_BASE python -u validate.py --tf $TF --cloud"
+    remote "cd '$REMOTE_RELEASE_STAGING' && $REMOTE_ALLOW_CPU_DETECT && $REMOTE_ENV_BASE python -u test_pipeline_plumbing.py --tf $TF"
     log_step "Remote preflight passed"
 else
-    log_info "[DRY RUN] Would run deploy_verify.py and test_pipeline_plumbing.py"
+    log_info "[DRY RUN] Would run deploy_verify.py, validate.py, and test_pipeline_plumbing.py"
 fi
 
-log_header "PHASE 3: Launch Explicit 1W Sequence"
+log_header "PHASE 3: Promote Verified Release"
+if ! $DRY_RUN; then
+    remote "rm -rf '$REMOTE_RELEASE_DIR' && mv '$REMOTE_RELEASE_STAGING' '$REMOTE_RELEASE_DIR' && ln -sfn '$REMOTE_RELEASE_DIR' '$REMOTE_CURRENT_LINK'"
+    write_release_manifest "$REMOTE_RELEASE_DIR" "$REMOTE_CURRENT_LINK"
+    log_step "Promoted verified release to $REMOTE_RELEASE_DIR"
+else
+    log_info "[DRY RUN] Would promote staging release to $REMOTE_RELEASE_DIR"
+fi
+
+log_header "PHASE 4: Launch Explicit 1W Sequence"
 if ! $DRY_RUN; then
     remote "tmux kill-session -t train_1w 2>/dev/null || true"
     remote "tmux kill-session -t train_1w_remaining 2>/dev/null || true"

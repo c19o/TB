@@ -370,60 +370,62 @@ def _gpu_daemon_main(conn, gpu_id, vram_limit_pct):
                 if idx_parent:
                     os.makedirs(idx_parent, exist_ok=True)
 
-                with open(idx_path, 'wb') as f:
-                    # Write header
-                    f.write(b'IDX1')
-                    f.write(np.uint16(1).tobytes())
-                    f.write(np.uint32(0).tobytes())  # n_records (patched at end)
-                    f.write(np.uint32(n_rows).tobytes())
+                from atomic_io import atomic_save
+                with atomic_save(idx_path) as tmp_idx_path:
+                    with open(tmp_idx_path, 'wb') as f:
+                        # Write header
+                        f.write(b'IDX1')
+                        f.write(np.uint16(1).tobytes())
+                        f.write(np.uint32(0).tobytes())  # n_records (patched at end)
+                        f.write(np.uint32(n_rows).tobytes())
 
-                    n_records = 0
+                        n_records = 0
 
-                    for sb_start in range(0, n_pairs, sub_batch):
-                        sb_end = min(sb_start + sub_batch, n_pairs)
-                        sb_pairs = pairs[sb_start:sb_end]
-                        n_sb = sb_end - sb_start
-                        sb_max = int(pair_max[sb_start:sb_end].max())
-                        if sb_max == 0:
-                            continue
-                        sb_max = min(sb_max, n_rows)
+                        for sb_start in range(0, n_pairs, sub_batch):
+                            sb_end = min(sb_start + sub_batch, n_pairs)
+                            sb_pairs = pairs[sb_start:sb_end]
+                            n_sb = sb_end - sb_start
+                            sb_max = int(pair_max[sb_start:sb_end].max())
+                            if sb_max == 0:
+                                continue
+                            sb_max = min(sb_max, n_rows)
 
-                        # Launch kernel
-                        pairs_gpu = cp.asarray(sb_pairs.astype(np.int32).ravel())
-                        result_idx = cp.zeros(n_sb * sb_max, dtype=cp.int32)
-                        result_cnt = cp.zeros(n_sb, dtype=cp.int32)
+                            # Launch kernel
+                            pairs_gpu = cp.asarray(sb_pairs.astype(np.int32).ravel())
+                            result_idx = cp.zeros(n_sb * sb_max, dtype=cp.int32)
+                            result_cnt = cp.zeros(n_sb, dtype=cp.int32)
 
-                        kernel((n_sb,), (1,),
-                               (indptr_gpu, indices_gpu, pairs_gpu,
-                                result_idx, result_cnt, np.int32(sb_max)))
-                        cp.cuda.Stream.null.synchronize()
+                            kernel((n_sb,), (1,),
+                                   (indptr_gpu, indices_gpu, pairs_gpu,
+                                    result_idx, result_cnt, np.int32(sb_max)))
+                            cp.cuda.Stream.null.synchronize()
 
-                        # Bulk D2H transfer
-                        counts_cpu = cp.asnumpy(result_cnt)
-                        results_cpu = cp.asnumpy(result_idx)
+                            # Bulk D2H transfer
+                            counts_cpu = cp.asnumpy(result_cnt)
+                            results_cpu = cp.asnumpy(result_idx)
 
-                        # CPU post-process: build write buffer (batched f.write)
-                        write_buf = bytearray()
-                        for i in range(n_sb):
-                            cnt = int(counts_cpu[i])
-                            if cnt > 0:
-                                global_pair_id = pair_id_offset + sb_start + i
-                                offset = i * sb_max
-                                rows = results_cpu[offset:offset + cnt]
-                                write_buf += np.int32(global_pair_id).tobytes()
-                                write_buf += np.int32(cnt).tobytes()
-                                write_buf += rows.astype(np.int32).tobytes()
-                                total_nnz += cnt
-                                n_records += 1
+                            # CPU post-process: build write buffer (batched f.write)
+                            write_buf = bytearray()
+                            for i in range(n_sb):
+                                cnt = int(counts_cpu[i])
+                                if cnt > 0:
+                                    global_pair_id = pair_id_offset + sb_start + i
+                                    offset = i * sb_max
+                                    rows = results_cpu[offset:offset + cnt]
+                                    write_buf += np.int32(global_pair_id).tobytes()
+                                    write_buf += np.int32(cnt).tobytes()
+                                    write_buf += rows.astype(np.int32).tobytes()
+                                    total_nnz += cnt
+                                    n_records += 1
 
-                        if write_buf:
-                            f.write(write_buf)
+                            if write_buf:
+                                f.write(write_buf)
 
-                        del pairs_gpu, result_idx, result_cnt
+                            del pairs_gpu, result_idx, result_cnt
 
-                    # Patch header with actual record count
-                    f.seek(6)  # after magic(4) + version(2)
-                    f.write(np.uint32(n_records).tobytes())
+                        # Patch header with actual record count
+                        f.seek(6)  # after magic(4) + version(2)
+                        f.write(np.uint32(n_records).tobytes())
 
                 if total_nnz == 0:
                     try:

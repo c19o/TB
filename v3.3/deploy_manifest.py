@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-deploy_manifest.py — Generate SHA256 manifest of all .py files for cloud deployment verification.
+deploy_manifest.py - Generate SHA256 manifest for release-eligible files.
 
-Run LOCALLY before SCP:
+Run locally before SCP:
     python deploy_manifest.py
 
 Generates deploy_manifest.json with:
-  - SHA256 hash of every .py file in v3.3/
+  - SHA256 hash of every shipped source/control file in v3.3/
   - Timestamp of generation
   - Python version used to generate
   - Total file count
@@ -14,6 +14,7 @@ Generates deploy_manifest.json with:
 The manifest is SCP'd alongside code. deploy_verify.py reads it on the cloud
 to detect stale/corrupt/missing files.
 """
+
 import hashlib
 import json
 import os
@@ -44,15 +45,34 @@ CRITICAL_FILES = [
     "deploy_verify.py",
     "test_pipeline_plumbing.py",
     "backtest_validation.py",
-    "inference_crosses.py",
     "live_trader.py",
     "hardware_detect.py",
     "bitpack_utils.py",
 ]
 
-# Root-level files that get deployed alongside v3.3/
-# (astrology_engine.py was moved into v3.3/ -- add here if any root .py files are SCP'd)
-ROOT_FILES = []
+ALLOWED_TOP_LEVEL_JSON = {
+    "WEEKLY_1W_ARTIFACT_CONTRACT.json",
+}
+
+EXCLUDED_PREFIXES = (
+    "_cross_checkpoint_",
+    "cpcv_oos_",
+    "feature_importance_",
+    "features_",
+    "inference_",
+    "lgbm_dataset_",
+    "lgbm_parent_",
+    "meta_model_",
+    "ml_multi_tf_configs",
+    "model_",
+    "optuna_model_",
+    "optuna_search",
+    "pipeline_manifest",
+    "shap_analysis_",
+    "validation_report_",
+    "v2_cross_names_",
+    "v2_crosses_",
+)
 
 
 def sha256_file(filepath):
@@ -62,6 +82,21 @@ def sha256_file(filepath):
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def should_include_release_file(fname):
+    """Return True for files that may ship in a maintained release bundle."""
+    if fname in ALLOWED_TOP_LEVEL_JSON:
+        return True
+
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in {".py", ".md", ".sh"}:
+        return False
+
+    if any(fname.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
+        return False
+
+    return True
 
 
 def main():
@@ -75,31 +110,20 @@ def main():
         "critical_files": CRITICAL_FILES,
     }
 
-    # Hash all .py files in v3.3/
-    py_files = sorted(f for f in os.listdir(SCRIPT_DIR) if f.endswith(".py"))
-    for fname in py_files:
+    release_files = sorted(
+        f for f in os.listdir(SCRIPT_DIR)
+        if os.path.isfile(os.path.join(SCRIPT_DIR, f))
+        and should_include_release_file(f)
+    )
+    for fname in release_files:
         fpath = os.path.join(SCRIPT_DIR, fname)
-        if os.path.isfile(fpath):
-            manifest["files"][fname] = {
-                "sha256": sha256_file(fpath),
-                "size": os.path.getsize(fpath),
-            }
-
-    # Hash root-level files that get SCP'd
-    root_dir = os.path.dirname(SCRIPT_DIR)
-    for fname in ROOT_FILES:
-        fpath = os.path.join(root_dir, fname)
-        if os.path.isfile(fpath):
-            manifest["files"][f"../{fname}"] = {
-                "sha256": sha256_file(fpath),
-                "size": os.path.getsize(fpath),
-            }
-        else:
-            print(f"  WARNING: root file not found: {fname}")
+        manifest["files"][fname] = {
+            "sha256": sha256_file(fpath),
+            "size": os.path.getsize(fpath),
+        }
 
     manifest["total_files"] = len(manifest["files"])
 
-    # Verify all critical files are present
     missing_critical = []
     for cf in CRITICAL_FILES:
         if cf not in manifest["files"]:
@@ -110,15 +134,14 @@ def main():
         print(f"\nERROR: {len(missing_critical)} critical files missing. Fix before deploying.")
         sys.exit(1)
 
-    # Write manifest
-    with open(MANIFEST_PATH, "w") as f:
+    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
     print(f"\nManifest written: {MANIFEST_PATH}")
-    print(f"  Total .py files: {manifest['total_files']}")
+    print(f"  Total shipped files: {manifest['total_files']}")
     print(f"  Critical files:  {len(CRITICAL_FILES)} (all present)")
-    print(f"\nNext: SCP this manifest alongside your code tarball.")
-    print(f"  Then on cloud: python deploy_verify.py --tf <TF>")
+    print("\nNext: SCP this manifest alongside your code tarball.")
+    print("  Then on cloud: python deploy_verify.py --tf <TF>")
 
 
 if __name__ == "__main__":

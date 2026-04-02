@@ -101,6 +101,7 @@ CHECKPOINT_INTERVAL = 300  # seconds between artifact downloads
 REMOTE_WORKSPACE = '/workspace'
 REMOTE_CURRENT_LINK = '/workspace/current_v3.3'
 REMOTE_V33_DIR = REMOTE_CURRENT_LINK
+MAINTAINED_LAUNCHER = 'deploy_washington_1w.sh'
 
 # Pipeline artifacts to download after each critical step
 CRITICAL_ARTIFACTS = {
@@ -1011,7 +1012,10 @@ def run_pipeline(ssh: SSHClient, tf: str, env: dict, state: PipelineState,
     state.save(os.path.join(checkpoint_dir, f'state_{tf}.json'))
 
     # Check for DONE marker
-    result = ssh.run(f'test -f {REMOTE_WORKSPACE}/DONE_{tf}', check=False)
+    result = ssh.run(
+        f'test -f {REMOTE_CURRENT_LINK}/DONE_{tf} || test -f {REMOTE_WORKSPACE}/DONE_{tf}',
+        check=False,
+    )
     if result.returncode == 0:
         log(f"DONE marker found — {tf} pipeline fully complete!")
     else:
@@ -1058,6 +1062,11 @@ Examples:
     parser.add_argument('--max-price', type=float,
                         help='Override max $/hr filter')
     args = parser.parse_args()
+
+    if not args.search_only and not args.dry_run:
+        log_error("cloud_auto.py is a legacy launcher helper and is unsupported for maintained runs.")
+        log_error(f"Use {MAINTAINED_LAUNCHER} (or the unified contract launcher) instead.")
+        sys.exit(2)
 
     tf = Timeframe(args.tf)
     spec = TF_SPECS[tf]

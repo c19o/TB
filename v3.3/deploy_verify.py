@@ -38,6 +38,28 @@ os.environ.setdefault("ALLOW_CPU", "1")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 from path_contract import ARTIFACT_ROOT, CODE_ROOT, RUN_ROOT, SHARED_DB_ROOT, ensure_runtime_dirs, is_under
+try:
+    from gcs_shared_seed import REQUIRED_FILES as SHARED_DB_FILES
+except Exception:
+    SHARED_DB_FILES = (
+        "astrology_full.db",
+        "btc_prices.db",
+        "ephemeris_cache.db",
+        "fear_greed.db",
+        "funding_rates.db",
+        "google_trends.db",
+        "llm_cache.db",
+        "macro_data.db",
+        "multi_asset_prices.db",
+        "news_articles.db",
+        "onchain_data.db",
+        "open_interest.db",
+        "space_weather.db",
+        "sports_results.db",
+        "tweets.db",
+        "v2_signals.db",
+        "kp_history_gfz.txt",
+    )
 
 # ── Counters ──
 PASS = 0
@@ -85,7 +107,7 @@ def managed_run_active():
     )
 
 
-def check_root_contract(tf):
+def check_root_contract(tf, allow_staged_release=False):
     print(f"\n== ROOT CONTRACT: 4 Roots ({tf}) ==")
     ensure_runtime_dirs()
     check(f"CODE_ROOT exists: {CODE_ROOT}", os.path.isdir(CODE_ROOT), f"Missing code root: {CODE_ROOT}")
@@ -144,10 +166,40 @@ def check_root_contract(tf):
           os.path.realpath(manifest.get("shared_db_root", "")) == SHARED_DB_ROOT,
           f"shared_db_root={manifest.get('shared_db_root')} SHARED_DB_ROOT={SHARED_DB_ROOT}")
 
+    seed_meta = manifest.get("shared_db_seed", {})
+    if managed_run_active():
+        check("release_manifest shared_db_seed present", isinstance(seed_meta, dict) and bool(seed_meta),
+              "Missing shared_db_seed metadata in release_manifest.json")
+        if isinstance(seed_meta, dict) and seed_meta:
+            check("release_manifest shared_db_seed.project_id present",
+                  bool(seed_meta.get("project_id")),
+                  f"shared_db_seed={seed_meta}")
+            check("release_manifest shared_db_seed.bucket present",
+                  bool(seed_meta.get("bucket")),
+                  f"shared_db_seed={seed_meta}")
+            check("release_manifest shared_db_seed.prefix present",
+                  bool(seed_meta.get("prefix")),
+                  f"shared_db_seed={seed_meta}")
+            manifest_sha = str(seed_meta.get("manifest_sha256", ""))
+            check("release_manifest shared_db_seed.manifest_sha256 is 64 hex chars",
+                  len(manifest_sha) == 64 and all(c in "0123456789abcdef" for c in manifest_sha.lower()),
+                  f"shared_db_seed.manifest_sha256={manifest_sha}")
+            file_count = seed_meta.get("file_count", 0)
+            check("release_manifest shared_db_seed.file_count > 0",
+                  int(file_count) > 0,
+                  f"shared_db_seed.file_count={file_count}")
+
     current_link = manifest.get("current_link", "")
-    check("release_manifest current_link resolves to CODE_ROOT",
-          bool(current_link) and os.path.realpath(current_link) == CODE_ROOT,
-          f"current_link={current_link} CODE_ROOT={CODE_ROOT}")
+    if current_link:
+        check("release_manifest current_link resolves to CODE_ROOT",
+              os.path.realpath(current_link) == CODE_ROOT,
+              f"current_link={current_link} CODE_ROOT={CODE_ROOT}")
+    elif allow_staged_release:
+        check("release_manifest current_link omitted for staged-release verification", True, "")
+    else:
+        check("release_manifest current_link resolves to CODE_ROOT",
+              False,
+              "Missing current_link in release_manifest.json")
 
     heartbeat_path = manifest.get("heartbeat_path", "")
     check("release_manifest heartbeat path stays under RUN_ROOT",
@@ -386,24 +438,9 @@ def check_binary_mode(tf):
 def check_databases():
     print("\n== CHECK F: Database Files ==")
     # Maintained runs use SHARED_DB_ROOT; ad-hoc local runs may still stage DBs beside the code.
-    required_dbs = [
-        "btc_prices.db",
-        "multi_asset_prices.db",
-        "savage22.db",
-        "v2_signals.db",
-        "tweets.db",
-        "news_articles.db",
-        "astrology_full.db",
-        "ephemeris_cache.db",
-        "fear_greed.db",
-        "sports_results.db",
-        "space_weather.db",
-        "macro_data.db",
-        "onchain_data.db",
-        "funding_rates.db",
-        "open_interest.db",
-        "google_trends.db",
-    ]
+    required_dbs = list(SHARED_DB_FILES)
+    if not managed_run_active():
+        required_dbs = required_dbs + ["savage22.db"]
 
     search_dirs = [SHARED_DB_ROOT]
     if not managed_run_active():
@@ -722,6 +759,7 @@ def check_gotchas(tf):
 def main():
     global PASS, FAIL, WARN
 
+    allow_staged_release = "--allow-staged-release" in sys.argv
     tf = sys.argv[sys.argv.index("--tf") + 1] if "--tf" in sys.argv else "1w"
     valid_tfs = ("1w", "1d", "4h", "1h", "15m")
     if tf not in valid_tfs:
@@ -743,7 +781,7 @@ def main():
     # Run all checks
     check_python_version()      # K
     check_pip_packages()         # L
-    check_root_contract(tf)
+    check_root_contract(tf, allow_staged_release=allow_staged_release)
     check_manifest()             # A
     check_pycache()              # B
     check_opencl_icd()           # C

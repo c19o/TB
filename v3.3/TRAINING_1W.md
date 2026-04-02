@@ -1,7 +1,8 @@
-# 1W Training Guide — V3.3 (LOCAL)
+# 1W Training Guide - V3.3 (LOCAL / LEGACY)
 
-Complete step-by-step pipeline for training the 1W (weekly) BTC model locally.
-No cloud needed. No questions needed. Follow each step exactly.
+Historical local-only runbook for 1W.
+Maintained cloud launches use [CLOUD_1W_LAUNCH_CONTRACT.md](/C:/Users/C/Documents/Savage22%20Server/v3.3/CLOUD_1W_LAUNCH_CONTRACT.md).
+Do not use this file as launch authority for maintained runs.
 
 ---
 
@@ -49,7 +50,7 @@ rm -f features_BTC_1w.parquet lgbm_dataset_1w.bin
 rm -f v2_crosses_BTC_1w.npz v2_cross_names_BTC_1w.json
 rm -f model_1w.json model_1w_prev.json
 rm -f optuna_configs_1w.json
-rm -f meta_model_1w.pkl cpcv_oos_1w.pkl
+rm -f meta_model_1w.pkl cpcv_oos_predictions_1w.pkl platt_1w.pkl calibrator_1w.pkl
 rm -f shap_analysis_1w.json feature_importance_1w.json
 rm -f validation_report_1w.json
 echo "Stale artifacts deleted"
@@ -182,11 +183,13 @@ This is OK -- ml_multi_tf.py will compute them on-the-fly.
 
 ---
 
-## Step 2: Build Cross Features (~4 min GPU SpGEMM, ~8 min CPU)
+## Step 2: Build Cross Features (~4 min GPU SpGEMM, ~8 min CPU) [LEGACY ONLY]
 
 Generates targeted cross features: every binary signal crossed with every other binary signal.
 4-tier binarization on ALL numeric columns. Targeted crossing (not ALL x ALL) reduces
 noise by 80% while preserving the matrix thesis.
+
+Maintained `1w` cloud launches skip crosses under the current no-cross contract.
 
 ```bash
 cd "C:/Users/C/Documents/Savage22 Server/v3.3" && \
@@ -204,7 +207,7 @@ If not, CPU fallback (~8 min). Both produce identical results.
 Cross gen uses **per-type NPZ checkpointing**: each cross type (dx, ax, etc.) saves a
 checkpoint file. If OOM kills the process, restart resumes from the last completed type.
 
-### Verify Step 2
+### Verify Step 2 (legacy only)
 
 ```bash
 python -c "
@@ -448,10 +451,10 @@ python -u meta_labeling.py --tf 1w
 ### Verify Step 7
 
 ```bash
-ls -la meta_model_1w.pkl cpcv_oos_1w.pkl 2>/dev/null
+ls -la meta_model_1w.pkl cpcv_oos_predictions_1w.pkl platt_1w.pkl 2>/dev/null
 python -c "
 import os
-for f in ['meta_model_1w.pkl', 'cpcv_oos_1w.pkl']:
+for f in ['meta_model_1w.pkl', 'cpcv_oos_predictions_1w.pkl', 'platt_1w.pkl']:
     if os.path.exists(f):
         print(f'{f}: {os.path.getsize(f)/1024:.1f} KB')
     else:
@@ -461,7 +464,8 @@ for f in ['meta_model_1w.pkl', 'cpcv_oos_1w.pkl']:
 
 **Expected output:**
 - `meta_model_1w.pkl` exists
-- `cpcv_oos_1w.pkl` exists (CPCV out-of-sample predictions)
+- `cpcv_oos_predictions_1w.pkl` exists (CPCV out-of-sample predictions)
+- `platt_1w.pkl` exists (calibration artifact)
 - Meta AUC reported (may be low with only 818 rows -- this is expected)
 - Meta accuracy reported
 
@@ -473,18 +477,17 @@ higher-frequency timeframes with more samples.
 
 ## Complete Artifact Checklist
 
-After all 7 steps, verify ALL artifacts exist:
+After all 8 expected artifacts, verify ALL artifacts exist:
 
 ```bash
 echo "=== ARTIFACT CHECK ==="
 for f in features_BTC_1w.parquet \
-         v2_crosses_BTC_1w.npz \
-         v2_cross_names_BTC_1w.json \
          model_1w.json \
          optuna_configs_1w.json \
          lgbm_dataset_1w.bin \
          meta_model_1w.pkl \
-         cpcv_oos_predictions_1w.pkl; do
+         cpcv_oos_predictions_1w.pkl \
+         platt_1w.pkl; do
   if [ -f "$f" ]; then
     SIZE=$(ls -la "$f" | awk '{print $5}')
     echo "OK   $f ($SIZE bytes)"
@@ -494,7 +497,7 @@ for f in features_BTC_1w.parquet \
 done
 ```
 
-**All 7 files must be present before proceeding to 1d training.**
+**All 8 files must be present before proceeding to 1d training.**
 
 ---
 

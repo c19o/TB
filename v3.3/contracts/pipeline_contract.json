@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "contract_name": "Savage22 unified pipeline contract",
+  "heartbeat_statuses": ["running", "validated", "failed", "complete"],
+  "timeframes": {
+    "1w": {
+      "cross_policy": "forbidden",
+      "resume_boundaries": ["features_validated", "optuna_validated", "train_validated", "optimizer_validated"],
+      "machine_minimums": {"ram_gb": 64, "gpu_count": 1},
+      "phases": {
+        "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
+        "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_1w.parquet"]},
+        "step2_crosses": {
+          "phase_seq": 2,
+          "required_artifacts": [],
+          "policy": "skipped",
+          "skip_reason": "Maintained 1w runs are base-features-only"
+        },
+        "step3_baseline": {
+          "phase_seq": 3,
+          "required_artifacts": ["model_1w.json", "cpcv_oos_predictions_1w.pkl"]
+        },
+        "step4_optuna": {
+          "phase_seq": 4,
+          "required_artifacts": ["optuna_configs_1w.json", "lgbm_dataset_1w.bin"]
+        },
+        "step5_retrain": {
+          "phase_seq": 5,
+          "required_artifacts": ["model_1w.json", "cpcv_oos_predictions_1w.pkl", "platt_1w.pkl"]
+        },
+        "step6_optimizer": {
+          "phase_seq": 6,
+          "required_artifacts": ["optuna_configs_1w.json"]
+        },
+        "complete": {
+          "phase_seq": 7,
+          "required_artifacts": [
+            "features_BTC_1w.parquet",
+            "model_1w.json",
+            "cpcv_oos_predictions_1w.pkl",
+            "optuna_configs_1w.json",
+            "lgbm_dataset_1w.bin",
+            "platt_1w.pkl"
+          ]
+        }
+      }
+    },
+    "1d": {
+      "cross_policy": "required",
+      "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
+      "machine_minimums": {"ram_gb": 128, "gpu_count": 1},
+      "phases": {
+        "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
+        "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_1d.parquet"]},
+        "step2_crosses": {
+          "phase_seq": 2,
+          "required_artifacts": ["v2_crosses_BTC_1d.npz", "v2_cross_names_BTC_1d.json"]
+        },
+        "step3_baseline": {
+          "phase_seq": 3,
+          "required_artifacts": ["model_1d.json", "cpcv_oos_predictions_1d.pkl"]
+        },
+        "step4_optuna": {
+          "phase_seq": 4,
+          "required_artifacts": ["optuna_configs_1d.json", "lgbm_dataset_1d.bin"]
+        },
+        "step5_retrain": {
+          "phase_seq": 5,
+          "required_artifacts": ["model_1d.json", "cpcv_oos_predictions_1d.pkl", "platt_1d.pkl"]
+        },
+        "step6_optimizer": {
+          "phase_seq": 6,
+          "required_artifacts": ["optuna_configs_1d.json"]
+        },
+        "complete": {
+          "phase_seq": 7,
+          "required_artifacts": [
+            "features_BTC_1d.parquet",
+            "v2_crosses_BTC_1d.npz",
+            "v2_cross_names_BTC_1d.json",
+            "model_1d.json",
+            "cpcv_oos_predictions_1d.pkl",
+            "optuna_configs_1d.json",
+            "lgbm_dataset_1d.bin",
+            "platt_1d.pkl"
+          ]
+        }
+      }
+    },
+    "4h": {
+      "cross_policy": "required",
+      "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
+      "machine_minimums": {"ram_gb": 256, "gpu_count": 1},
+      "phases": {
+        "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
+        "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_4h.parquet"]},
+        "step2_crosses": {
+          "phase_seq": 2,
+          "required_artifacts": ["v2_crosses_BTC_4h.npz", "v2_cross_names_BTC_4h.json"]
+        },
+        "step3_baseline": {
+          "phase_seq": 3,
+          "required_artifacts": ["model_4h.json", "cpcv_oos_predictions_4h.pkl"]
+        },
+        "step4_optuna": {
+          "phase_seq": 4,
+          "required_artifacts": ["optuna_configs_4h.json", "lgbm_dataset_4h.bin"]
+        },
+        "step5_retrain": {
+          "phase_seq": 5,
+          "required_artifacts": ["model_4h.json", "cpcv_oos_predictions_4h.pkl", "platt_4h.pkl"]
+        },
+        "step6_optimizer": {
+          "phase_seq": 6,
+          "required_artifacts": ["optuna_configs_4h.json"]
+        },
+        "complete": {
+          "phase_seq": 7,
+          "required_artifacts": [
+            "features_BTC_4h.parquet",
+            "v2_crosses_BTC_4h.npz",
+            "v2_cross_names_BTC_4h.json",
+            "model_4h.json",
+            "cpcv_oos_predictions_4h.pkl",
+            "optuna_configs_4h.json",
+            "lgbm_dataset_4h.bin",
+            "platt_4h.pkl"
+          ]
+        }
+      }
+    },
+    "1h": {
+      "cross_policy": "required",
+      "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
+      "machine_minimums": {"ram_gb": 512, "gpu_count": 1},
+      "phases": {
+        "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
+        "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_1h.parquet"]},
+        "step2_crosses": {
+          "phase_seq": 2,
+          "required_artifacts": ["v2_crosses_BTC_1h.npz", "v2_cross_names_BTC_1h.json"]
+        },
+        "step3_baseline": {
+          "phase_seq": 3,
+          "required_artifacts": ["model_1h.json", "cpcv_oos_predictions_1h.pkl"]
+        },
+        "step4_optuna": {
+          "phase_seq": 4,
+          "required_artifacts": ["optuna_configs_1h.json", "lgbm_dataset_1h.bin"]
+        },
+        "step5_retrain": {
+          "phase_seq": 5,
+          "required_artifacts": ["model_1h.json", "cpcv_oos_predictions_1h.pkl", "platt_1h.pkl"]
+        },
+        "step6_optimizer": {
+          "phase_seq": 6,
+          "required_artifacts": ["optuna_configs_1h.json"]
+        },
+        "complete": {
+          "phase_seq": 7,
+          "required_artifacts": [
+            "features_BTC_1h.parquet",
+            "v2_crosses_BTC_1h.npz",
+            "v2_cross_names_BTC_1h.json",
+            "model_1h.json",
+            "cpcv_oos_predictions_1h.pkl",
+            "optuna_configs_1h.json",
+            "lgbm_dataset_1h.bin",
+            "platt_1h.pkl"
+          ]
+        }
+      }
+    },
+    "15m": {
+      "cross_policy": "required",
+      "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
+      "machine_minimums": {"ram_gb": 768, "gpu_count": 1},
+      "phases": {
+        "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
+        "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_15m.parquet"]},
+        "step2_crosses": {
+          "phase_seq": 2,
+          "required_artifacts": ["v2_crosses_BTC_15m.npz", "v2_cross_names_BTC_15m.json"]
+        },
+        "step3_baseline": {
+          "phase_seq": 3,
+          "required_artifacts": ["model_15m.json", "cpcv_oos_predictions_15m.pkl"]
+        },
+        "step4_optuna": {
+          "phase_seq": 4,
+          "required_artifacts": ["optuna_configs_15m.json", "lgbm_dataset_15m.bin"]
+        },
+        "step5_retrain": {
+          "phase_seq": 5,
+          "required_artifacts": ["model_15m.json", "cpcv_oos_predictions_15m.pkl", "platt_15m.pkl"]
+        },
+        "step6_optimizer": {
+          "phase_seq": 6,
+          "required_artifacts": ["optuna_configs_15m.json"]
+        },
+        "complete": {
+          "phase_seq": 7,
+          "required_artifacts": [
+            "features_BTC_15m.parquet",
+            "v2_crosses_BTC_15m.npz",
+            "v2_cross_names_BTC_15m.json",
+            "model_15m.json",
+            "cpcv_oos_predictions_15m.pkl",
+            "optuna_configs_15m.json",
+            "lgbm_dataset_15m.bin",
+            "platt_15m.pkl"
+          ]
+        }
+      }
+    }
+  }
+}

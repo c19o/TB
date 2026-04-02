@@ -55,16 +55,29 @@ kp_history.txt
 *.bin
 *.zip
 *.npy
+v3.3/deploy_manifest.json
 
 # Cross names (regenerated at inference, 100-500MB each)
 v2_cross_names_*.json
 inference_*_cross_names.json
+inference_*.json
+*_cross_checkpoint_*.json
+*_cross_checkpoint_*.npz
 
 # Model files (JSON/txt format, 100MB+)
 model_*.json
 model_*.txt
 lgbm_ckpt_*.txt
 *_cpcv_backup.json
+optuna_configs_*.json
+cpcv_oos_predictions_*.pkl
+meta_model_*.pkl
+platt_*.pkl
+calibrator_*.pkl
+shap_analysis_*.json
+feature_importance_stability_*.json
+pipeline_manifest.json
+release_manifest.json
 
 # Feature lists (regenerated)
 features_*_all.json

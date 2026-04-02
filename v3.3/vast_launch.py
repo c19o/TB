@@ -218,6 +218,11 @@ def main():
         min_gpus = 1
         min_vram = 8
 
+    if not args.search_only:
+        print("ERROR: vast_launch.py is a legacy launcher helper and is unsupported for maintained runs.")
+        print("Use the unified contract launcher instead.")
+        sys.exit(2)
+
     sort_mode = 'cheapest' if args.max_price else 'fastest'
     ssh_key = os.path.expanduser(args.ssh_key)
 

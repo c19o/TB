@@ -1,10 +1,19 @@
 {
+  "schema_version": 1,
+  "contract_name": "Savage22 timeframe contract (1w maintained view)",
   "tf": "1w",
   "heartbeat_statuses": [
     "running",
     "validated",
     "failed",
     "complete"
+  ],
+  "cross_policy": "forbidden",
+  "resume_boundaries": [
+    "features_validated",
+    "optuna_validated",
+    "train_validated",
+    "optimizer_validated"
   ],
   "phases": {
     "step0_preflight": {
@@ -20,10 +29,9 @@
     },
     "step2_crosses": {
       "phase_seq": 2,
-      "required_artifacts": [
-        "v2_crosses_BTC_1w.npz",
-        "v2_cross_names_BTC_1w.json"
-      ]
+      "required_artifacts": [],
+      "policy": "skipped",
+      "skip_reason": "Maintained 1w runs are base-features-only"
     },
     "step3_baseline": {
       "phase_seq": 3,
@@ -57,12 +65,11 @@
       "phase_seq": 7,
       "required_artifacts": [
         "features_BTC_1w.parquet",
-        "v2_crosses_BTC_1w.npz",
-        "v2_cross_names_BTC_1w.json",
         "model_1w.json",
         "cpcv_oos_predictions_1w.pkl",
         "optuna_configs_1w.json",
-        "lgbm_dataset_1w.bin"
+        "lgbm_dataset_1w.bin",
+        "platt_1w.pkl"
       ]
     }
   }

@@ -1,10 +1,12 @@
-# Cloud 1W Launch Contract
+# Unified 1W Launch Contract
 
 Last updated: 2026-04-01
 
-This is the declared launch path for the approved Washington cloud machine.
+This is the maintained launch authority for `1w`.
 
-## Approved Machine
+The current approved cloud target is listed below for reference.
+
+## Current Approved Cloud Target
 
 - Type: `33923286`
 - Region: `Washington, US`
@@ -16,19 +18,19 @@ This is the declared launch path for the approved Washington cloud machine.
 
 ## Why This Contract Exists
 
-The generic cloud wrapper has cloud-oriented behavior that is not the source of truth for a fresh `1w` retrain:
+The generic cloud wrapper and the local `TRAINING_1W.md` guide are not the source of truth for a maintained `1w` retrain:
 
 - it may conditionally set `ALLOW_CPU=1` for fallback environments
 - it contains 1w-specific cloud shortcuts
 - it is optimized for one-shot orchestration, not transparent operator review
 
-For the first Washington `1w` run, use the explicit stepwise training flow so behavior is auditable.
+Use this contract as the maintained source of truth so behavior is auditable.
 
 ## Launch Rules
 
 1. Do not rent automatically.
 2. Once the owner confirms launch timing, rent the exact approved machine.
-3. On the machine, prefer the explicit `TRAINING_1W.md` sequence over a blind `cloud_run_tf.py` one-shot.
+3. Follow this contract, not the historical `TRAINING_1W.md` local guide.
 4. Do not force `ALLOW_CPU=1` on CUDA 12.8 if cuDF is available.
 5. Download artifacts at every checkpoint.
 6. Audit `1w` results before any lower timeframe run.
@@ -72,7 +74,7 @@ The operator-visible phase names are:
 
 1. `step0_preflight`
 2. `step1_features`
-3. `step2_crosses`
+3. `step2_crosses` (validated skip for maintained `1w`; no cross outputs expected)
 4. `step3_baseline`
 5. `step4_optuna`
 6. `step5_retrain`
@@ -151,11 +153,12 @@ PY
 export ALLOW_CPU=1
 ```
 
+Maintained `1w` runs skip cross generation entirely. Step 2 is a validated skip, not a command.
+
 Execution sequence:
 
 ```bash
 python -u build_features_v2.py --symbol BTC --tf 1w
-python -u v2_cross_generator.py --tf 1w --symbol BTC --save-sparse
 python -u ml_multi_tf.py --tf 1w --boost-rounds 800
 python -u run_optuna_local.py --tf 1w --search-only
 python -u ml_multi_tf.py --tf 1w --boost-rounds 800
@@ -167,8 +170,6 @@ python -u exhaustive_optimizer.py --tf 1w --n-trials 200
 After each major phase, download at minimum:
 
 - `features_BTC_1w.parquet`
-- `v2_crosses_BTC_1w.npz`
-- `v2_cross_names_BTC_1w.json`
 - `model_1w.json`
 - `model_1w_cpcv_backup.json`
 - `optuna_configs_1w.json`
@@ -176,6 +177,7 @@ After each major phase, download at minimum:
 - `meta_model_1w.pkl`
 - `shap_analysis_1w.json`
 - `cpcv_oos_predictions_1w.pkl`
+- `platt_1w.pkl`
 
 The machine-side source of truth for required phase outputs is:
 
@@ -183,6 +185,7 @@ The machine-side source of truth for required phase outputs is:
 
 The operator-side source of truth for heartbeat and logs is the per-run directory under `/workspace/runs/<run_id>`, not a shared root-level file.
 The validator and launcher must bind phase completion to the declared run root plus artifact root, not to legacy `/workspace` or `/workspace/v3.3` fallbacks.
+`TRAINING_1W.md` is historical/local-only and does not override this maintained contract.
 
 ## Post-Run Audit
 

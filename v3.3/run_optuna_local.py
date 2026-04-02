@@ -21,6 +21,7 @@ import time
 import pickle
 import argparse
 import logging
+import hashlib
 import multiprocessing
 import warnings
 from path_contract import (
@@ -132,9 +133,12 @@ log = logging.getLogger(__name__)
 
 ARTIFACT_DIR = ARTIFACT_ROOT
 SHARED_INPUT_DIR = SHARED_DB_ROOT
-DB_DIR = ARTIFACT_DIR
+DB_DIR = SHARED_INPUT_DIR
 TF_ORDER = ['1w', '1d', '4h', '1h', '15m']
 _LOWER_TF_PARALLEL = frozenset({'4h', '1h', '15m'})
+_MAINTAINED_RUN = bool(os.environ.get('SAVAGE22_RUN_DIR') or os.environ.get('SAVAGE22_ARTIFACT_DIR'))
+_PROVENANCE_SCHEMA_VERSION = 1
+_LAST_LOAD_PROVENANCE = {}
 
 
 def _existing_paths(*paths):
@@ -156,6 +160,95 @@ def _first_existing_path(*paths):
         if os.path.exists(path):
             return path
     return None
+
+
+def _artifact_lookup(*names):
+    for name in names:
+        candidates = [artifact_path(name)]
+        if not _MAINTAINED_RUN:
+            candidates.extend([
+                os.path.join(ARTIFACT_DIR, name),
+                os.path.join(SHARED_INPUT_DIR, name),
+                os.path.join(V30_DATA_DIR, name),
+                os.path.join(PROJECT_DIR, name),
+                name,
+            ])
+        for path in _existing_paths(*candidates):
+            if os.path.exists(path):
+                return path
+    return None
+
+
+def _input_lookup(*names):
+    for name in names:
+        candidates = [os.path.join(SHARED_INPUT_DIR, name)]
+        if not _MAINTAINED_RUN:
+            candidates.extend([
+                os.path.join(V30_DATA_DIR, name),
+                os.path.join(PROJECT_DIR, name),
+                name,
+            ])
+        for path in _existing_paths(*candidates):
+            if os.path.exists(path):
+                return path
+    return None
+
+
+def _meta_path(path):
+    return f"{path}.meta.json"
+
+
+def _feature_names_hash(names):
+    joined = "\n".join(map(str, names))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def _write_json_atomic(path, payload):
+    tmp_path = f"{path}.tmp_{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, path)
+
+
+def _read_json_file(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_provenance_sidecar(path, payload):
+    _write_json_atomic(_meta_path(path), payload)
+
+
+def _read_provenance_sidecar(path):
+    meta_path = _meta_path(path)
+    if not os.path.exists(meta_path):
+        return None
+    try:
+        return _read_json_file(meta_path)
+    except Exception:
+        return None
+
+
+def _file_signature(path):
+    st = os.stat(path)
+    return {
+        'path': os.path.abspath(path),
+        'size': int(st.st_size),
+        'mtime_ns': int(getattr(st, 'st_mtime_ns', int(st.st_mtime * 1_000_000_000))),
+    }
+
+
+def _dataset_binary_provenance(tf_name, source_paths, num_rows, num_features, valid_rows):
+    return {
+        'schema_version': _PROVENANCE_SCHEMA_VERSION,
+        'artifact_kind': 'lgbm_dataset_binary',
+        'producer': 'run_optuna_local',
+        'tf': tf_name,
+        'num_rows': int(num_rows),
+        'num_features': int(num_features),
+        'valid_rows': int(valid_rows),
+        'source_files': [_file_signature(path) for path in source_paths if path and os.path.exists(path)],
+    }
 
 
 def _artifact_output_path(name):
@@ -447,17 +540,20 @@ def _apply_binary_mode(params, tf_name):
 # ============================================================
 def load_tf_data(tf_name):
     """Load features + crosses + labels for a timeframe. Returns (X_all, y, sample_weights, feature_cols, is_sparse)."""
-    # Find parquet
-    parquet_path = _first_existing_path(
-        artifact_path(f'features_{tf_name}.parquet'),
-        os.path.join(DB_DIR, f'features_{tf_name}.parquet'),
-        os.path.join(PROJECT_DIR, f'features_{tf_name}.parquet'),
-        artifact_path(f'features_BTC_{tf_name}.parquet'),
-        os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet'),
-        os.path.join(V30_DATA_DIR, f'features_BTC_{tf_name}.parquet'),
-    )
-    if parquet_path is None:
-        raise FileNotFoundError(f"No feature parquet found for {tf_name}")
+    if _MAINTAINED_RUN:
+        parquet_path = _artifact_lookup(
+            f'features_{tf_name}.parquet',
+            f'features_BTC_{tf_name}.parquet',
+        )
+        if parquet_path is None:
+            raise FileNotFoundError(f"No feature parquet found for {tf_name}")
+    else:
+        parquet_path = _artifact_lookup(
+            f'features_{tf_name}.parquet',
+            f'features_BTC_{tf_name}.parquet',
+        )
+        if parquet_path is None:
+            raise FileNotFoundError(f"No feature parquet found for {tf_name}")
 
     df = pd.read_parquet(parquet_path)
     # Downcast float64 -> float32
@@ -515,16 +611,26 @@ def load_tf_data(tf_name):
     # Load sparse crosses — prefer .npy memmap (zero-copy) over NPZ (full RAM load)
     cross_matrix = None
     cross_cols = None
-    npy_dir = _first_existing_path(
-        artifact_path(f'v2_crosses_BTC_{tf_name}_npy'),
-        os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
-        os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
-    ) or os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}_npy')
-    npz_path = _first_existing_path(
-        artifact_path(f'v2_crosses_BTC_{tf_name}.npz'),
-        os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
-        os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
-    ) or os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
+    if _MAINTAINED_RUN:
+        npy_dir = artifact_path(f'v2_crosses_BTC_{tf_name}_npy')
+        npz_path = artifact_path(f'v2_crosses_BTC_{tf_name}.npz')
+    else:
+        npy_dir = _first_existing_path(
+            artifact_path(f'v2_crosses_BTC_{tf_name}_npy'),
+            os.path.join(ARTIFACT_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+            os.path.join(SHARED_INPUT_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+            os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+            os.path.join(PROJECT_DIR, f'v2_crosses_BTC_{tf_name}_npy'),
+            f'v2_crosses_BTC_{tf_name}_npy',
+        ) or os.path.join(SHARED_INPUT_DIR, f'v2_crosses_BTC_{tf_name}_npy')
+        npz_path = _first_existing_path(
+            artifact_path(f'v2_crosses_BTC_{tf_name}.npz'),
+            os.path.join(ARTIFACT_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+            os.path.join(SHARED_INPUT_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+            os.path.join(V30_DATA_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+            os.path.join(PROJECT_DIR, f'v2_crosses_BTC_{tf_name}.npz'),
+            f'v2_crosses_BTC_{tf_name}.npz',
+        ) or os.path.join(SHARED_INPUT_DIR, f'v2_crosses_BTC_{tf_name}.npz')
 
     _loaded_from_npy = False
     if os.path.isdir(npy_dir) and os.path.exists(os.path.join(npy_dir, 'indptr.npy')):
@@ -540,8 +646,16 @@ def load_tf_data(tf_name):
                     f"FATAL: cross_matrix column index > int32 max")
                 cross_matrix.indices = cross_matrix.indices.astype(np.int32)
             # Load column names (same logic as NPZ path)
-            for cols_dir in [ARTIFACT_ROOT, DB_DIR, V30_DATA_DIR]:
-                cols_path = os.path.join(cols_dir, f'v2_cross_names_BTC_{tf_name}.json')
+            cols_candidates = [artifact_path(f'v2_cross_names_BTC_{tf_name}.json')]
+            if not _MAINTAINED_RUN:
+                cols_candidates.extend([
+                    os.path.join(ARTIFACT_DIR, f'v2_cross_names_BTC_{tf_name}.json'),
+                    os.path.join(SHARED_INPUT_DIR, f'v2_cross_names_BTC_{tf_name}.json'),
+                    os.path.join(V30_DATA_DIR, f'v2_cross_names_BTC_{tf_name}.json'),
+                    os.path.join(PROJECT_DIR, f'v2_cross_names_BTC_{tf_name}.json'),
+                    f'v2_cross_names_BTC_{tf_name}.json',
+                ])
+            for cols_path in _existing_paths(*cols_candidates):
                 if os.path.exists(cols_path):
                     with open(cols_path) as f:
                         cross_cols = json.load(f)
@@ -571,8 +685,16 @@ def load_tf_data(tf_name):
             _basename = os.path.basename(npz_path)
             _parts = _basename.replace('v2_crosses_', '').replace('.npz', '').rsplit('_', 1)
             _sym, _tfn = (_parts[0], _parts[1]) if len(_parts) == 2 else ('BTC', tf_name)
-            for cols_dir in [ARTIFACT_ROOT, DB_DIR, V30_DATA_DIR]:
-                cols_path = os.path.join(cols_dir, f'v2_cross_names_{_sym}_{_tfn}.json')
+            cols_candidates = [artifact_path(f'v2_cross_names_{_sym}_{_tfn}.json')]
+            if not _MAINTAINED_RUN:
+                cols_candidates.extend([
+                    os.path.join(ARTIFACT_DIR, f'v2_cross_names_{_sym}_{_tfn}.json'),
+                    os.path.join(SHARED_INPUT_DIR, f'v2_cross_names_{_sym}_{_tfn}.json'),
+                    os.path.join(V30_DATA_DIR, f'v2_cross_names_{_sym}_{_tfn}.json'),
+                    os.path.join(PROJECT_DIR, f'v2_cross_names_{_sym}_{_tfn}.json'),
+                    f'v2_cross_names_{_sym}_{_tfn}.json',
+                ])
+            for cols_path in _existing_paths(*cols_candidates):
                 if os.path.exists(cols_path):
                     with open(cols_path) as f:
                         cross_cols = json.load(f)
@@ -1282,17 +1404,27 @@ def load_warmstart_params(tf_name):
     if parent_tf is None:
         return None, None
 
-    parent_config_path = _first_existing_path(
-        artifact_path(f'optuna_configs_{parent_tf}.json'),
-        os.path.join(DB_DIR, f'optuna_configs_{parent_tf}.json'),
-        os.path.join(V30_DATA_DIR, f'optuna_configs_{parent_tf}.json'),
-        os.path.join(PROJECT_DIR, f'optuna_configs_{parent_tf}.json'),
-    )
+    parent_config_path = _artifact_lookup(f'optuna_configs_{parent_tf}.json')
     if parent_config_path is None:
         return None, None
 
-    with open(parent_config_path) as f:
+    with open(parent_config_path, encoding='utf-8') as f:
         parent_config = json.load(f)
+
+    if _MAINTAINED_RUN:
+        parent_meta = _read_provenance_sidecar(parent_config_path)
+        if not parent_meta:
+            log.warning(f"  WARM-START rejected: missing provenance sidecar for {parent_config_path}")
+            return None, None
+        if parent_meta.get('schema_version') != _PROVENANCE_SCHEMA_VERSION:
+            log.warning(f"  WARM-START rejected: stale schema for {parent_config_path}")
+            return None, None
+        if parent_meta.get('producer') != 'run_optuna_local':
+            log.warning(f"  WARM-START rejected: unexpected producer={parent_meta.get('producer')!r} for {parent_config_path}")
+            return None, None
+        if parent_meta.get('tf') != parent_tf:
+            log.warning(f"  WARM-START rejected: TF mismatch for {parent_config_path}")
+            return None, None
 
     parent_params = parent_config.get('best_params', {})
     if not parent_params:
@@ -2547,11 +2679,18 @@ def main():
     log.info(f"\n{'='*70}")
     log.info(f"ALL DONE in {total_elapsed:.0f}s ({total_elapsed/60:.1f} min)")
     log.info(f"{'='*70}")
+    def _fmt_metric(value, fmt):
+        if value is None:
+            return "N/A"
+        try:
+            return format(float(value), fmt)
+        except (TypeError, ValueError):
+            return "N/A"
     for tf, r in all_results.items():
-        log.info(f"  {tf}: p1={r.get('phase1_best_value', 'N/A'):.4f} "
-                 f"val={r.get('validation_best_value', 'N/A'):.4f} "
-                 f"acc={r.get('final_mean_accuracy', 0):.4f} "
-                 f"sortino={r.get('final_mean_sortino', 0):.2f} "
+        log.info(f"  {tf}: p1={_fmt_metric(r.get('phase1_best_value'), '.4f')} "
+                 f"val={_fmt_metric(r.get('validation_best_value'), '.4f')} "
+                 f"acc={_fmt_metric(r.get('final_mean_accuracy'), '.4f')} "
+                 f"sortino={_fmt_metric(r.get('final_mean_sortino'), '.2f')} "
                  f"({r.get('total_time', 0):.0f}s)")
     log.info(f"Results saved to {summary_path}")
 

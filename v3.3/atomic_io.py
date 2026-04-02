@@ -7,6 +7,7 @@ If process crashes mid-write, no corrupt files left behind.
 """
 
 import os
+import hashlib
 import re
 import shutil
 import time
@@ -43,6 +44,28 @@ def get_crossgen_namespace(symbol=None, tf=None, prefix=None, run_id=None):
         _safe_token(tf or os.environ.get("SAVAGE22_XGEN_TF"), default="tf"),
         _safe_token(prefix, default="shared"),
     ])
+
+
+def stable_cross_name(prefix, left_name, right_name, left_idx=None, right_idx=None,
+                      digest_len=12, short_len=40):
+    """Build a stable, collision-resistant cross feature name.
+
+    Keeps the expected ``prefix_`` front matter for contract checks, but adds
+    a short digest derived from the full source names and pair indices so that
+    truncation collisions cannot silently merge distinct columns.
+    """
+    prefix_token = _safe_token(prefix, default="x").rstrip("_") or "x"
+    left_token = _safe_token(left_name, default="left")[:short_len]
+    right_token = _safe_token(right_name, default="right")[:short_len]
+    payload = "\x1f".join([
+        prefix_token,
+        str(left_name),
+        str(right_name),
+        "" if left_idx is None else str(int(left_idx)),
+        "" if right_idx is None else str(int(right_idx)),
+    ])
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:digest_len]
+    return f"{prefix_token}_{left_token}_{right_token}__{digest}"
 
 
 def crossgen_scratch_dir(kind, symbol=None, tf=None, prefix=None, run_id=None):
