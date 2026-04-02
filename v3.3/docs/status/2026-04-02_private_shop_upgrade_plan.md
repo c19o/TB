@@ -33,6 +33,19 @@
 - `path_contract.py`
 - `LANES.md`
 
+## Branches And Commits
+
+- shared core branch: `private-shop-core`
+- lane branches:
+  - `lane/1w`
+  - `lane/1d`
+  - `lane/4h`
+  - `lane/1h`
+  - `lane/15m`
+- defining commits:
+  - `701f348` `Establish private-shop core and timeframe lanes`
+  - `bc12603` `Fix lane worktree PowerShell helpers`
+
 ## What Remains Legacy
 
 - ad hoc local runs that assume the repo is also the artifact root
