@@ -12,6 +12,12 @@ if (-not $repoRoot) {
 
 Set-Location $repoRoot
 
+function Test-GitHeadRef {
+    param([string]$RefName)
+    & git show-ref --verify --quiet "refs/heads/$RefName"
+    return $LASTEXITCODE -eq 0
+}
+
 $laneRoot = Join-Path $repoRoot "lanes"
 foreach ($lane in $Lanes) {
     $branch = "lane/$lane"
@@ -20,7 +26,7 @@ foreach ($lane in $Lanes) {
         & git worktree remove --force $path
     }
     if ($DeleteBranches) {
-        $branchExists = (& git show-ref --verify --quiet "refs/heads/$branch"; $LASTEXITCODE) -eq 0
+        $branchExists = Test-GitHeadRef -RefName $branch
         if ($branchExists) {
             & git branch -D $branch
         }

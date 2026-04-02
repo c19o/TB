@@ -13,7 +13,13 @@ if (-not $repoRoot) {
 
 Set-Location $repoRoot
 
-$baseExists = (& git show-ref --verify --quiet "refs/heads/$BaseBranch"; $LASTEXITCODE) -eq 0
+function Test-GitHeadRef {
+    param([string]$RefName)
+    & git show-ref --verify --quiet "refs/heads/$RefName"
+    return $LASTEXITCODE -eq 0
+}
+
+$baseExists = Test-GitHeadRef -RefName $BaseBranch
 if (-not $baseExists) {
     if (-not $CreateBaseBranch) {
         throw "Base branch '$BaseBranch' does not exist. Re-run with -CreateBaseBranch or create it first."
@@ -28,7 +34,7 @@ $results = @()
 foreach ($lane in $Lanes) {
     $branch = "lane/$lane"
     $path = Join-Path $laneRoot $lane
-    $branchExists = (& git show-ref --verify --quiet "refs/heads/$branch"; $LASTEXITCODE) -eq 0
+    $branchExists = Test-GitHeadRef -RefName $branch
     if (-not $branchExists) {
         & git branch $branch $BaseBranch
     }
