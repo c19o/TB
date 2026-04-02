@@ -30,7 +30,7 @@
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optuna_configs_1w.json"]
+          "required_artifacts": ["optimizer_configs_1w.json"]
         },
         "complete": {
           "phase_seq": 7,
@@ -39,7 +39,7 @@
             "model_1w.json",
             "cpcv_oos_predictions_1w.pkl",
             "optuna_configs_1w.json",
-            "lgbm_dataset_1w.bin",
+            "optimizer_configs_1w.json",
             "platt_1w.pkl"
           ]
         }
@@ -70,7 +70,7 @@
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optuna_configs_1d.json"]
+          "required_artifacts": ["optimizer_configs_1d.json"]
         },
         "complete": {
           "phase_seq": 7,
@@ -81,7 +81,7 @@
             "model_1d.json",
             "cpcv_oos_predictions_1d.pkl",
             "optuna_configs_1d.json",
-            "lgbm_dataset_1d.bin",
+            "optimizer_configs_1d.json",
             "platt_1d.pkl"
           ]
         }
@@ -112,7 +112,7 @@
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optuna_configs_4h.json"]
+          "required_artifacts": ["optimizer_configs_4h.json"]
         },
         "complete": {
           "phase_seq": 7,
@@ -123,7 +123,7 @@
             "model_4h.json",
             "cpcv_oos_predictions_4h.pkl",
             "optuna_configs_4h.json",
-            "lgbm_dataset_4h.bin",
+            "optimizer_configs_4h.json",
             "platt_4h.pkl"
           ]
         }
@@ -154,7 +154,7 @@
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optuna_configs_1h.json"]
+          "required_artifacts": ["optimizer_configs_1h.json"]
         },
         "complete": {
           "phase_seq": 7,
@@ -165,7 +165,7 @@
             "model_1h.json",
             "cpcv_oos_predictions_1h.pkl",
             "optuna_configs_1h.json",
-            "lgbm_dataset_1h.bin",
+            "optimizer_configs_1h.json",
             "platt_1h.pkl"
           ]
         }
@@ -196,7 +196,7 @@
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optuna_configs_15m.json"]
+          "required_artifacts": ["optimizer_configs_15m.json"]
         },
         "complete": {
           "phase_seq": 7,
@@ -207,7 +207,7 @@
             "model_15m.json",
             "cpcv_oos_predictions_15m.pkl",
             "optuna_configs_15m.json",
-            "lgbm_dataset_15m.bin",
+            "optimizer_configs_15m.json",
             "platt_15m.pkl"
           ]
         }

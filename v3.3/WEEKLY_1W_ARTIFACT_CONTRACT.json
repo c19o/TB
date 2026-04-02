@@ -58,7 +58,7 @@
     "step6_optimizer": {
       "phase_seq": 6,
       "required_artifacts": [
-        "optuna_configs_1w.json"
+        "optimizer_configs_1w.json"
       ]
     },
     "complete": {
@@ -68,7 +68,7 @@
         "model_1w.json",
         "cpcv_oos_predictions_1w.pkl",
         "optuna_configs_1w.json",
-        "lgbm_dataset_1w.bin",
+        "optimizer_configs_1w.json",
         "platt_1w.pkl"
       ]
     }

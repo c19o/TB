@@ -286,6 +286,10 @@ def load_tf_data(tf_name: str):
         candidates = [c for c in df.columns if 'next' in c.lower() and 'return' in c.lower()]
         if candidates:
             return_col = candidates[0]
+        elif 'close' in df.columns:
+            close_series = pd.to_numeric(df['close'], errors='coerce').astype(float)
+            df[return_col] = (((close_series.shift(-1) - close_series) / close_series) * 100.0).astype(np.float32)
+            print(f"  Derived {return_col} from close (next-bar pct return * 100)")
         else:
             print(f"  SKIP {tf_name} — no return column found")
             return None
@@ -423,10 +427,17 @@ def load_tf_data(tf_name: str):
         directions = np.where(pred_class == 2, 1.0, np.where(pred_class == 0, -1.0, 0.0))
         print(f"  3-class preds: LONG={np.sum(pred_class==2)} FLAT={np.sum(pred_class==1)} SHORT={np.sum(pred_class==0)}")
         print(f"  Confidence range: [{confidences.min():.3f}, {confidences.max():.3f}]")
+    elif raw_preds.ndim == 2 and raw_preds.shape[1] == 2:
+        short_prob = raw_preds[:, 0]
+        long_prob = raw_preds[:, 1]
+        confidences = np.maximum(short_prob, long_prob)
+        directions = np.where(long_prob >= short_prob, 1.0, -1.0)
+        print(f"  Binary 2-class preds: LONG={np.sum(directions > 0)} SHORT={np.sum(directions < 0)}")
+        print(f"  Confidence range: [{confidences.min():.3f}, {confidences.max():.3f}]")
     else:
         # Legacy binary mode fallback
-        confidences = raw_preds
-        directions = np.where(raw_preds > 0.5, 1.0, -1.0)
+        confidences = raw_preds.reshape(-1)
+        directions = np.where(confidences > 0.5, 1.0, -1.0)
         print(f"  Binary preds. Range: [{confidences.min():.3f}, {confidences.max():.3f}]")
 
     test_returns = returns[vs:ve]
@@ -1701,9 +1712,14 @@ def _optimize_single_tf(args_tuple):
 
         # Save per-TF config immediately (atomic)
         if tf_config:
+            per_tf_payload = {tf_name: tf_config}
             per_tf_path = artifact_path(f'{config_prefix}_{tf_name}.json')
             with open(per_tf_path, 'w') as f:
-                json.dump({tf_name: tf_config}, f, indent=2)
+                json.dump(per_tf_payload, f, indent=2)
+            optimizer_alias_path = artifact_path(f'optimizer_configs_{tf_name}.json')
+            if optimizer_alias_path != per_tf_path:
+                with open(optimizer_alias_path, 'w') as f:
+                    json.dump(per_tf_payload, f, indent=2)
             print(f"  {elapsed()} Saved per-TF config: {per_tf_path}", flush=True)
 
         gc.collect()
@@ -1798,9 +1814,14 @@ def main(n_trials=200):
             if tf_config:
                 all_configs[tf_name] = tf_config
 
+                per_tf_payload = {tf_name: tf_config}
                 per_tf_path = artifact_path(f'{config_prefix}_{tf_name}.json')
                 with open(per_tf_path, 'w') as f:
-                    json.dump({tf_name: tf_config}, f, indent=2)
+                    json.dump(per_tf_payload, f, indent=2)
+                optimizer_alias_path = artifact_path(f'optimizer_configs_{tf_name}.json')
+                if optimizer_alias_path != per_tf_path:
+                    with open(optimizer_alias_path, 'w') as f:
+                        json.dump(per_tf_payload, f, indent=2)
                 print(f"  Saved: {per_tf_path}")
 
             total_trials_run += n_evals
@@ -1810,6 +1831,10 @@ def main(n_trials=200):
     output_path = artifact_path(f'{config_prefix}_{tf_suffix}.json') if len(TF_GRIDS) < 6 else artifact_path(f'{config_prefix}.json')
     with open(output_path, 'w') as f:
         json.dump(all_configs, f, indent=2)
+    stable_output_path = artifact_path(f'optimizer_configs_{tf_suffix}.json') if len(TF_GRIDS) < 6 else artifact_path('optimizer_configs.json')
+    if stable_output_path != output_path:
+        with open(stable_output_path, 'w') as f:
+            json.dump(all_configs, f, indent=2)
     print(f"\n{elapsed()} Results saved to: {output_path}")
 
     # ---------------------------------------------------------------------------

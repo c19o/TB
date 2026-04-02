@@ -625,6 +625,7 @@ def check_python_version():
 def check_pip_packages():
     print("\n== CHECK L: Required Pip Packages ==")
     required = [
+        ("cupy", "cupy-cuda12x"),
         ("lightgbm", "lightgbm"),
         ("sklearn", "scikit-learn"),
         ("scipy", "scipy"),

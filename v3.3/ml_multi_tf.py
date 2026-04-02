@@ -42,6 +42,7 @@ from path_contract import (
     CODE_ROOT,
     SHARED_DB_ROOT,
     artifact_path,
+    db_path as contract_db_path,
     ensure_runtime_dirs,
 )
 
@@ -1502,14 +1503,19 @@ if __name__ == '__main__':
   # LOAD DAILY DATA FOR HMM (will re-fit per window)
   # ============================================================
   log(f"\n{elapsed()} Loading daily closes for HMM...")
-  _btc_db = _first_existing_path(
+  _btc_candidates = _existing_paths(
       artifact_path('btc_prices.db'),
+      contract_db_path('btc_prices.db'),
       os.path.join(DB_DIR, 'btc_prices.db'),
+      os.path.join(SHARED_INPUT_DIR, 'btc_prices.db'),
       os.path.join(os.path.dirname(DB_DIR), 'btc_prices.db'),
       os.path.join(PROJECT_DIR, 'btc_prices.db'),
   )
+  _btc_db = _first_existing_path(*_btc_candidates)
   if _btc_db is None:
+      log(f"  btc_prices.db candidates: {_btc_candidates}")
       raise FileNotFoundError("btc_prices.db not found in artifact/shared/code roots")
+  log(f"  HMM source DB: {_btc_db}")
   conn = sqlite3.connect(_btc_db)
   daily = pd.read_sql_query("""
       SELECT open_time, close FROM ohlcv
@@ -1678,9 +1684,11 @@ if __name__ == '__main__':
           log(f"TRAINING {tf_name.upper()} MODEL")
           log(f"{'='*70}")
 
-          db_path = _first_existing_path(
+          db_file_path = _first_existing_path(
               artifact_path(cfg['db']),
+              contract_db_path(cfg['db']),
               os.path.join(DB_DIR, cfg['db']),
+              os.path.join(SHARED_INPUT_DIR, cfg['db']),
               os.path.join(PROJECT_DIR, cfg['db']),
           ) or os.path.join(DB_DIR, cfg['db'])
           parquet_path = _first_existing_path(
@@ -1701,8 +1709,8 @@ if __name__ == '__main__':
                   df = df.astype({c: np.float32 for c in _f64})
                   log(f"  Downcast {len(_f64)} float64 cols → float32 (saves ~{len(_f64) * len(df) * 4 / 1e6:.0f} MB)")
               log(f"  Loaded from parquet: {parquet_path}")
-          elif os.path.exists(db_path):
-              conn = sqlite3.connect(db_path)
+          elif os.path.exists(db_file_path):
+              conn = sqlite3.connect(db_file_path)
               # Check if ext table exists (split due to SQLite column limit)
               ext_check = conn.execute(
                   "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -2156,7 +2164,7 @@ if __name__ == '__main__':
               os.path.join(PROJECT_DIR, f'optuna_configs_{tf_name}.json'),
               f'optuna_configs_{tf_name}.json',
           )
-          if os.path.exists(_optuna_config_path):
+          if _optuna_config_path and os.path.exists(_optuna_config_path):
               try:
                   with open(_optuna_config_path) as _ocf:
                       _optuna_cfg = json.load(_ocf)

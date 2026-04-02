@@ -577,11 +577,15 @@ def check_environment(tf=None, cloud=False):
           os.path.exists(astro_path),
           f"Missing {astro_path}. Copy from project root. FIX: cp ../astrology_engine.py v3.3/")
 
-    # kp_history_gfz.txt
-    kp_path = os.path.join(PROJECT_DIR, 'kp_history_gfz.txt')
+    # kp_history_gfz.txt belongs to the shared DB/input root for maintained runs.
+    kp_candidates = []
+    if path_contract is not None:
+        kp_candidates.append(os.path.join(path_contract.SHARED_DB_ROOT, 'kp_history_gfz.txt'))
+    kp_candidates.append(os.path.join(PROJECT_DIR, 'kp_history_gfz.txt'))
+    kp_path = next((p for p in kp_candidates if os.path.exists(p)), kp_candidates[0])
     check("kp_history_gfz.txt exists",
           os.path.exists(kp_path),
-          f"Missing {kp_path}. Space weather features need this file.")
+          "Missing kp_history_gfz.txt in shared DB root or code root. Space weather features need this file.")
 
     # NVIDIA driver + CUDA ecosystem checks
     import subprocess as sp

@@ -121,8 +121,8 @@ def main():
         check(f"MULTI_GPU_CROSS_GEN enabled: {_MULTI_GPU_CROSS_GEN}", True)
 
         if tf == '1w':
-            from cloud_run_tf import SKIP_CROSSES_TFS
-            check("1w skips cross gen", '1w' in SKIP_CROSSES_TFS,
+            from pipeline_contract import cross_policy
+            check("1w skips cross gen", cross_policy('1w') != 'required',
                   "1w should skip cross gen")
         else:
             # Verify _multi_gpu_cross_worker exists
