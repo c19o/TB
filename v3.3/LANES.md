@@ -49,4 +49,5 @@ These folders exist so one terminal can stay open in each timeframe lane without
 2. Create the lane worktrees.
 3. Open one Codex terminal in each `lanes/<tf>` folder.
 4. Read `v3.3/LANE_SESSION_START.md` in the lane terminal.
-5. Keep local runtime data outside the repo under `SAVAGE22_RUNTIME_HOME`.
+5. Read the matching `v3.3/SESSION_RESUME_<TF>_LANE.md` file.
+6. Keep local runtime data outside the repo under `SAVAGE22_RUNTIME_HOME`.

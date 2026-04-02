@@ -22,13 +22,19 @@ Do shared architecture work on `private-shop-core` first. Merge or cherry-pick s
 4. `v3.3/CONVENTIONS.md`
 5. `v3.3/PRIVATE_SHOP_OPERATING_MODEL.md`
 6. `v3.3/LANES.md`
-7. The timeframe profile for the lane:
+7. The lane-specific session resume file:
+   - `v3.3/SESSION_RESUME_1W_LANE.md`
+   - `v3.3/SESSION_RESUME_1D_LANE.md`
+   - `v3.3/SESSION_RESUME_4H_LANE.md`
+   - `v3.3/SESSION_RESUME_1H_LANE.md`
+   - `v3.3/SESSION_RESUME_15M_LANE.md`
+8. The timeframe profile for the lane:
    - `v3.3/CLOUD_1W_PROFILE.md`
    - `v3.3/CLOUD_1D_PROFILE.md`
    - `v3.3/CLOUD_4H_PROFILE.md`
    - `v3.3/CLOUD_1H_PROFILE.md`
    - `v3.3/CLOUD_15M_PROFILE.md`
-8. The latest dated status docs under `v3.3/docs/status/`
+9. The latest dated status docs under `v3.3/docs/status/`
 
 ## Research Stack
 
