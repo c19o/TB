@@ -1,0 +1,25 @@
+{
+  "funding_rates": {
+    "rows": 5294,
+    "range": "2021-05-18 15:00:00 to 2026-03-18 00:00:00",
+    "new_fetched": 5294
+  },
+  "google_trends": {
+    "rows": 377,
+    "range": "2018-12-30 to 2026-03-15"
+  },
+  "macro_data": {
+    "rows": 1813,
+    "range": "2019-01-02 to 2026-03-17"
+  },
+  "astrology_full": {
+    "rows": 6285,
+    "range": "2009-01-01 to 2026-03-17",
+    "systems": [
+      "Vedic/Sidereal",
+      "Chinese BaZi",
+      "Mayan Tzolkin",
+      "Arabic Lots"
+    ]
+  }
+}

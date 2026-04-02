@@ -51,6 +51,7 @@ kp_history.txt
 
 # Training artifacts (tar.gz, binary datasets, zips)
 *.tar.gz
+*.tgz
 *.bin
 *.zip
 *.npy

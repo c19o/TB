@@ -24,13 +24,13 @@ cd "C:/Users/C/Documents/Savage22 Server/v3.3"
 python ops_kb.py smart "daemon reload ipc contract runtime sav-4" -n 5
 
 cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
-python kb.py smart "daemon reload ipc process contract runtime" -n 10
-python kb.py smart "multiprocessing ipc protocol supervisor daemon reload" -n 10
-python kb.py smart "process reload message contract fallback runtime" -n 10
+python kb.py smart "daemon reload ipc process contract runtime" --limit 10
+python kb.py smart "multiprocessing ipc protocol supervisor daemon reload" --limit 10
+python kb.py smart "process reload message contract fallback runtime" --limit 10
 ```
 
 If KB is weak:
-- use Perplexity with matrix-thesis context
+- use Perplexity with matrix-thesis context as fallback only, never the first research step
 - log `KB_GAP` then `PERPLEXITY_SOURCE`
 
 ## Rules

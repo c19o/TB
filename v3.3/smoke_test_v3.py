@@ -285,7 +285,7 @@ def step_lgbm_mini_train(df, filtered_sparse, tmp_dir):
                 "lambda_l2": 3.0,
                 "feature_fraction": 0.9,
                 "feature_fraction_bynode": 0.8,
-                "bagging_fraction": 0.8,
+                "bagging_fraction": 0.95,
                 "bagging_freq": 1,
                 "num_leaves": 63,
                 "learning_rate": 0.03,

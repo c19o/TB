@@ -1,0 +1,69 @@
+{
+  "tf": "1w",
+  "heartbeat_statuses": [
+    "running",
+    "validated",
+    "failed",
+    "complete"
+  ],
+  "phases": {
+    "step0_preflight": {
+      "phase_seq": 0,
+      "required_artifacts": [],
+      "notes": "Remote verification only. No training artifacts required."
+    },
+    "step1_features": {
+      "phase_seq": 1,
+      "required_artifacts": [
+        "features_BTC_1w.parquet"
+      ]
+    },
+    "step2_crosses": {
+      "phase_seq": 2,
+      "required_artifacts": [
+        "v2_crosses_BTC_1w.npz",
+        "v2_cross_names_BTC_1w.json"
+      ]
+    },
+    "step3_baseline": {
+      "phase_seq": 3,
+      "required_artifacts": [
+        "model_1w.json",
+        "cpcv_oos_predictions_1w.pkl"
+      ]
+    },
+    "step4_optuna": {
+      "phase_seq": 4,
+      "required_artifacts": [
+        "optuna_configs_1w.json",
+        "lgbm_dataset_1w.bin"
+      ]
+    },
+    "step5_retrain": {
+      "phase_seq": 5,
+      "required_artifacts": [
+        "model_1w.json",
+        "cpcv_oos_predictions_1w.pkl",
+        "platt_1w.pkl"
+      ]
+    },
+    "step6_optimizer": {
+      "phase_seq": 6,
+      "required_artifacts": [
+        "optuna_configs_1w.json"
+      ]
+    },
+    "complete": {
+      "phase_seq": 7,
+      "required_artifacts": [
+        "features_BTC_1w.parquet",
+        "v2_crosses_BTC_1w.npz",
+        "v2_cross_names_BTC_1w.json",
+        "model_1w.json",
+        "cpcv_oos_predictions_1w.pkl",
+        "optuna_configs_1w.json",
+        "lgbm_dataset_1w.bin"
+      ]
+    }
+  }
+}

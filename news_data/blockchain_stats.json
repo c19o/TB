@@ -1,0 +1,1821 @@
+{
+  "2025-03-17": {
+    "hash-rate": 780497492.8984137,
+    "n-transactions": 380493.0,
+    "miners-revenue": 37039423.93963551
+  },
+  "2025-03-18": {
+    "hash-rate": 791647457.0826768,
+    "n-transactions": 369237.0,
+    "miners-revenue": 37114004.517978825
+  },
+  "2025-03-19": {
+    "hash-rate": 847397278.0039921,
+    "n-transactions": 441661.0,
+    "miners-revenue": 40407764.34030447
+  },
+  "2025-03-20": {
+    "hash-rate": 791647457.0826768,
+    "n-transactions": 337973.0,
+    "miners-revenue": 38405639.297976285
+  },
+  "2025-03-21": {
+    "hash-rate": 808372403.3590714,
+    "n-transactions": 321230.0,
+    "miners-revenue": 38614236.487858675
+  },
+  "2025-03-22": {
+    "hash-rate": 836247313.819729,
+    "n-transactions": 413839.0,
+    "miners-revenue": 40336852.4258118
+  },
+  "2025-03-23": {
+    "hash-rate": 876571559.8921037,
+    "n-transactions": 533755.0,
+    "miners-revenue": 41846260.4654538
+  },
+  "2025-03-24": {
+    "hash-rate": 870857131.0489082,
+    "n-transactions": 483673.0,
+    "miners-revenue": 42587257.93296199
+  },
+  "2025-03-25": {
+    "hash-rate": 842582548.8719956,
+    "n-transactions": 505859.0,
+    "miners-revenue": 42414375.954737216
+  },
+  "2025-03-26": {
+    "hash-rate": 859547298.1781431,
+    "n-transactions": 515068.0,
+    "miners-revenue": 42937270.49430426
+  },
+  "2025-03-27": {
+    "hash-rate": 836927632.4366131,
+    "n-transactions": 437476.0,
+    "miners-revenue": 40835198.15509742
+  },
+  "2025-03-28": {
+    "hash-rate": 870857131.0489082,
+    "n-transactions": 397685.0,
+    "miners-revenue": 42144592.72836342
+  },
+  "2025-03-29": {
+    "hash-rate": 797343217.3889353,
+    "n-transactions": 290139.0,
+    "miners-revenue": 37087849.85340748
+  },
+  "2025-03-30": {
+    "hash-rate": 774723551.6474054,
+    "n-transactions": 305206.0,
+    "miners-revenue": 35801263.66273607
+  },
+  "2025-03-31": {
+    "hash-rate": 836927632.4366131,
+    "n-transactions": 318279.0,
+    "miners-revenue": 39119908.76634413
+  },
+  "2025-04-01": {
+    "hash-rate": 763413718.7766403,
+    "n-transactions": 356323.0,
+    "miners-revenue": 36330992.43618515
+  },
+  "2025-04-02": {
+    "hash-rate": 972645626.8857933,
+    "n-transactions": 399055.0,
+    "miners-revenue": 47226883.76620056
+  },
+  "2025-04-03": {
+    "hash-rate": 859547298.1781431,
+    "n-transactions": 392043.0,
+    "miners-revenue": 40851454.910893194
+  },
+  "2025-04-04": {
+    "hash-rate": 1017884958.3688537,
+    "n-transactions": 429861.0,
+    "miners-revenue": 47375745.47185206
+  },
+  "2025-04-05": {
+    "hash-rate": 948981343.907835,
+    "n-transactions": 293474.0,
+    "miners-revenue": 43634314.67975655
+  },
+  "2025-04-06": {
+    "hash-rate": 875826848.0097468,
+    "n-transactions": 279475.0,
+    "miners-revenue": 37385270.598243356
+  },
+  "2025-04-07": {
+    "hash-rate": 875826848.0097468,
+    "n-transactions": 309387.0,
+    "miners-revenue": 36726339.728355154
+  },
+  "2025-04-08": {
+    "hash-rate": 924148329.2792498,
+    "n-transactions": 363972.0,
+    "miners-revenue": 38266546.404310316
+  },
+  "2025-04-09": {
+    "hash-rate": 791264255.7881161,
+    "n-transactions": 317312.0,
+    "miners-revenue": 33000042.95873312
+  },
+  "2025-04-10": {
+    "hash-rate": 869786662.851059,
+    "n-transactions": 322464.0,
+    "miners-revenue": 37420617.70238005
+  },
+  "2025-04-11": {
+    "hash-rate": 893947403.4858105,
+    "n-transactions": 405030.0,
+    "miners-revenue": 39052696.81422857
+  },
+  "2025-04-12": {
+    "hash-rate": 869786662.851059,
+    "n-transactions": 409511.0,
+    "miners-revenue": 38212138.6791121
+  },
+  "2025-04-13": {
+    "hash-rate": 1038911847.2943201,
+    "n-transactions": 455139.0,
+    "miners-revenue": 47355383.40737958
+  },
+  "2025-04-14": {
+    "hash-rate": 899987588.6444983,
+    "n-transactions": 441688.0,
+    "miners-revenue": 39919630.5512658
+  },
+  "2025-04-15": {
+    "hash-rate": 869786662.851059,
+    "n-transactions": 442899.0,
+    "miners-revenue": 39338862.03654765
+  },
+  "2025-04-16": {
+    "hash-rate": 893947403.4858105,
+    "n-transactions": 507129.0,
+    "miners-revenue": 39308538.08485719
+  },
+  "2025-04-17": {
+    "hash-rate": 924148329.2792498,
+    "n-transactions": 557181.0,
+    "miners-revenue": 40902380.75468962
+  },
+  "2025-04-18": {
+    "hash-rate": 821465181.5815556,
+    "n-transactions": 508733.0,
+    "miners-revenue": 36371220.00117252
+  },
+  "2025-04-19": {
+    "hash-rate": 847396221.1293446,
+    "n-transactions": 545076.0,
+    "miners-revenue": 37461821.80553237
+  },
+  "2025-04-20": {
+    "hash-rate": 753499802.4397362,
+    "n-transactions": 468737.0,
+    "miners-revenue": 32997150.701480925
+  },
+  "2025-04-21": {
+    "hash-rate": 771877846.401681,
+    "n-transactions": 444986.0,
+    "miners-revenue": 34869989.28334006
+  },
+  "2025-04-22": {
+    "hash-rate": 949532271.367147,
+    "n-transactions": 518267.0,
+    "miners-revenue": 43977633.27289226
+  },
+  "2025-04-23": {
+    "hash-rate": 698365670.5539016,
+    "n-transactions": 418203.0,
+    "miners-revenue": 34345867.712945186
+  },
+  "2025-04-24": {
+    "hash-rate": 863768066.2114046,
+    "n-transactions": 464739.0,
+    "miners-revenue": 41813843.909226455
+  },
+  "2025-04-25": {
+    "hash-rate": 882146110.1733494,
+    "n-transactions": 392451.0,
+    "miners-revenue": 43579177.177242085
+  },
+  "2025-04-26": {
+    "hash-rate": 814759948.9795519,
+    "n-transactions": 321357.0,
+    "miners-revenue": 39716472.20651905
+  },
+  "2025-04-27": {
+    "hash-rate": 827011978.2875152,
+    "n-transactions": 441827.0,
+    "miners-revenue": 40230728.76315034
+  },
+  "2025-04-28": {
+    "hash-rate": 863768066.2114046,
+    "n-transactions": 409765.0,
+    "miners-revenue": 42213546.56184839
+  },
+  "2025-04-29": {
+    "hash-rate": 894398139.4813126,
+    "n-transactions": 467725.0,
+    "miners-revenue": 43904118.875818565
+  },
+  "2025-04-30": {
+    "hash-rate": 808633934.3255703,
+    "n-transactions": 350729.0,
+    "miners-revenue": 39639336.21697385
+  },
+  "2025-05-01": {
+    "hash-rate": 827011978.2875152,
+    "n-transactions": 331199.0,
+    "miners-revenue": 40939035.12337938
+  },
+  "2025-05-02": {
+    "hash-rate": 974036329.9830736,
+    "n-transactions": 379268.0,
+    "miners-revenue": 49317846.31045347
+  },
+  "2025-05-03": {
+    "hash-rate": 999957994.4593519,
+    "n-transactions": 389717.0,
+    "miners-revenue": 50395338.062251836
+  },
+  "2025-05-04": {
+    "hash-rate": 823060870.7158544,
+    "n-transactions": 347977.0,
+    "miners-revenue": 43157958.3121203
+  },
+  "2025-05-05": {
+    "hash-rate": 1036227714.9300332,
+    "n-transactions": 402262.0,
+    "miners-revenue": 52286092.94880676
+  },
+  "2025-05-06": {
+    "hash-rate": 817139569.4876828,
+    "n-transactions": 332218.0,
+    "miners-revenue": 41318522.62404085
+  },
+  "2025-05-07": {
+    "hash-rate": 894116485.453914,
+    "n-transactions": 343011.0,
+    "miners-revenue": 46395931.94800696
+  },
+  "2025-05-08": {
+    "hash-rate": 941486895.2792871,
+    "n-transactions": 373813.0,
+    "miners-revenue": 50308941.74009139
+  },
+  "2025-05-09": {
+    "hash-rate": 828982171.944026,
+    "n-transactions": 334543.0,
+    "miners-revenue": 47753844.10631721
+  },
+  "2025-05-10": {
+    "hash-rate": 888195184.2257423,
+    "n-transactions": 331074.0,
+    "miners-revenue": 48896451.99410062
+  },
+  "2025-05-11": {
+    "hash-rate": 882273882.9975705,
+    "n-transactions": 281756.0,
+    "miners-revenue": 49492536.75833079
+  },
+  "2025-05-12": {
+    "hash-rate": 858588678.0848842,
+    "n-transactions": 378285.0,
+    "miners-revenue": 50187139.68053346
+  },
+  "2025-05-13": {
+    "hash-rate": 769769159.6623099,
+    "n-transactions": 295785.0,
+    "miners-revenue": 42585530.2522898
+  },
+  "2025-05-14": {
+    "hash-rate": 852667376.8567126,
+    "n-transactions": 326818.0,
+    "miners-revenue": 48033095.5708874
+  },
+  "2025-05-15": {
+    "hash-rate": 864509979.3130558,
+    "n-transactions": 374153.0,
+    "miners-revenue": 48115854.702472426
+  },
+  "2025-05-16": {
+    "hash-rate": 805296967.0313396,
+    "n-transactions": 363786.0,
+    "miners-revenue": 46100892.54743447
+  },
+  "2025-05-17": {
+    "hash-rate": 853317480.0820746,
+    "n-transactions": 291797.0,
+    "miners-revenue": 46842170.668077596
+  },
+  "2025-05-18": {
+    "hash-rate": 979723251.2998109,
+    "n-transactions": 629314.0,
+    "miners-revenue": 53324564.265465595
+  },
+  "2025-05-19": {
+    "hash-rate": 852722089.09428,
+    "n-transactions": 585883.0,
+    "miners-revenue": 46633142.760079965
+  },
+  "2025-05-20": {
+    "hash-rate": 895055809.829457,
+    "n-transactions": 569769.0,
+    "miners-revenue": 50269349.19490288
+  },
+  "2025-05-21": {
+    "hash-rate": 870865112.2664988,
+    "n-transactions": 422191.0,
+    "miners-revenue": 49846442.67697942
+  },
+  "2025-05-22": {
+    "hash-rate": 907151158.610936,
+    "n-transactions": 467803.0,
+    "miners-revenue": 52851545.1129847
+  },
+  "2025-05-23": {
+    "hash-rate": 937389530.5646338,
+    "n-transactions": 444625.0,
+    "miners-revenue": 54588322.40563351
+  },
+  "2025-05-24": {
+    "hash-rate": 852722089.09428,
+    "n-transactions": 395420.0,
+    "miners-revenue": 48275499.67356639
+  },
+  "2025-05-25": {
+    "hash-rate": 913198833.0016756,
+    "n-transactions": 356355.0,
+    "miners-revenue": 55807931.7439643
+  },
+  "2025-05-26": {
+    "hash-rate": 925294181.7831548,
+    "n-transactions": 358290.0,
+    "miners-revenue": 52915104.91574241
+  },
+  "2025-05-27": {
+    "hash-rate": 852722089.09428,
+    "n-transactions": 422984.0,
+    "miners-revenue": 49485358.525541104
+  },
+  "2025-05-28": {
+    "hash-rate": 991818600.0812899,
+    "n-transactions": 541153.0,
+    "miners-revenue": 56299149.74145468
+  },
+  "2025-05-29": {
+    "hash-rate": 961580228.1275918,
+    "n-transactions": 382859.0,
+    "miners-revenue": 53953669.204095624
+  },
+  "2025-05-30": {
+    "hash-rate": 937389530.5646338,
+    "n-transactions": 396232.0,
+    "miners-revenue": 51603272.39586039
+  },
+  "2025-05-31": {
+    "hash-rate": 1016284104.8877773,
+    "n-transactions": 299392.0,
+    "miners-revenue": 52781971.99353161
+  },
+  "2025-06-01": {
+    "hash-rate": 839539043.1681639,
+    "n-transactions": 256072.0,
+    "miners-revenue": 43808675.73054219
+  },
+  "2025-06-02": {
+    "hash-rate": 839539043.1681639,
+    "n-transactions": 346488.0,
+    "miners-revenue": 44023056.63066118
+  },
+  "2025-06-03": {
+    "hash-rate": 908974603.1294405,
+    "n-transactions": 358895.0,
+    "miners-revenue": 48097470.03912732
+  },
+  "2025-06-04": {
+    "hash-rate": 795352777.73826,
+    "n-transactions": 337037.0,
+    "miners-revenue": 41910547.6862086
+  },
+  "2025-06-05": {
+    "hash-rate": 845851366.801007,
+    "n-transactions": 320509.0,
+    "miners-revenue": 44003996.223430805
+  },
+  "2025-06-06": {
+    "hash-rate": 845851366.801007,
+    "n-transactions": 298643.0,
+    "miners-revenue": 43897190.94928961
+  },
+  "2025-06-07": {
+    "hash-rate": 902662279.4965969,
+    "n-transactions": 290718.0,
+    "miners-revenue": 47398989.35463319
+  },
+  "2025-06-08": {
+    "hash-rate": 965785515.8250304,
+    "n-transactions": 307505.0,
+    "miners-revenue": 50908063.18071988
+  },
+  "2025-06-09": {
+    "hash-rate": 883725308.5980667,
+    "n-transactions": 361275.0,
+    "miners-revenue": 47302374.792630896
+  },
+  "2025-06-10": {
+    "hash-rate": 1066782693.9505239,
+    "n-transactions": 428797.0,
+    "miners-revenue": 58400130.58904057
+  },
+  "2025-06-11": {
+    "hash-rate": 890037632.2309102,
+    "n-transactions": 347263.0,
+    "miners-revenue": 48716612.982634395
+  },
+  "2025-06-12": {
+    "hash-rate": 934223897.6608136,
+    "n-transactions": 425413.0,
+    "miners-revenue": 50245393.68482558
+  },
+  "2025-06-13": {
+    "hash-rate": 915286926.7622839,
+    "n-transactions": 351499.0,
+    "miners-revenue": 48859546.300097495
+  },
+  "2025-06-14": {
+    "hash-rate": 949216466.5546213,
+    "n-transactions": 273850.0,
+    "miners-revenue": 50643856.22323849
+  },
+  "2025-06-15": {
+    "hash-rate": 854616743.0404905,
+    "n-transactions": 281934.0,
+    "miners-revenue": 45795101.48493961
+  },
+  "2025-06-16": {
+    "hash-rate": 917456209.4405266,
+    "n-transactions": 361092.0,
+    "miners-revenue": 49380099.58294062
+  },
+  "2025-06-17": {
+    "hash-rate": 741505703.5204258,
+    "n-transactions": 354536.0,
+    "miners-revenue": 39628952.11119688
+  },
+  "2025-06-18": {
+    "hash-rate": 879752529.6005048,
+    "n-transactions": 441317.0,
+    "miners-revenue": 47261638.10736218
+  },
+  "2025-06-19": {
+    "hash-rate": 798061223.2804582,
+    "n-transactions": 308332.0,
+    "miners-revenue": 42106155.08953161
+  },
+  "2025-06-20": {
+    "hash-rate": 948875942.6405447,
+    "n-transactions": 353459.0,
+    "miners-revenue": 50034488.67835489
+  },
+  "2025-06-21": {
+    "hash-rate": 886036476.2405084,
+    "n-transactions": 309613.0,
+    "miners-revenue": 46573282.15737069
+  },
+  "2025-06-22": {
+    "hash-rate": 672382290.480386,
+    "n-transactions": 265421.0,
+    "miners-revenue": 34173347.374878295
+  },
+  "2025-06-23": {
+    "hash-rate": 672382290.480386,
+    "n-transactions": 290678.0,
+    "miners-revenue": 34611323.91322129
+  },
+  "2025-06-24": {
+    "hash-rate": 735221756.880422,
+    "n-transactions": 279124.0,
+    "miners-revenue": 39244053.8123115
+  },
+  "2025-06-25": {
+    "hash-rate": 898604369.5205159,
+    "n-transactions": 387919.0,
+    "miners-revenue": 48334581.60969528
+  },
+  "2025-06-26": {
+    "hash-rate": 986579622.4805663,
+    "n-transactions": 504341.0,
+    "miners-revenue": 53545026.820175804
+  },
+  "2025-06-27": {
+    "hash-rate": 722653863.6004148,
+    "n-transactions": 335434.0,
+    "miners-revenue": 38960959.605642885
+  },
+  "2025-06-28": {
+    "hash-rate": 911172262.800523,
+    "n-transactions": 388943.0,
+    "miners-revenue": 49716381.355829924
+  },
+  "2025-06-29": {
+    "hash-rate": 995260121.1336331,
+    "n-transactions": 380608.0,
+    "miners-revenue": 57849729.577137694
+  },
+  "2025-06-30": {
+    "hash-rate": 843035679.3574839,
+    "n-transactions": 339268.0,
+    "miners-revenue": 49333586.62119861
+  },
+  "2025-07-01": {
+    "hash-rate": 779081248.5096745,
+    "n-transactions": 325613.0,
+    "miners-revenue": 45807660.2879142
+  },
+  "2025-07-02": {
+    "hash-rate": 889547992.701345,
+    "n-transactions": 366147.0,
+    "miners-revenue": 52803407.75673417
+  },
+  "2025-07-03": {
+    "hash-rate": 877919914.3653797,
+    "n-transactions": 361041.0,
+    "miners-revenue": 52184667.003364585
+  },
+  "2025-07-04": {
+    "hash-rate": 924432227.709241,
+    "n-transactions": 366873.0,
+    "miners-revenue": 54347747.508406095
+  },
+  "2025-07-05": {
+    "hash-rate": 912804149.3732755,
+    "n-transactions": 427456.0,
+    "miners-revenue": 53453223.3439726
+  },
+  "2025-07-06": {
+    "hash-rate": 930246266.8772235,
+    "n-transactions": 506401.0,
+    "miners-revenue": 54687593.79042116
+  },
+  "2025-07-07": {
+    "hash-rate": 877919914.3653797,
+    "n-transactions": 360355.0,
+    "miners-revenue": 52453309.478894114
+  },
+  "2025-07-08": {
+    "hash-rate": 825593561.8535358,
+    "n-transactions": 354753.0,
+    "miners-revenue": 49375267.19171441
+  },
+  "2025-07-09": {
+    "hash-rate": 953502423.549154,
+    "n-transactions": 444726.0,
+    "miners-revenue": 56605834.9159897
+  },
+  "2025-07-10": {
+    "hash-rate": 994200697.7250328,
+    "n-transactions": 446575.0,
+    "miners-revenue": 60482809.52680318
+  },
+  "2025-07-11": {
+    "hash-rate": 872105875.197397,
+    "n-transactions": 408758.0,
+    "miners-revenue": 55661378.165088564
+  },
+  "2025-07-12": {
+    "hash-rate": 918141001.6128464,
+    "n-transactions": 395744.0,
+    "miners-revenue": 56609152.581327505
+  },
+  "2025-07-13": {
+    "hash-rate": 859946006.057642,
+    "n-transactions": 399761.0,
+    "miners-revenue": 53264048.43253949
+  },
+  "2025-07-14": {
+    "hash-rate": 910161831.228891,
+    "n-transactions": 457360.0,
+    "miners-revenue": 56958970.224478096
+  },
+  "2025-07-15": {
+    "hash-rate": 1029424416.010608,
+    "n-transactions": 418737.0,
+    "miners-revenue": 62994556.22886511
+  },
+  "2025-07-16": {
+    "hash-rate": 822284137.1792051,
+    "n-transactions": 399196.0,
+    "miners-revenue": 49061620.40880899
+  },
+  "2025-07-17": {
+    "hash-rate": 853669027.9112357,
+    "n-transactions": 433844.0,
+    "miners-revenue": 51923875.82709622
+  },
+  "2025-07-18": {
+    "hash-rate": 903884853.0824848,
+    "n-transactions": 452162.0,
+    "miners-revenue": 55577251.70091847
+  },
+  "2025-07-19": {
+    "hash-rate": 891330896.7896729,
+    "n-transactions": 426040.0,
+    "miners-revenue": 55140355.74943248
+  },
+  "2025-07-20": {
+    "hash-rate": 935269743.8145157,
+    "n-transactions": 414919.0,
+    "miners-revenue": 55345444.39756341
+  },
+  "2025-07-21": {
+    "hash-rate": 941546721.960922,
+    "n-transactions": 384438.0,
+    "miners-revenue": 55845562.11065112
+  },
+  "2025-07-22": {
+    "hash-rate": 941546721.960922,
+    "n-transactions": 421750.0,
+    "miners-revenue": 56703249.71929671
+  },
+  "2025-07-23": {
+    "hash-rate": 878776940.4968604,
+    "n-transactions": 366826.0,
+    "miners-revenue": 52375243.840705484
+  },
+  "2025-07-24": {
+    "hash-rate": 922715787.5217032,
+    "n-transactions": 409736.0,
+    "miners-revenue": 55738019.27735036
+  },
+  "2025-07-25": {
+    "hash-rate": 1004316503.4249833,
+    "n-transactions": 427905.0,
+    "miners-revenue": 61024159.251095384
+  },
+  "2025-07-26": {
+    "hash-rate": 970032969.1338755,
+    "n-transactions": 573275.0,
+    "miners-revenue": 57613130.504926935
+  },
+  "2025-07-27": {
+    "hash-rate": 869131963.3112651,
+    "n-transactions": 472894.0,
+    "miners-revenue": 52743508.35291669
+  },
+  "2025-07-28": {
+    "hash-rate": 919884194.7454995,
+    "n-transactions": 502252.0,
+    "miners-revenue": 57401899.31434401
+  },
+  "2025-07-29": {
+    "hash-rate": 710531240.0792824,
+    "n-transactions": 350960.0,
+    "miners-revenue": 44261671.20515351
+  },
+  "2025-07-30": {
+    "hash-rate": 869131963.3112651,
+    "n-transactions": 423333.0,
+    "miners-revenue": 52500144.0726225
+  },
+  "2025-07-31": {
+    "hash-rate": 976980455.1090133,
+    "n-transactions": 485215.0,
+    "miners-revenue": 57319369.463227905
+  },
+  "2025-08-01": {
+    "hash-rate": 957948368.3211753,
+    "n-transactions": 400385.0,
+    "miners-revenue": 56353797.87732009
+  },
+  "2025-08-02": {
+    "hash-rate": 919884194.7454995,
+    "n-transactions": 309743.0,
+    "miners-revenue": 52630766.709140696
+  },
+  "2025-08-03": {
+    "hash-rate": 983324484.0382924,
+    "n-transactions": 283479.0,
+    "miners-revenue": 58460508.735578604
+  },
+  "2025-08-04": {
+    "hash-rate": 1084828946.9067616,
+    "n-transactions": 443301.0,
+    "miners-revenue": 63216750.855126135
+  },
+  "2025-08-05": {
+    "hash-rate": 875475992.2405444,
+    "n-transactions": 411399.0,
+    "miners-revenue": 49657668.28134079
+  },
+  "2025-08-06": {
+    "hash-rate": 913540165.8162203,
+    "n-transactions": 496208.0,
+    "miners-revenue": 52223364.3962656
+  },
+  "2025-08-07": {
+    "hash-rate": 1021388657.6139685,
+    "n-transactions": 565200.0,
+    "miners-revenue": 59669628.45612645
+  },
+  "2025-08-08": {
+    "hash-rate": 870485436.2761792,
+    "n-transactions": 474798.0,
+    "miners-revenue": 50684514.53970229
+  },
+  "2025-08-09": {
+    "hash-rate": 746374213.3917352,
+    "n-transactions": 376121.0,
+    "miners-revenue": 43614181.876055986
+  },
+  "2025-08-10": {
+    "hash-rate": 868625162.1369333,
+    "n-transactions": 400467.0,
+    "miners-revenue": 51005043.20194832
+  },
+  "2025-08-11": {
+    "hash-rate": 945836287.6602162,
+    "n-transactions": 449633.0,
+    "miners-revenue": 55915983.724809095
+  },
+  "2025-08-12": {
+    "hash-rate": 881493683.0574806,
+    "n-transactions": 367063.0,
+    "miners-revenue": 53843540.11236853
+  },
+  "2025-08-13": {
+    "hash-rate": 1003744631.8026783,
+    "n-transactions": 441094.0,
+    "miners-revenue": 60045859.57365181
+  },
+  "2025-08-14": {
+    "hash-rate": 1042350194.56432,
+    "n-transactions": 484085.0,
+    "miners-revenue": 61609577.20507048
+  },
+  "2025-08-15": {
+    "hash-rate": 862190901.6766596,
+    "n-transactions": 430405.0,
+    "miners-revenue": 51476198.521993086
+  },
+  "2025-08-16": {
+    "hash-rate": 978007589.9615842,
+    "n-transactions": 401706.0,
+    "miners-revenue": 56291249.48949163
+  },
+  "2025-08-17": {
+    "hash-rate": 978007589.9615842,
+    "n-transactions": 440879.0,
+    "miners-revenue": 57118058.45187763
+  },
+  "2025-08-18": {
+    "hash-rate": 990876110.8821313,
+    "n-transactions": 478104.0,
+    "miners-revenue": 57700190.9822444
+  },
+  "2025-08-19": {
+    "hash-rate": 862190901.6766596,
+    "n-transactions": 412417.0,
+    "miners-revenue": 49935656.50295718
+  },
+  "2025-08-20": {
+    "hash-rate": 907230724.8985746,
+    "n-transactions": 424869.0,
+    "miners-revenue": 51965866.520033605
+  },
+  "2025-08-21": {
+    "hash-rate": 958704808.5807632,
+    "n-transactions": 447767.0,
+    "miners-revenue": 55379284.1129266
+  },
+  "2025-08-22": {
+    "hash-rate": 939585701.641628,
+    "n-transactions": 459717.0,
+    "miners-revenue": 53263914.816695295
+  },
+  "2025-08-23": {
+    "hash-rate": 980001769.6141683,
+    "n-transactions": 467080.0,
+    "miners-revenue": 55282142.914973006
+  },
+  "2025-08-24": {
+    "hash-rate": 1057370330.3731811,
+    "n-transactions": 525890.0,
+    "miners-revenue": 61885477.45943765
+  },
+  "2025-08-25": {
+    "hash-rate": 909080588.9184059,
+    "n-transactions": 482127.0,
+    "miners-revenue": 51120833.63289729
+  },
+  "2025-08-26": {
+    "hash-rate": 967107009.4876657,
+    "n-transactions": 456605.0,
+    "miners-revenue": 56297907.75003928
+  },
+  "2025-08-27": {
+    "hash-rate": 967107009.4876657,
+    "n-transactions": 499276.0,
+    "miners-revenue": 54198229.94353496
+  },
+  "2025-08-28": {
+    "hash-rate": 1025133430.0569257,
+    "n-transactions": 575612.0,
+    "miners-revenue": 57745298.994550705
+  },
+  "2025-08-29": {
+    "hash-rate": 1063817710.4364324,
+    "n-transactions": 596157.0,
+    "miners-revenue": 58475677.66527168
+  },
+  "2025-08-30": {
+    "hash-rate": 1018686049.9936746,
+    "n-transactions": 628513.0,
+    "miners-revenue": 54713066.34255501
+  },
+  "2025-08-31": {
+    "hash-rate": 851054168.3491462,
+    "n-transactions": 472908.0,
+    "miners-revenue": 46665914.96970029
+  },
+  "2025-09-01": {
+    "hash-rate": 1038028190.1834283,
+    "n-transactions": 598757.0,
+    "miners-revenue": 58509888.881842114
+  },
+  "2025-09-02": {
+    "hash-rate": 1050922950.3099302,
+    "n-transactions": 592659.0,
+    "miners-revenue": 61013436.12510861
+  },
+  "2025-09-03": {
+    "hash-rate": 883291068.6654017,
+    "n-transactions": 411173.0,
+    "miners-revenue": 49232179.806125626
+  },
+  "2025-09-04": {
+    "hash-rate": 902633208.8551546,
+    "n-transactions": 395181.0,
+    "miners-revenue": 50416444.85079042
+  },
+  "2025-09-05": {
+    "hash-rate": 957592801.7399701,
+    "n-transactions": 416432.0,
+    "miners-revenue": 54223984.82193413
+  },
+  "2025-09-06": {
+    "hash-rate": 946761026.3534616,
+    "n-transactions": 441035.0,
+    "miners-revenue": 51557818.35938023
+  },
+  "2025-09-07": {
+    "hash-rate": 1041437128.988808,
+    "n-transactions": 586276.0,
+    "miners-revenue": 53775093.15064921
+  },
+  "2025-09-08": {
+    "hash-rate": 1082012601.5468137,
+    "n-transactions": 567934.0,
+    "miners-revenue": 59163170.858251974
+  },
+  "2025-09-09": {
+    "hash-rate": 1129350652.8644862,
+    "n-transactions": 619514.0,
+    "miners-revenue": 59621353.915624365
+  },
+  "2025-09-10": {
+    "hash-rate": 1149638389.1434891,
+    "n-transactions": 643239.0,
+    "miners-revenue": 61107717.83874749
+  },
+  "2025-09-11": {
+    "hash-rate": 1014386813.9501374,
+    "n-transactions": 598468.0,
+    "miners-revenue": 55434703.508697584
+  },
+  "2025-09-12": {
+    "hash-rate": 811509451.1601102,
+    "n-transactions": 396513.0,
+    "miners-revenue": 45996051.3087754
+  },
+  "2025-09-13": {
+    "hash-rate": 953523605.1131293,
+    "n-transactions": 533108.0,
+    "miners-revenue": 56615798.65069372
+  },
+  "2025-09-14": {
+    "hash-rate": 1034674550.2291405,
+    "n-transactions": 534198.0,
+    "miners-revenue": 58590040.977576114
+  },
+  "2025-09-15": {
+    "hash-rate": 1102300337.8258162,
+    "n-transactions": 535154.0,
+    "miners-revenue": 60079253.51947369
+  },
+  "2025-09-16": {
+    "hash-rate": 1082012601.5468137,
+    "n-transactions": 536633.0,
+    "miners-revenue": 59237319.60654769
+  },
+  "2025-09-17": {
+    "hash-rate": 865610081.2374508,
+    "n-transactions": 362913.0,
+    "miners-revenue": 58799712.10291436
+  },
+  "2025-09-18": {
+    "hash-rate": 1087599379.1411881,
+    "n-transactions": 448521.0,
+    "miners-revenue": 60565164.56275341
+  },
+  "2025-09-19": {
+    "hash-rate": 1188749380.7897809,
+    "n-transactions": 478312.0,
+    "miners-revenue": 65203654.13159877
+  },
+  "2025-09-20": {
+    "hash-rate": 1082611043.2192645,
+    "n-transactions": 498549.0,
+    "miners-revenue": 56549857.186625816
+  },
+  "2025-09-21": {
+    "hash-rate": 1146294045.7615743,
+    "n-transactions": 513490.0,
+    "miners-revenue": 59677110.55222099
+  },
+  "2025-09-22": {
+    "hash-rate": 1061383375.7051616,
+    "n-transactions": 456797.0,
+    "miners-revenue": 54197851.96025491
+  },
+  "2025-09-23": {
+    "hash-rate": 1018928040.676955,
+    "n-transactions": 495947.0,
+    "miners-revenue": 51049596.047497146
+  },
+  "2025-09-24": {
+    "hash-rate": 1082611043.2192645,
+    "n-transactions": 522936.0,
+    "miners-revenue": 55101523.83746149
+  },
+  "2025-09-25": {
+    "hash-rate": 997700373.1628518,
+    "n-transactions": 431725.0,
+    "miners-revenue": 50173577.36223641
+  },
+  "2025-09-26": {
+    "hash-rate": 934017370.6205422,
+    "n-transactions": 419078.0,
+    "miners-revenue": 49131500.76535409
+  },
+  "2025-09-27": {
+    "hash-rate": 1096762821.5620003,
+    "n-transactions": 526116.0,
+    "miners-revenue": 57571424.46552212
+  },
+  "2025-09-28": {
+    "hash-rate": 1167521713.2756777,
+    "n-transactions": 635424.0,
+    "miners-revenue": 57694137.5158762
+  },
+  "2025-09-29": {
+    "hash-rate": 990624483.9914839,
+    "n-transactions": 444460.0,
+    "miners-revenue": 52005476.55065172
+  },
+  "2025-09-30": {
+    "hash-rate": 1139218156.5902066,
+    "n-transactions": 555361.0,
+    "miners-revenue": 59806339.233965605
+  },
+  "2025-10-01": {
+    "hash-rate": 1076906913.283782,
+    "n-transactions": 473880.0,
+    "miners-revenue": 58814143.62506912
+  },
+  "2025-10-02": {
+    "hash-rate": 1019764936.475331,
+    "n-transactions": 381586.0,
+    "miners-revenue": 52703238.64085598
+  },
+  "2025-10-03": {
+    "hash-rate": 884796047.8241848,
+    "n-transactions": 387726.0,
+    "miners-revenue": 45203497.90500219
+  },
+  "2025-10-04": {
+    "hash-rate": 1004768393.2918702,
+    "n-transactions": 422031.0,
+    "miners-revenue": 54672826.381599
+  },
+  "2025-10-05": {
+    "hash-rate": 1117242467.1678262,
+    "n-transactions": 525372.0,
+    "miners-revenue": 61639031.92476243
+  },
+  "2025-10-06": {
+    "hash-rate": 922287405.7828363,
+    "n-transactions": 431274.0,
+    "miners-revenue": 48326772.4491213
+  },
+  "2025-10-07": {
+    "hash-rate": 1034761479.6587919,
+    "n-transactions": 430492.0,
+    "miners-revenue": 54530174.102237426
+  },
+  "2025-10-08": {
+    "hash-rate": 1109744195.5760958,
+    "n-transactions": 427474.0,
+    "miners-revenue": 58604481.531066805
+  },
+  "2025-10-09": {
+    "hash-rate": 899792591.007645,
+    "n-transactions": 367782.0,
+    "miners-revenue": 46140046.75896492
+  },
+  "2025-10-10": {
+    "hash-rate": 989771850.1084098,
+    "n-transactions": 418155.0,
+    "miners-revenue": 50087834.21199739
+  },
+  "2025-10-11": {
+    "hash-rate": 1102245923.9843652,
+    "n-transactions": 444087.0,
+    "miners-revenue": 53304513.956858695
+  },
+  "2025-10-12": {
+    "hash-rate": 1087249380.8009045,
+    "n-transactions": 463487.0,
+    "miners-revenue": 52631008.27803633
+  },
+  "2025-10-13": {
+    "hash-rate": 1139737281.943017,
+    "n-transactions": 491572.0,
+    "miners-revenue": 55772581.81280702
+  },
+  "2025-10-14": {
+    "hash-rate": 1267207899.0024335,
+    "n-transactions": 562791.0,
+    "miners-revenue": 62702029.02424291
+  },
+  "2025-10-15": {
+    "hash-rate": 1079751109.2091742,
+    "n-transactions": 480244.0,
+    "miners-revenue": 56483930.76401499
+  },
+  "2025-10-16": {
+    "hash-rate": 1124278123.987008,
+    "n-transactions": 497400.0,
+    "miners-revenue": 53836990.62783982
+  },
+  "2025-10-17": {
+    "hash-rate": 1159633832.2093213,
+    "n-transactions": 480068.0,
+    "miners-revenue": 55014779.838728644
+  },
+  "2025-10-18": {
+    "hash-rate": 1203393599.4625034,
+    "n-transactions": 564018.0,
+    "miners-revenue": 55526576.457383774
+  },
+  "2025-10-19": {
+    "hash-rate": 1013767941.3653816,
+    "n-transactions": 443253.0,
+    "miners-revenue": 47138834.98135011
+  },
+  "2025-10-20": {
+    "hash-rate": 1086700886.7873514,
+    "n-transactions": 424653.0,
+    "miners-revenue": 57476921.76238207
+  },
+  "2025-10-21": {
+    "hash-rate": 1093994181.3295484,
+    "n-transactions": 429039.0,
+    "miners-revenue": 53878170.125397824
+  },
+  "2025-10-22": {
+    "hash-rate": 1115874064.956139,
+    "n-transactions": 489141.0,
+    "miners-revenue": 54748141.490670696
+  },
+  "2025-10-23": {
+    "hash-rate": 1035647824.9919723,
+    "n-transactions": 426260.0,
+    "miners-revenue": 48853931.9317649
+  },
+  "2025-10-24": {
+    "hash-rate": 1305499723.053261,
+    "n-transactions": 571212.0,
+    "miners-revenue": 67896489.5775563
+  },
+  "2025-10-25": {
+    "hash-rate": 1166927126.751518,
+    "n-transactions": 504399.0,
+    "miners-revenue": 58063431.451331414
+  },
+  "2025-10-26": {
+    "hash-rate": 1072114297.7029574,
+    "n-transactions": 521328.0,
+    "miners-revenue": 52688113.772418
+  },
+  "2025-10-27": {
+    "hash-rate": 1072114297.7029574,
+    "n-transactions": 507349.0,
+    "miners-revenue": 55381422.5990335
+  },
+  "2025-10-28": {
+    "hash-rate": 1181513715.835912,
+    "n-transactions": 524707.0,
+    "miners-revenue": 59559818.98605979
+  },
+  "2025-10-29": {
+    "hash-rate": 929747081.6588961,
+    "n-transactions": 392028.0,
+    "miners-revenue": 46366755.927553706
+  },
+  "2025-10-30": {
+    "hash-rate": 1240553837.6668227,
+    "n-transactions": 554058.0,
+    "miners-revenue": 59014847.657342404
+  },
+  "2025-10-31": {
+    "hash-rate": 1085484607.9584696,
+    "n-transactions": 460063.0,
+    "miners-revenue": 49097139.10761869
+  },
+  "2025-11-01": {
+    "hash-rate": 1069977684.9876347,
+    "n-transactions": 391320.0,
+    "miners-revenue": 48497027.14215949
+  },
+  "2025-11-02": {
+    "hash-rate": 1201786530.2397344,
+    "n-transactions": 408092.0,
+    "miners-revenue": 57248581.06084638
+  },
+  "2025-11-03": {
+    "hash-rate": 1100991530.929305,
+    "n-transactions": 447703.0,
+    "miners-revenue": 50213843.6104412
+  },
+  "2025-11-04": {
+    "hash-rate": 1015703454.5897113,
+    "n-transactions": 375984.0,
+    "miners-revenue": 44261372.2975437
+  },
+  "2025-11-05": {
+    "hash-rate": 1069977684.9876347,
+    "n-transactions": 396072.0,
+    "miners-revenue": 48614915.985910416
+  },
+  "2025-11-06": {
+    "hash-rate": 1085484607.9584696,
+    "n-transactions": 416278.0,
+    "miners-revenue": 47273620.26287099
+  },
+  "2025-11-07": {
+    "hash-rate": 1100991530.929305,
+    "n-transactions": 476245.0,
+    "miners-revenue": 46148651.64133788
+  },
+  "2025-11-08": {
+    "hash-rate": 930415378.2501172,
+    "n-transactions": 351420.0,
+    "miners-revenue": 38668844.67289409
+  },
+  "2025-11-09": {
+    "hash-rate": 1093238069.4438875,
+    "n-transactions": 466347.0,
+    "miners-revenue": 45526140.89176192
+  },
+  "2025-11-10": {
+    "hash-rate": 1085484607.9584696,
+    "n-transactions": 449593.0,
+    "miners-revenue": 48089956.88308448
+  },
+  "2025-11-11": {
+    "hash-rate": 1186279607.2688992,
+    "n-transactions": 481949.0,
+    "miners-revenue": 52980490.17789942
+  },
+  "2025-11-12": {
+    "hash-rate": 1086613750.3494294,
+    "n-transactions": 451023.0,
+    "miners-revenue": 46339949.39854222
+  },
+  "2025-11-16": {
+    "hash-rate": 1203542966.8475492,
+    "n-transactions": 581852.0,
+    "miners-revenue": 51839181.95550078
+  },
+  "2025-11-17": {
+    "hash-rate": 938612125.0886546,
+    "n-transactions": 415543.0,
+    "miners-revenue": 37623941.963384494
+  },
+  "2025-11-18": {
+    "hash-rate": 1006737198.683799,
+    "n-transactions": 317239.0,
+    "miners-revenue": 39760940.62876144
+  },
+  "2025-11-19": {
+    "hash-rate": 1037015009.1705301,
+    "n-transactions": 361791.0,
+    "miners-revenue": 41686318.65990569
+  },
+  "2025-11-20": {
+    "hash-rate": 991598293.4404337,
+    "n-transactions": 361895.0,
+    "miners-revenue": 37391178.738754086
+  },
+  "2025-11-21": {
+    "hash-rate": 1142987345.8740876,
+    "n-transactions": 413267.0,
+    "miners-revenue": 41307351.470361225
+  },
+  "2025-11-22": {
+    "hash-rate": 1082431724.900626,
+    "n-transactions": 472342.0,
+    "miners-revenue": 38587770.65295698
+  },
+  "2025-11-23": {
+    "hash-rate": 1074862272.2789433,
+    "n-transactions": 317173.0,
+    "miners-revenue": 39803642.23436507
+  },
+  "2025-11-24": {
+    "hash-rate": 1082431724.900626,
+    "n-transactions": 400125.0,
+    "miners-revenue": 40374787.099114954
+  },
+  "2025-11-25": {
+    "hash-rate": 870487051.4935104,
+    "n-transactions": 350825.0,
+    "miners-revenue": 32874235.57422186
+  },
+  "2025-11-26": {
+    "hash-rate": 1241390229.9559624,
+    "n-transactions": 477042.0,
+    "miners-revenue": 48827581.66636605
+  },
+  "2025-11-27": {
+    "hash-rate": 1061465507.6302311,
+    "n-transactions": 403825.0,
+    "miners-revenue": 45073841.77706884
+  },
+  "2025-11-28": {
+    "hash-rate": 1113270480.6428328,
+    "n-transactions": 511691.0,
+    "miners-revenue": 43668909.077361286
+  },
+  "2025-11-29": {
+    "hash-rate": 1016787038.987121,
+    "n-transactions": 400703.0,
+    "miners-revenue": 40823502.876211286
+  },
+  "2025-11-30": {
+    "hash-rate": 1239441135.1156871,
+    "n-transactions": 517534.0,
+    "miners-revenue": 50114996.21209714
+  },
+  "2025-12-01": {
+    "hash-rate": 987099826.1699785,
+    "n-transactions": 402123.0,
+    "miners-revenue": 37889948.704963274
+  },
+  "2025-12-02": {
+    "hash-rate": 942569006.9442655,
+    "n-transactions": 412650.0,
+    "miners-revenue": 37209087.675037675
+  },
+  "2025-12-03": {
+    "hash-rate": 979678022.9656931,
+    "n-transactions": 429624.0,
+    "miners-revenue": 40366905.180626564
+  },
+  "2025-12-04": {
+    "hash-rate": 979678022.9656931,
+    "n-transactions": 414109.0,
+    "miners-revenue": 38650213.12878416
+  },
+  "2025-12-05": {
+    "hash-rate": 883194581.309981,
+    "n-transactions": 356330.0,
+    "miners-revenue": 35290934.7860603
+  },
+  "2025-12-06": {
+    "hash-rate": 1209753922.2985451,
+    "n-transactions": 527061.0,
+    "miners-revenue": 47551994.39825927
+  },
+  "2025-12-07": {
+    "hash-rate": 1187488512.6856885,
+    "n-transactions": 543191.0,
+    "miners-revenue": 46180600.132956564
+  },
+  "2025-12-08": {
+    "hash-rate": 1098426874.2342618,
+    "n-transactions": 580273.0,
+    "miners-revenue": 42346198.7392924
+  },
+  "2025-12-09": {
+    "hash-rate": 957412613.3528363,
+    "n-transactions": 448961.0,
+    "miners-revenue": 38202403.79200807
+  },
+  "2025-12-10": {
+    "hash-rate": 1150379496.6642606,
+    "n-transactions": 550483.0,
+    "miners-revenue": 46194650.58886004
+  },
+  "2025-12-11": {
+    "hash-rate": 1179902024.3226545,
+    "n-transactions": 472857.0,
+    "miners-revenue": 45569903.27880048
+  },
+  "2025-12-12": {
+    "hash-rate": 1068190154.3848839,
+    "n-transactions": 417151.0,
+    "miners-revenue": 45186891.408350185
+  },
+  "2025-12-13": {
+    "hash-rate": 1053456497.083023,
+    "n-transactions": 495923.0,
+    "miners-revenue": 41126223.45601717
+  },
+  "2025-12-14": {
+    "hash-rate": 942954067.3190697,
+    "n-transactions": 416686.0,
+    "miners-revenue": 36576336.1609944
+  },
+  "2025-12-15": {
+    "hash-rate": 987155039.2246507,
+    "n-transactions": 423355.0,
+    "miners-revenue": 38200148.6397923
+  },
+  "2025-12-16": {
+    "hash-rate": 1082923811.686744,
+    "n-transactions": 443734.0,
+    "miners-revenue": 42372123.497608654
+  },
+  "2025-12-17": {
+    "hash-rate": 1016622353.8283721,
+    "n-transactions": 446512.0,
+    "miners-revenue": 39521708.66966769
+  },
+  "2025-12-18": {
+    "hash-rate": 1060823325.7339536,
+    "n-transactions": 463881.0,
+    "miners-revenue": 39870185.26024819
+  },
+  "2025-12-19": {
+    "hash-rate": 1068190154.3848839,
+    "n-transactions": 434180.0,
+    "miners-revenue": 41624840.89061918
+  },
+  "2025-12-20": {
+    "hash-rate": 1082923811.686744,
+    "n-transactions": 440896.0,
+    "miners-revenue": 40764665.21079847
+  },
+  "2025-12-21": {
+    "hash-rate": 1016622353.8283721,
+    "n-transactions": 441101.0,
+    "miners-revenue": 38282066.66061573
+  },
+  "2025-12-22": {
+    "hash-rate": 1023989182.4793022,
+    "n-transactions": 427277.0,
+    "miners-revenue": 40642087.56592057
+  },
+  "2025-12-23": {
+    "hash-rate": 1068190154.3848839,
+    "n-transactions": 431004.0,
+    "miners-revenue": 40027962.17182731
+  },
+  "2025-12-24": {
+    "hash-rate": 1171325755.4979067,
+    "n-transactions": 501255.0,
+    "miners-revenue": 45269766.079836465
+  },
+  "2025-12-25": {
+    "hash-rate": 1016973817.768314,
+    "n-transactions": 464027.0,
+    "miners-revenue": 40816647.87350074
+  },
+  "2025-12-26": {
+    "hash-rate": 1149714808.6043208,
+    "n-transactions": 517078.0,
+    "miners-revenue": 45337497.94168463
+  },
+  "2025-12-27": {
+    "hash-rate": 1002315474.1678696,
+    "n-transactions": 470913.0,
+    "miners-revenue": 37966099.35216447
+  },
+  "2025-12-28": {
+    "hash-rate": 1142344841.882498,
+    "n-transactions": 543992.0,
+    "miners-revenue": 44392018.14136716
+  },
+  "2025-12-29": {
+    "hash-rate": 1134974875.1606758,
+    "n-transactions": 547262.0,
+    "miners-revenue": 44333071.48601913
+  },
+  "2025-12-30": {
+    "hash-rate": 877026039.8968855,
+    "n-transactions": 369499.0,
+    "miners-revenue": 32980772.1386752
+  },
+  "2025-12-31": {
+    "hash-rate": 980205574.0024016,
+    "n-transactions": 408137.0,
+    "miners-revenue": 39763257.030322805
+  },
+  "2026-01-01": {
+    "hash-rate": 1112864974.9952078,
+    "n-transactions": 469099.0,
+    "miners-revenue": 45043745.663201086
+  },
+  "2026-01-02": {
+    "hash-rate": 1061275207.9424502,
+    "n-transactions": 458965.0,
+    "miners-revenue": 43248637.866295256
+  },
+  "2026-01-03": {
+    "hash-rate": 1142344841.882498,
+    "n-transactions": 501272.0,
+    "miners-revenue": 46119804.59737659
+  },
+  "2026-01-04": {
+    "hash-rate": 1068645174.6642727,
+    "n-transactions": 474589.0,
+    "miners-revenue": 42701072.629889734
+  },
+  "2026-01-05": {
+    "hash-rate": 972835607.2805791,
+    "n-transactions": 409625.0,
+    "miners-revenue": 39260031.2528147
+  },
+  "2026-01-06": {
+    "hash-rate": 958095673.8369341,
+    "n-transactions": 424895.0,
+    "miners-revenue": 39870766.30093992
+  },
+  "2026-01-07": {
+    "hash-rate": 1083385108.1079175,
+    "n-transactions": 425191.0,
+    "miners-revenue": 43059881.472027756
+  },
+  "2026-01-08": {
+    "hash-rate": 965289669.1289088,
+    "n-transactions": 334415.0,
+    "miners-revenue": 38242426.304593824
+  },
+  "2026-01-09": {
+    "hash-rate": 1033929118.9983668,
+    "n-transactions": 355655.0,
+    "miners-revenue": 43360680.846190974
+  },
+  "2026-01-10": {
+    "hash-rate": 1179552938.5756013,
+    "n-transactions": 488786.0,
+    "miners-revenue": 47192741.628271244
+  },
+  "2026-01-11": {
+    "hash-rate": 888305299.4211321,
+    "n-transactions": 290317.0,
+    "miners-revenue": 34774842.27136028
+  },
+  "2026-01-12": {
+    "hash-rate": 1033929118.9983668,
+    "n-transactions": 411249.0,
+    "miners-revenue": 41898399.34618774
+  },
+  "2026-01-13": {
+    "hash-rate": 982960782.146335,
+    "n-transactions": 336329.0,
+    "miners-revenue": 39887018.4843792
+  },
+  "2026-01-14": {
+    "hash-rate": 902867681.3788556,
+    "n-transactions": 324327.0,
+    "miners-revenue": 38606951.33265132
+  },
+  "2026-01-15": {
+    "hash-rate": 1012085546.0617816,
+    "n-transactions": 374223.0,
+    "miners-revenue": 43945622.19613658
+  },
+  "2026-01-16": {
+    "hash-rate": 946554827.2520258,
+    "n-transactions": 361943.0,
+    "miners-revenue": 39642363.47762159
+  },
+  "2026-01-17": {
+    "hash-rate": 1084897455.850399,
+    "n-transactions": 357391.0,
+    "miners-revenue": 47584024.47027049
+  },
+  "2026-01-18": {
+    "hash-rate": 1019366737.0406432,
+    "n-transactions": 332526.0,
+    "miners-revenue": 44190394.54358933
+  },
+  "2026-01-19": {
+    "hash-rate": 1092178646.8292608,
+    "n-transactions": 354595.0,
+    "miners-revenue": 47264334.37584556
+  },
+  "2026-01-20": {
+    "hash-rate": 968398400.1886113,
+    "n-transactions": 383148.0,
+    "miners-revenue": 38654976.78246953
+  },
+  "2026-01-21": {
+    "hash-rate": 997523164.104058,
+    "n-transactions": 428195.0,
+    "miners-revenue": 49726716.484967105
+  },
+  "2026-01-22": {
+    "hash-rate": 1163912656.954194,
+    "n-transactions": 464040.0,
+    "miners-revenue": 46464034.7438881
+  },
+  "2026-01-23": {
+    "hash-rate": 985930374.4704596,
+    "n-transactions": 436563.0,
+    "miners-revenue": 42235350.854145795
+  },
+  "2026-01-24": {
+    "hash-rate": 690151262.1293219,
+    "n-transactions": 289144.0,
+    "miners-revenue": 28729263.387003347
+  },
+  "2026-01-25": {
+    "hash-rate": 760574860.3057833,
+    "n-transactions": 314920.0,
+    "miners-revenue": 33814304.70026576
+  },
+  "2026-01-26": {
+    "hash-rate": 873252617.3881215,
+    "n-transactions": 402432.0,
+    "miners-revenue": 38079554.19167753
+  },
+  "2026-01-27": {
+    "hash-rate": 859167897.7528292,
+    "n-transactions": 362327.0,
+    "miners-revenue": 35583755.74561265
+  },
+  "2026-01-28": {
+    "hash-rate": 774659579.9410756,
+    "n-transactions": 336095.0,
+    "miners-revenue": 33247869.895025924
+  },
+  "2026-01-29": {
+    "hash-rate": 901422056.6587061,
+    "n-transactions": 428725.0,
+    "miners-revenue": 37218185.03085007
+  },
+  "2026-01-30": {
+    "hash-rate": 922549136.1116446,
+    "n-transactions": 380796.0,
+    "miners-revenue": 34377746.2435277
+  },
+  "2026-01-31": {
+    "hash-rate": 971845654.8351676,
+    "n-transactions": 405402.0,
+    "miners-revenue": 39614296.16231698
+  },
+  "2026-02-01": {
+    "hash-rate": 838040818.299891,
+    "n-transactions": 352779.0,
+    "miners-revenue": 31663403.11907942
+  },
+  "2026-02-02": {
+    "hash-rate": 830998458.4822448,
+    "n-transactions": 357323.0,
+    "miners-revenue": 29869870.07014526
+  },
+  "2026-02-03": {
+    "hash-rate": 929591495.9292907,
+    "n-transactions": 435461.0,
+    "miners-revenue": 32668904.952233184
+  },
+  "2026-02-04": {
+    "hash-rate": 1000015094.105752,
+    "n-transactions": 411218.0,
+    "miners-revenue": 35594652.764567286
+  },
+  "2026-02-05": {
+    "hash-rate": 894379696.8410602,
+    "n-transactions": 384550.0,
+    "miners-revenue": 28340233.43093726
+  },
+  "2026-02-06": {
+    "hash-rate": 1021142173.5586905,
+    "n-transactions": 410157.0,
+    "miners-revenue": 31304063.408903655
+  },
+  "2026-02-07": {
+    "hash-rate": 1116396723.6283798,
+    "n-transactions": 494507.0,
+    "miners-revenue": 37922804.35860754
+  },
+  "2026-02-08": {
+    "hash-rate": 1063649660.9826868,
+    "n-transactions": 507211.0,
+    "miners-revenue": 39307842.46530021
+  },
+  "2026-02-09": {
+    "hash-rate": 1019852322.0010467,
+    "n-transactions": 402013.0,
+    "miners-revenue": 37701555.88624861
+  },
+  "2026-02-10": {
+    "hash-rate": 900973830.4794525,
+    "n-transactions": 385928.0,
+    "miners-revenue": 31805766.029373445
+  },
+  "2026-02-11": {
+    "hash-rate": 982311745.7310699,
+    "n-transactions": 455182.0,
+    "miners-revenue": 33745569.9783912
+  },
+  "2026-02-12": {
+    "hash-rate": 1107446999.964327,
+    "n-transactions": 484938.0,
+    "miners-revenue": 39717969.33809671
+  },
+  "2026-02-13": {
+    "hash-rate": 944771169.4610924,
+    "n-transactions": 529750.0,
+    "miners-revenue": 33812197.60598131
+  },
+  "2026-02-14": {
+    "hash-rate": 1038622610.1360354,
+    "n-transactions": 537394.0,
+    "miners-revenue": 38825294.198482804
+  },
+  "2026-02-15": {
+    "hash-rate": 1232582254.1975844,
+    "n-transactions": 701969.0,
+    "miners-revenue": 44747462.56810828
+  },
+  "2026-02-16": {
+    "hash-rate": 1094933474.5410013,
+    "n-transactions": 526061.0,
+    "miners-revenue": 41514137.47269212
+  },
+  "2026-02-17": {
+    "hash-rate": 1032365847.4243727,
+    "n-transactions": 659135.0,
+    "miners-revenue": 35705019.17228733
+  },
+  "2026-02-18": {
+    "hash-rate": 957284694.8844184,
+    "n-transactions": 507143.0,
+    "miners-revenue": 33192878.56735473
+  },
+  "2026-02-19": {
+    "hash-rate": 1020622252.4872998,
+    "n-transactions": 512501.0,
+    "miners-revenue": 35453245.47632441
+  },
+  "2026-02-20": {
+    "hash-rate": 983397435.8766681,
+    "n-transactions": 413542.0,
+    "miners-revenue": 29583415.862321332
+  },
+  "2026-02-21": {
+    "hash-rate": 854191933.352726,
+    "n-transactions": 350751.0,
+    "miners-revenue": 25941681.428243037
+  },
+  "2026-02-22": {
+    "hash-rate": 1177205689.6625803,
+    "n-transactions": 529495.0,
+    "miners-revenue": 38334798.13538485
+  },
+  "2026-02-23": {
+    "hash-rate": 1062356354.0857433,
+    "n-transactions": 453671.0,
+    "miners-revenue": 31768274.212035805
+  },
+  "2026-02-24": {
+    "hash-rate": 1184383773.1361327,
+    "n-transactions": 566873.0,
+    "miners-revenue": 34308088.5723721
+  },
+  "2026-02-25": {
+    "hash-rate": 1119781021.874162,
+    "n-transactions": 485381.0,
+    "miners-revenue": 33163205.0955439
+  },
+  "2026-02-26": {
+    "hash-rate": 1004931686.2973247,
+    "n-transactions": 425509.0,
+    "miners-revenue": 31242254.39746657
+  },
+  "2026-02-27": {
+    "hash-rate": 1012109769.7708769,
+    "n-transactions": 415510.0,
+    "miners-revenue": 32978961.78356569
+  },
+  "2026-02-28": {
+    "hash-rate": 1026465936.7179816,
+    "n-transactions": 424909.0,
+    "miners-revenue": 31741956.231636845
+  },
+  "2026-03-01": {
+    "hash-rate": 1069534437.5592955,
+    "n-transactions": 462687.0,
+    "miners-revenue": 32892105.20807477
+  },
+  "2026-03-02": {
+    "hash-rate": 976219352.4031156,
+    "n-transactions": 422366.0,
+    "miners-revenue": 28805700.41345509
+  },
+  "2026-03-03": {
+    "hash-rate": 961863185.4560106,
+    "n-transactions": 381186.0,
+    "miners-revenue": 29470007.97002152
+  },
+  "2026-03-04": {
+    "hash-rate": 933150851.5618018,
+    "n-transactions": 377812.0,
+    "miners-revenue": 30908354.53628888
+  },
+  "2026-03-05": {
+    "hash-rate": 1192841923.7049837,
+    "n-transactions": 464513.0,
+    "miners-revenue": 43517075.97550223
+  },
+  "2026-03-06": {
+    "hash-rate": 1052672432.0364789,
+    "n-transactions": 442642.0,
+    "miners-revenue": 35189110.133946575
+  },
+  "2026-03-07": {
+    "hash-rate": 951731239.9233917,
+    "n-transactions": 437720.0,
+    "miners-revenue": 29409810.833845343
+  },
+  "2026-03-08": {
+    "hash-rate": 966151410.2252611,
+    "n-transactions": 453532.0,
+    "miners-revenue": 29952835.179625377
+  },
+  "2026-03-09": {
+    "hash-rate": 994991750.8290006,
+    "n-transactions": 415576.0,
+    "miners-revenue": 30248754.74657433
+  },
+  "2026-03-10": {
+    "hash-rate": 994991750.8290006,
+    "n-transactions": 381301.0,
+    "miners-revenue": 30958077.256941024
+  },
+  "2026-03-11": {
+    "hash-rate": 1002201835.9799352,
+    "n-transactions": 401926.0,
+    "miners-revenue": 31500855.46140721
+  },
+  "2026-03-12": {
+    "hash-rate": 930100984.4705875,
+    "n-transactions": 449282.0,
+    "miners-revenue": 28394948.61118444
+  },
+  "2026-03-13": {
+    "hash-rate": 872420303.2631093,
+    "n-transactions": 399857.0,
+    "miners-revenue": 28672340.40423705
+  },
+  "2026-03-14": {
+    "hash-rate": 922890899.3196526,
+    "n-transactions": 439447.0,
+    "miners-revenue": 31104411.579486884
+  },
+  "2026-03-15": {
+    "hash-rate": 901260643.8668482,
+    "n-transactions": 407207.0,
+    "miners-revenue": 28551032.51716158
+  },
+  "2026-03-16": {
+    "hash-rate": 901260643.8668482,
+    "n-transactions": 405364.0,
+    "miners-revenue": 31213760.461403914
+  },
+  "2025-11-13": {
+    "miners-revenue": 48630916.473970026
+  },
+  "2025-11-14": {
+    "miners-revenue": 46392333.27877709
+  },
+  "2025-11-15": {
+    "miners-revenue": 44397206.72613286
+  }
+}

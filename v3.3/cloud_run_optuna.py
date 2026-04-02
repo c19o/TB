@@ -7,7 +7,7 @@ Does NOT build crosses or train base model — those are already done.
 
 Usage: python -u cloud_run_optuna.py --tf 1d
 """
-import os, sys, subprocess, time, glob, sqlite3
+import os, sys, subprocess, time, glob, sqlite3, importlib.util
 
 os.environ['PYTHONUNBUFFERED'] = '1'
 os.environ.setdefault('V30_DATA_DIR', '/workspace')
@@ -44,8 +44,27 @@ print(f"  OPTUNA SEARCH: {TF}", flush=True)
 print(f"  Cores: {cpu_count} (cgroup-aware), RAM: {ram_gb:.0f} GB (cgroup-aware)", flush=True)
 print(f"{'='*60}", flush=True)
 
-# Install deps
-subprocess.run('pip install -q lightgbm optuna scipy numba scikit-learn pandas pyarrow psutil hmmlearn 2>&1 | tail -3', shell=True)
+_required_modules = {
+    'lightgbm': 'lightgbm',
+    'optuna': 'optuna',
+    'scipy': 'scipy',
+    'numba': 'numba',
+    'sklearn': 'scikit-learn',
+    'pandas': 'pandas',
+    'pyarrow': 'pyarrow',
+    'psutil': 'psutil',
+    'hmmlearn': 'hmmlearn',
+}
+_missing_packages = [pkg for mod, pkg in _required_modules.items() if importlib.util.find_spec(mod) is None]
+if _missing_packages:
+    log(f"Installing missing deps: {', '.join(sorted(set(_missing_packages)))}")
+    subprocess.run(
+        f"pip install -q {' '.join(sorted(set(_missing_packages)))} 2>&1 | tail -3",
+        shell=True,
+        check=False,
+    )
+else:
+    log("Python deps already present; skipping pip install")
 
 # Fix btc_prices.db symbol if needed
 if os.path.exists('btc_prices.db'):

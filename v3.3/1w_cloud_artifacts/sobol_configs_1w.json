@@ -1,0 +1,64 @@
+{
+  "1w": {
+    "dd10_best": {
+      "leverage": 3,
+      "risk_pct": 4.8643,
+      "stop_atr": 7.2544,
+      "rr": 9.3948,
+      "max_hold": 48,
+      "exit_type": -3,
+      "conf_thresh": 0.4006,
+      "roi": 72.56,
+      "max_dd": 2.86,
+      "win_rate": 0.6364,
+      "trades": 11,
+      "sortino": 4.8099,
+      "final_balance": 17256.06
+    },
+    "dd10_sortino": {
+      "leverage": 1,
+      "risk_pct": 0.5326,
+      "stop_atr": 7.9365,
+      "rr": 6.1735,
+      "max_hold": 52,
+      "exit_type": -3,
+      "conf_thresh": 0.399,
+      "roi": 2.39,
+      "max_dd": 0.1,
+      "win_rate": 0.6364,
+      "trades": 11,
+      "sortino": 5.8573,
+      "final_balance": 10238.88
+    },
+    "dd15_best": {
+      "leverage": 3,
+      "risk_pct": 4.8643,
+      "stop_atr": 7.2544,
+      "rr": 9.3948,
+      "max_hold": 48,
+      "exit_type": -3,
+      "conf_thresh": 0.4006,
+      "roi": 72.56,
+      "max_dd": 2.86,
+      "win_rate": 0.6364,
+      "trades": 11,
+      "sortino": 4.8099,
+      "final_balance": 17256.06
+    },
+    "dd15_sortino": {
+      "leverage": 1,
+      "risk_pct": 0.5326,
+      "stop_atr": 7.9365,
+      "rr": 6.1735,
+      "max_hold": 52,
+      "exit_type": -3,
+      "conf_thresh": 0.399,
+      "roi": 2.39,
+      "max_dd": 0.1,
+      "win_rate": 0.6364,
+      "trades": 11,
+      "sortino": 5.8573,
+      "final_balance": 10238.88
+    }
+  }
+}

@@ -1,7 +1,7 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-knn_feature_engine.py — GPU-Accelerated KNN Pattern Similarity Feature Generator
+knn_feature_engine.py â€” GPU-Accelerated KNN Pattern Similarity Feature Generator
 =================================================================================
 Uses CuPy (RTX 3090 CUDA) for batched distance computation + walk-forward masking.
 Falls back to NumPy on CPU if CuPy not available.
@@ -22,20 +22,8 @@ import numpy as np
 import time as _time
 from numpy.lib.stride_tricks import sliding_window_view
 
-# GPU backend — respects V2_SKIP_GPU env var (set by feature_library.py on CUDA 13+)
-# and does its own driver version check as a safety net.
-def _cuda_major():
-    """Detect CUDA major version from driver. Returns 13 if driver >= 580, else 12."""
-    try:
-        import subprocess as _sp
-        _nv = _sp.run(['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
-                       capture_output=True, text=True, timeout=5)
-        _drv = int(_nv.stdout.strip().split('.')[0])
-        return 13 if _drv >= 580 else 12
-    except Exception:
-        return 12
-
-_skip_gpu = os.environ.get('V2_SKIP_GPU', '') == '1' or _cuda_major() >= 13
+# GPU backend ? CuPy success is the real gate.
+_skip_gpu = os.environ.get('V2_SKIP_GPU', '') == '1'
 
 if _skip_gpu:
     _reason = "V2_SKIP_GPU=1" if os.environ.get('V2_SKIP_GPU') == '1' else "CUDA 13+ driver (580+)"
@@ -43,18 +31,19 @@ if _skip_gpu:
         raise RuntimeError(f"GPU REQUIRED: {_reason}. CuPy segfaults on CUDA 13. Set ALLOW_CPU=1 for CPU mode.")
     cp = None
     GPU_KNN = False
-    print(f"[KNN] ALLOW_CPU=1 — {_reason}. Using CPU mode.")
+    print(f"[KNN] ALLOW_CPU=1 â€” {_reason}. Using CPU mode.")
 else:
     try:
         import cupy as cp
+        _ = (cp.array([1.0], dtype=cp.float32) + cp.array([2.0], dtype=cp.float32)).get()
         GPU_KNN = True
-        print(f"[KNN] CuPy GPU detected — GPU-accelerated KNN")
-    except ImportError:
+        print(f"[KNN] CuPy GPU detected â€” GPU-accelerated KNN")
+    except Exception:
         if os.environ.get('ALLOW_CPU', '0') != '1':
             raise RuntimeError("GPU REQUIRED: CuPy not installed for KNN engine. Set ALLOW_CPU=1 for CPU mode.")
         cp = None
         GPU_KNN = False
-        print(f"[KNN] ALLOW_CPU=1 — CuPy not available, using CPU mode.")
+        print(f"[KNN] ALLOW_CPU=1 â€” CuPy not available, using CPU mode.")
 
 # Per-TF config
 KNN_TF_CONFIG = {
@@ -415,7 +404,7 @@ def compute_knn_features_live(pct_changes, next_returns, tf_name,
     valid_returns = pool_returns[valid_mask].astype(np.float32)
     valid_bar_offsets = np.arange(pool_start, pool_end)[valid_mask]
 
-    # Distance computation (single query — CPU is fine)
+    # Distance computation (single query â€” CPU is fine)
     diffs = valid_patterns - cp_vec.astype(np.float32)
     dists = np.sqrt(np.einsum('ij,ij->i', diffs, diffs))
 
@@ -481,7 +470,7 @@ if __name__ == '__main__':
     db_path = os.path.join(DB_DIR, 'btc_prices.db')
 
     if not os.path.exists(db_path):
-        print("btc_prices.db not found — skipping self-test")
+        print("btc_prices.db not found â€” skipping self-test")
         exit()
 
     conn = sqlite3.connect(db_path)
@@ -521,3 +510,4 @@ if __name__ == '__main__':
 
     conn.close()
     print("\nDone.")
+

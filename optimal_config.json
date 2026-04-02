@@ -1,0 +1,524 @@
+{
+  "generated": "2026-03-17T19:31:50.339172",
+  "model_accuracy": {
+    "xgboost": 51.46,
+    "random_forest": 51.77,
+    "lightgbm": 47.92,
+    "lasso": 50.54,
+    "ensemble": 48.69
+  },
+  "optimal_strategy": {
+    "leverage": 25,
+    "risk_per_trade": 0.15,
+    "stop_loss_atr_mult": 0.3,
+    "reward_risk_ratio": 1.5,
+    "trail_trigger_atr": 0.8,
+    "max_hold_days": 2,
+    "partial_tp_pct": 0.25,
+    "fitness": 1760.88,
+    "roi_pct": 2214.77,
+    "max_drawdown_pct": 20.49,
+    "win_rate_pct": 50.0,
+    "total_trades": 238
+  },
+  "selected_features": [
+    "nakshatra_purva_ashadha",
+    "nakshatra_mrigashira",
+    "nakshatra_uttara_phalguni",
+    "num_bearish_signals",
+    "num_bullish_signals",
+    "alts_above_ema50",
+    "tzolkin_tone_1",
+    "lot_catastrophe_moon_conjunct",
+    "moon_sidereal_sign",
+    "spx_roc_5d",
+    "month_cos",
+    "btc_gold_corr_20d",
+    "nakshatra",
+    "bazi_btc_enemy"
+  ],
+  "top_30_features_xgboost": [
+    {
+      "name": "nakshatra_purva_ashadha",
+      "importance": 0.022344
+    },
+    {
+      "name": "nakshatra_mrigashira",
+      "importance": 0.016005
+    },
+    {
+      "name": "nakshatra_uttara_phalguni",
+      "importance": 0.013961
+    },
+    {
+      "name": "lot_increase_moon_conjunct",
+      "importance": 0.011795
+    },
+    {
+      "name": "decoder_tweet",
+      "importance": 0.011528
+    },
+    {
+      "name": "tzolkin_tone_9",
+      "importance": 0.011453
+    },
+    {
+      "name": "num_bearish_signals",
+      "importance": 0.011284
+    },
+    {
+      "name": "day_13",
+      "importance": 0.010761
+    },
+    {
+      "name": "num_bullish_signals",
+      "importance": 0.010271
+    },
+    {
+      "name": "alts_above_ema50",
+      "importance": 0.009917
+    },
+    {
+      "name": "tzolkin_tone_1",
+      "importance": 0.009649
+    },
+    {
+      "name": "lot_catastrophe_moon_conjunct",
+      "importance": 0.009458
+    },
+    {
+      "name": "moon_sidereal_sign",
+      "importance": 0.009219
+    },
+    {
+      "name": "spx_roc_5d",
+      "importance": 0.008979
+    },
+    {
+      "name": "return_1d",
+      "importance": 0.008948
+    },
+    {
+      "name": "month_cos",
+      "importance": 0.00876
+    },
+    {
+      "name": "btc_gold_corr_20d",
+      "importance": 0.008332
+    },
+    {
+      "name": "nakshatra",
+      "importance": 0.008296
+    },
+    {
+      "name": "bazi_btc_enemy",
+      "importance": 0.008188
+    },
+    {
+      "name": "price_vs_sma10",
+      "importance": 0.008038
+    },
+    {
+      "name": "nakshatra_guna",
+      "importance": 0.008004
+    },
+    {
+      "name": "range_4h_mean",
+      "importance": 0.008003
+    },
+    {
+      "name": "bb_pctb",
+      "importance": 0.008003
+    },
+    {
+      "name": "price_vs_ema5",
+      "importance": 0.007982
+    },
+    {
+      "name": "consecutive_green",
+      "importance": 0.007929
+    },
+    {
+      "name": "doy_cos",
+      "importance": 0.007864
+    },
+    {
+      "name": "price_vs_ema20",
+      "importance": 0.007665
+    },
+    {
+      "name": "avg_tweet_likes",
+      "importance": 0.007612
+    },
+    {
+      "name": "price_vs_ema200",
+      "importance": 0.007595
+    },
+    {
+      "name": "gold_roc_5d",
+      "importance": 0.007571
+    }
+  ],
+  "top_30_features_rf": [
+    {
+      "name": "btc_eth_divergence",
+      "importance": 0.015085
+    },
+    {
+      "name": "btc_sol_divergence",
+      "importance": 0.014018
+    },
+    {
+      "name": "return_1d",
+      "importance": 0.013247
+    },
+    {
+      "name": "moon_lon",
+      "importance": 0.01262
+    },
+    {
+      "name": "price_vs_ema5",
+      "importance": 0.011406
+    },
+    {
+      "name": "volume_ratio_lag5",
+      "importance": 0.011357
+    },
+    {
+      "name": "taker_buy_ratio",
+      "importance": 0.011228
+    },
+    {
+      "name": "return_5d",
+      "importance": 0.011048
+    },
+    {
+      "name": "price_vs_sma5",
+      "importance": 0.010972
+    },
+    {
+      "name": "vol_trend_5d",
+      "importance": 0.010741
+    },
+    {
+      "name": "moon_phase",
+      "importance": 0.010637
+    },
+    {
+      "name": "volume_ratio",
+      "importance": 0.010451
+    },
+    {
+      "name": "rsi_price_div",
+      "importance": 0.010312
+    },
+    {
+      "name": "return_1d_lag3",
+      "importance": 0.010236
+    },
+    {
+      "name": "stoch_k_lag1",
+      "importance": 0.010208
+    },
+    {
+      "name": "return_3d",
+      "importance": 0.010178
+    },
+    {
+      "name": "body_pct",
+      "importance": 0.010113
+    },
+    {
+      "name": "rsi14_lag5",
+      "importance": 0.010074
+    },
+    {
+      "name": "upper_wick",
+      "importance": 0.009995
+    },
+    {
+      "name": "return_1d_lag10",
+      "importance": 0.009902
+    },
+    {
+      "name": "rsi14_lag10",
+      "importance": 0.009868
+    },
+    {
+      "name": "stoch_k_lag10",
+      "importance": 0.00984
+    },
+    {
+      "name": "btc_sol_corr_20d",
+      "importance": 0.009812
+    },
+    {
+      "name": "volume_ratio_lag10",
+      "importance": 0.009801
+    },
+    {
+      "name": "range_4h_mean",
+      "importance": 0.009788
+    },
+    {
+      "name": "macd_hist_lag10",
+      "importance": 0.009767
+    },
+    {
+      "name": "return_1d_lag1",
+      "importance": 0.009761
+    },
+    {
+      "name": "spx_roc_5d",
+      "importance": 0.009754
+    },
+    {
+      "name": "psi",
+      "importance": 0.00974
+    },
+    {
+      "name": "vol_4h_std",
+      "importance": 0.009587
+    }
+  ],
+  "top_30_features_lgb": [
+    {
+      "name": "btc_eth_divergence",
+      "importance": 191
+    },
+    {
+      "name": "btc_sol_divergence",
+      "importance": 178
+    },
+    {
+      "name": "return_1d_lag1",
+      "importance": 167
+    },
+    {
+      "name": "return_5d",
+      "importance": 165
+    },
+    {
+      "name": "vol_trend_5d",
+      "importance": 154
+    },
+    {
+      "name": "upper_wick",
+      "importance": 153
+    },
+    {
+      "name": "return_1d_lag3",
+      "importance": 150
+    },
+    {
+      "name": "volume_ratio_lag1",
+      "importance": 144
+    },
+    {
+      "name": "psi",
+      "importance": 142
+    },
+    {
+      "name": "rsi_7",
+      "importance": 142
+    },
+    {
+      "name": "body_pct",
+      "importance": 140
+    },
+    {
+      "name": "return_1d_lag5",
+      "importance": 139
+    },
+    {
+      "name": "bb_pctb_lag3",
+      "importance": 130
+    },
+    {
+      "name": "return_1d_lag10",
+      "importance": 128
+    },
+    {
+      "name": "volume_ratio_lag10",
+      "importance": 126
+    },
+    {
+      "name": "avg_tweet_likes",
+      "importance": 125
+    },
+    {
+      "name": "return_1d",
+      "importance": 125
+    },
+    {
+      "name": "lower_wick",
+      "importance": 124
+    },
+    {
+      "name": "moon_lon",
+      "importance": 121
+    },
+    {
+      "name": "range_4h_mean",
+      "importance": 120
+    },
+    {
+      "name": "rsi14_lag5",
+      "importance": 119
+    },
+    {
+      "name": "taker_buy_ratio",
+      "importance": 119
+    },
+    {
+      "name": "price_vs_sma5",
+      "importance": 117
+    },
+    {
+      "name": "return_3d",
+      "importance": 116
+    },
+    {
+      "name": "btc_gold_corr_20d",
+      "importance": 115
+    },
+    {
+      "name": "btc_sol_corr_20d",
+      "importance": 112
+    },
+    {
+      "name": "stoch_k_lag10",
+      "importance": 111
+    },
+    {
+      "name": "rsi_price_div",
+      "importance": 108
+    },
+    {
+      "name": "vol_4h_std",
+      "importance": 106
+    },
+    {
+      "name": "volume_ratio_lag3",
+      "importance": 105
+    }
+  ],
+  "lasso_nonzero_weights": {
+    "sun_sidereal_sign": 0.132762,
+    "spx_roc_5d": -0.130977,
+    "btc_eth_divergence": 0.116502,
+    "news_count": -0.116176,
+    "num_bullish_signals": 0.103328,
+    "google_interest_high": -0.095426,
+    "price_vs_ema5": -0.0908,
+    "volume_ratio_lag1": 0.090485,
+    "btc_sol_divergence": 0.088734,
+    "return_1d": -0.085748,
+    "alts_above_ema50": -0.069317,
+    "btc_gold_corr_20d": 0.067586,
+    "tithi": 0.064309,
+    "btc_sol_corr_20d": -0.063113,
+    "bb_pctb_lag3": -0.056339,
+    "moon_sidereal_sign": 0.051814,
+    "moon_phase": -0.042652,
+    "btc_spx_corr_20d": -0.041204,
+    "day_13": 0.040876,
+    "moon_mansion": 0.036717,
+    "bazi_btc_enemy": 0.036504,
+    "lot_increase_moon_conjunct": -0.035434,
+    "eph_digital_root": -0.034504,
+    "tzolkin_tone_13": 0.033259,
+    "yoga_idx": 0.031218,
+    "consecutive_red": 0.031065,
+    "price_dr_6": 0.030761,
+    "consensio": 0.030701,
+    "nakshatra_purva_ashadha": 0.028629,
+    "range_4h_mean": -0.028562,
+    "moon_lon": 0.028185,
+    "volume_ratio_lag3": -0.027659,
+    "bazi_btc_friendly": 0.025028,
+    "soft_aspects": 0.02178,
+    "gold": 0.021313,
+    "lower_wick": -0.021216,
+    "dxy": 0.020484,
+    "sun_lon": -0.020422,
+    "tzolkin_tone_1": 0.019226,
+    "dow_sin": -0.017902,
+    "fg_lag1": 0.017712,
+    "tzolkin_ahau": -0.016626,
+    "decoder_tweet": 0.016462,
+    "nakshatra_nature": 0.014977,
+    "pump_date": -0.01458,
+    "vara": -0.014398,
+    "rsi14_lag5": 0.013949,
+    "bb_width": 0.013563,
+    "is_caution": 0.01254,
+    "nakshatra_mrigashira": 0.012146,
+    "macd_hist_lag10": -0.011304,
+    "fg_rate_of_change": 0.01053,
+    "volume_ratio": -0.010349
+  },
+  "consensus_top_15": [
+    {
+      "name": "return_1d",
+      "avg_rank": 11.7
+    },
+    {
+      "name": "btc_eth_divergence",
+      "avg_rank": 17.7
+    },
+    {
+      "name": "btc_sol_divergence",
+      "avg_rank": 20.7
+    },
+    {
+      "name": "moon_lon",
+      "avg_rank": 21.0
+    },
+    {
+      "name": "range_4h_mean",
+      "avg_rank": 22.3
+    },
+    {
+      "name": "return_5d",
+      "avg_rank": 24.0
+    },
+    {
+      "name": "btc_gold_corr_20d",
+      "avg_rank": 25.7
+    },
+    {
+      "name": "rsi14_lag5",
+      "avg_rank": 29.7
+    },
+    {
+      "name": "spx_roc_5d",
+      "avg_rank": 29.7
+    },
+    {
+      "name": "stoch_k_lag10",
+      "avg_rank": 32.0
+    },
+    {
+      "name": "upper_wick",
+      "avg_rank": 32.3
+    },
+    {
+      "name": "volume_ratio",
+      "avg_rank": 33.3
+    },
+    {
+      "name": "bb_pctb_lag3",
+      "avg_rank": 34.3
+    },
+    {
+      "name": "price_vs_sma5",
+      "avg_rank": 35.0
+    },
+    {
+      "name": "avg_tweet_likes",
+      "avg_rank": 35.7
+    }
+  ],
+  "buy_and_hold_return_pct": 3.93
+}

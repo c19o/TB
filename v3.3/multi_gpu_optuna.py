@@ -25,12 +25,14 @@ Env vars:
 import os
 import logging
 import threading
+import queue
 
 log = logging.getLogger(__name__)
 
 # Thread-local storage for GPU assignment logging
 _gpu_lock = threading.Lock()
 _gpu_trial_map = {}  # trial_number -> gpu_id
+_gpu_slot_state = {}  # gpu_count -> {'queue': Queue, 'in_use': set()}
 
 
 class MultiGPUConfig:
@@ -234,6 +236,78 @@ def apply_gpu_params(params, trial_number, gpu_cfg):
     # Thread count: fair share of CPU cores
     params['num_threads'] = gpu_cfg.threads_per_trial
 
+    return params
+
+
+def claim_gpu_slot(gpu_cfg):
+    """Reserve one GPU slot for a trial on this process.
+
+    Returns:
+        (gpu_id, gpu_name) or (None, None) when GPU scheduling is disabled.
+    """
+    if not gpu_cfg.enabled or gpu_cfg.num_gpus <= 0:
+        return None, None
+
+    with _gpu_lock:
+        state = _gpu_slot_state.get(gpu_cfg.num_gpus)
+        if state is None:
+            q = queue.Queue()
+            for gpu_id in range(gpu_cfg.num_gpus):
+                q.put(gpu_id)
+            state = {'queue': q, 'in_use': set()}
+            _gpu_slot_state[gpu_cfg.num_gpus] = state
+
+    gpu_id = state['queue'].get()
+    gpu_name = gpu_cfg.gpu_names[gpu_id] if gpu_id < len(gpu_cfg.gpu_names) else f'GPU-{gpu_id}'
+    with _gpu_lock:
+        state['in_use'].add(gpu_id)
+    return gpu_id, gpu_name
+
+
+def release_gpu_slot(gpu_cfg, gpu_id):
+    """Release a previously reserved GPU slot."""
+    if gpu_id is None or not gpu_cfg.enabled or gpu_cfg.num_gpus <= 0:
+        return
+
+    with _gpu_lock:
+        state = _gpu_slot_state.get(gpu_cfg.num_gpus)
+        if state is None:
+            return
+        if gpu_id in state['in_use']:
+            state['in_use'].remove(gpu_id)
+            state['queue'].put(gpu_id)
+
+
+def assign_trial_to_gpu(params, trial_number, gpu_cfg, gpu_id=None):
+    """Apply GPU params with an explicit GPU reservation when provided."""
+    if not gpu_cfg.enabled or gpu_cfg.num_gpus == 0:
+        return params
+
+    if gpu_id is None:
+        gpu_id = trial_number % gpu_cfg.num_gpus
+    gpu_name = gpu_cfg.gpu_names[gpu_id] if gpu_id < len(gpu_cfg.gpu_names) else f'GPU-{gpu_id}'
+
+    with _gpu_lock:
+        _gpu_trial_map[trial_number] = gpu_id
+        log.info(f"  Trial #{trial_number} -> GPU {gpu_id} ({gpu_name})")
+
+    params['device_type'] = gpu_cfg.device_type
+    params['gpu_device_id'] = gpu_id
+    params['gpu_use_dp'] = False
+    params['histogram_pool_size'] = 1024
+    params.pop('force_col_wise', None)
+    params.pop('force_row_wise', None)
+    params.pop('device', None)
+
+    if gpu_cfg.num_gpus > 1:
+        params['tree_learner'] = 'voting'
+        params['top_k'] = 50
+        log.info(f"  Multi-GPU: tree_learner='voting', top_k=50 "
+                 f"(comms O(50) vs O(features))")
+    else:
+        params['tree_learner'] = 'serial'
+
+    params['num_threads'] = gpu_cfg.threads_per_trial
     return params
 
 

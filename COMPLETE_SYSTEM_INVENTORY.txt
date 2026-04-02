@@ -1,0 +1,496 @@
+============================================================
+  COMPLETE SYSTEM INVENTORY
+  Crypto Matrix Trading Bot — Everything In The System
+  Updated: March 17, 2026
+============================================================
+
+============================
+  1. PRICE DATA
+============================
+
+btc_prices.db (487 MB):
+  BTC/USDT:
+    - 1m:  2,518,905 candles (Jun 2021 → Mar 2026)
+    - 5m:    547,227 candles (Jan 2021 → Mar 2026)
+    - 15m:   217,000+ candles
+    - 1h:     56,753 candles (Sep 2019 → Mar 2026)
+    - 4h:     14,194 candles
+    - 1d:      2,367 candles
+    - 1w:        339 candles
+
+  9 Altcoins (each with 1d/4h/1h):
+    - ETH/USDT:  70,230 candles (2020 → 2026)
+    - ADA/USDT:  70,230 candles
+    - DOGE/USDT: 70,230 candles
+    - XLM/USDT:  70,230 candles
+    - SOL/USDT:  58,912 candles (2021 → 2026)
+    - LINK/USDT: 47,204 candles
+    - XRP/USDT:  41,978 candles
+    - QNT/USDT:  38,107 candles
+    - HBAR/USDT: 30,812 candles
+
+  Per-candle columns:
+    open, high, low, close, volume, quote_volume,
+    taker_buy_volume (NOW FILLED), trades, close_time
+
+  TOTAL: 3,855,164 candles across all symbols/timeframes
+
+============================
+  2. SOCIAL MEDIA DATA
+============================
+
+tweets.db (5.3 MB):
+  10,904 tweets from 26 handles
+
+  ORIGINAL ACCOUNTS (crypto/decode):
+    @elonmusk         218 tweets
+    @JoelKatz         610 tweets
+    @IAmSteveHarvey   750 tweets
+    @tyler            928 tweets
+    @cameron          905 tweets
+    @IOHK_Charles     943 tweets
+    @jack             932 tweets
+
+  ELITE/BILLIONAIRE:
+    @BillGates        618 tweets
+    @KimKardashian    770 tweets
+    @Oprah            582 tweets
+    @JeffBezos         65 tweets
+    @KingJames        122 tweets
+    @WarrenBuffett      8 tweets
+
+  CRYPTO INFLUENCERS:
+    @APompliano       739 tweets
+    @CathieDWood      801 tweets
+    @CryptoCapo_      412 tweets
+    @sabordelacalle   436 tweets (matrixology trader)
+    @VitalikButerin    16 tweets
+
+  MATRIX DECODERS:
+    @ZachHubbard      459 tweets (gematria researcher)
+    @TheMatrixology   254 tweets (THE matrixology community)
+    @GematriaEffect   211 tweets (gematria decode)
+    @MatrixDecoder     16 tweets
+    @22_Savage22        2 tweets (OG teacher)
+    @NumerologyTrade    2 tweets
+
+  ASTROLOGY:
+    @lunarcycles       11 tweets
+    @astrofinance       1 tweet
+    @CryptoAstrology    1 tweet
+
+  Per-tweet data:
+    user_handle, ts_unix, full_text, retweet_count,
+    favorite_count, reply_count, media_urls,
+    is_retweet, is_reply, reply_to_user, quote_tweet_id,
+    lang, day_of_year, date_gematria (JSON),
+    dominant_colors (JSON), has_gold, has_red, has_green,
+    image_local_path, gematria_simple, gematria_english
+
+  1,012 downloaded tweet images with color analysis
+
+============================
+  3. NEWS DATA
+============================
+
+news_articles.db (45 MB):
+  56,051 articles (Jan 2015 → Mar 2026)
+
+  Sources:
+    CoinTelegraph:        30,288 articles
+    Reddit (7 subreddits): 21,000 articles
+    CoinDesk (archive):     1,201 articles
+    14 other sources:       3,562 articles
+
+  Per-article data:
+    timestamp, source, title, body (7,430 with full text),
+    url, title_gematria, title_dr (digital root),
+    body_word_count, sentiment_score,
+    first_sentence, numbers_mentioned,
+    date_doy, date_reduction
+
+============================
+  4. DISCORD DATA
+============================
+
+savage22.db (18.5 MB):
+  52,498 messages from "The MATRIX 22" server
+  89 channels, 22+ contributors
+
+  Tagged messages:
+    numerology:   8,412
+    technical:    7,260
+    decode:       2,999
+    astrology:      378
+    gematria:       258
+
+  Directional signals:
+    long:  3,801 messages
+    short: 4,806 messages
+
+  4,797 messages from 22_Savage22 (the teacher)
+
+============================
+  5. ASTROLOGY DATA
+============================
+
+ephemeris_cache.db (1 MB):
+  6,285 days (Jan 1, 2009 → Mar 17, 2026)
+
+  Per-day (WESTERN/TROPICAL):
+    sun_lon, moon_lon, mercury_lon, venus_lon,
+    mars_lon, jupiter_lon, saturn_lon, uranus_lon,
+    neptune_lon, pluto_lon,
+    moon_phase, moon_mansion (0-26),
+    mercury_retrograde (bool),
+    hard_aspects, soft_aspects,
+    planetary_strength, day_count, digital_root
+
+astrology_full.db (COMPUTING NOW):
+  Per-day (ALL SYSTEMS):
+    VEDIC/SIDEREAL:
+      - Sun sidereal sign (Rashi) — 24° offset from Western
+      - Moon sidereal sign
+      - Nakshatra (27 lunar mansions with pada/quarter)
+      - Nakshatra ruler, deity, nature
+      - Tithi (1-30 lunar day)
+      - Karana (half-tithi)
+      - Yoga (27 yogas from Sun+Moon)
+      - Vara (day lord)
+
+    CHINESE (BaZi/Four Pillars):
+      - Day Heavenly Stem (10 stems)
+      - Day Earthly Branch (12 branches)
+      - Day animal
+      - Day element (Wood/Fire/Earth/Metal/Water)
+      - Stem-branch clash/combination
+
+    MAYAN (Tzolkin):
+      - Tone (1-13)
+      - Day sign (20 signs: Imix through Ahau)
+      - 260-day cycle position
+
+    ARABIC:
+      - Lot of Commerce
+      - Lot of Increase
+      - Lot of Catastrophe
+      - Lot of Treachery
+
+    KABBALAH (pending):
+      - Sephirah mapping (price digital root → Tree of Life)
+      - Path activations
+
+    NATIVE AMERICAN (pending):
+      - Medicine Wheel direction/season
+
+astrology_engine.py functions:
+  - get_planet_position() — geocentric ecliptic longitude
+  - is_mercury_retrograde() — with day count
+  - is_planet_retrograde() — any planet
+  - count_hard_aspects() — conjunction/opposition/square
+  - count_soft_aspects() — trine/sextile
+  - get_planetary_strength_index() — dignity scoring
+  - get_moon_node_signal() — North/South Node
+  - is_voc_moon_classical() — void of course
+  - get_btc_transit_score() — natal chart transits
+  - get_zodiacal_releasing_sign() — ZR from Lot of Spirit
+  - is_eclipse_window() — solar/lunar eclipse detection
+  - get_regime_astrology() — hard/soft ratio
+  - get_moon_ecliptic_lon() / get_sun_ecliptic_lon()
+  - get_planet_zodiac() / get_sun_zodiac()
+  - is_pump_date() — 14/15/16
+  - is_saturn_station() — retrograde stations
+  - is_mars_retrograde_signal()
+  - is_venus_retrograde_signal()
+  - get_ingress_chart_bias() — cardinal sign ingress
+
+============================
+  6. SENTIMENT DATA
+============================
+
+fear_greed.db (188 KB):
+  2,963 days (Feb 2018 → Mar 2026)
+  Per-day: date, value (0-100), classification
+
+  Value ranges:
+    0-24:  Extreme Fear
+    25-49: Fear
+    50-74: Greed
+    75-100: Extreme Greed
+
+============================
+  7. MARKET/MACRO DATA
+============================
+
+funding_rates.db (492 KB):
+  5,294 records (May 2021 → Mar 2026)
+  Per-record: timestamp, symbol, funding_rate
+  Source: Bitget public API
+
+macro_data.db (DOWNLOADING NOW):
+  - DXY (Dollar Index) daily
+  - Gold (GC=F) daily
+  - S&P 500 (^GSPC) daily
+  Source: Yahoo Finance
+
+google_trends.db (DOWNLOADING NOW):
+  - Weekly "bitcoin" search interest (0-100)
+  Source: Google Trends via pytrends
+
+============================
+  8. CALENDAR/CYCLE DATA
+============================
+
+hebrew_calendar.json:
+  48 Jewish holiday dates (2019-2026)
+  Rosh Hashanah, Yom Kippur, Sukkot,
+  Hanukkah, Passover, Shavuot
+
+  Shemitah (7-year) cycle:
+    2014-15, 2021-22, 2028-29
+    2022 crash confirmed aligned with Shemitah
+
+  Jubilee (50-year) cycle:
+    Next: ~2045
+
+============================
+  9. NUMEROLOGY ENGINE
+============================
+
+numerology_engine.py:
+  CAUTION NUMBERS: 93, 39, 43, 34, 48, 84, 223, 322, 17, 71, 113, 11, 19
+  PUMP NUMBERS: 27, 72, 127, 721, 37, 73
+  BTC ENERGY: 213, 231, 312, 321, 132, 123
+
+  DISCOVERED INVERSIONS:
+    #27: labeled "pump" but DATA shows DUMP
+    #37: labeled "pump" but DATA shows DUMP
+    #72: TRUE pump (+0.579%, 92.7% WR)
+    #73: TRUE pump (+1.945%, 97.7% WR)
+    #48: strongest dump (-2.649%, 31.7% WR)
+
+  Functions:
+    date_numerology(), check_caution_numbers(),
+    check_pump_numbers(), gematria_ordinal(),
+    gematria_reverse(), gematria_reduction(),
+    get_lunar_bias(), get_moon_phase(),
+    get_zodiac_energy(), clock_analysis(),
+    get_planetary_hour(), reduce_number()
+
+============================
+  10. MANIPULATION DETECTION
+============================
+
+manipulation_detector.py:
+  - check_misdirection() — tweet content vs timestamp direction
+  - find_gematria_matches() — key numbers in tweet text
+  - check_initials() — first-letter gematria
+  - count_convergence_layers() — multi-layer signal alignment
+  - check_ritual_proximity() — 20+ occult/ritual dates
+  - check_fractal_alignment() — number in date AND price
+  - detect_phase_shift() — pattern regime changes
+  - check_time_displacement() — lagged effects
+
+============================
+  11. TECHNICAL ANALYSIS
+============================
+
+Per-candle computed indicators:
+  - EMA 50, EMA 200
+  - RSI 14
+  - Bollinger Bands (SMA20 ± 2σ), BB %B, BB width
+  - ATR (true range), ATR ratio (vs 20-period avg)
+  - Volume ratio (vs 20-period avg)
+  - Taker buy ratio (order flow)
+  - Consecutive green/red day count
+
+technical_engine.py (available but partially used):
+  - detect_wyckoff() — full Wyckoff phases
+  - detect_elliott() — Elliott Wave patterns
+  - detect_gann() — Gann angles, Square of 9
+  - zigzag() — swing detection
+  - pivot_highs() / pivot_lows()
+
+============================
+  12. PATTERN MATCHING
+============================
+
+PowerTrader AI (kNN):
+  - Pattern length: 5 candles (optimized from 8)
+  - K neighbors: 20 (optimized from 40)
+  - Walk-forward: no look-ahead bias
+  - Applied on 4H with +3 strength boost when agrees
+
+AlphanumetriX (Consensio):
+  - SMA 7/21/50 directionality score (-13 to +13)
+  - Green wave / red wave regime detection
+  - Used as filter, not separate capital allocation
+
+============================
+  13. SACRED GEOMETRY
+============================
+
+Tesla 3-6-9 / Vortex Math:
+  - Digital root of price (DR=6 = BTC's number, bullish)
+  - 3-6-9 combined = BEARISH for BTC (inversion!)
+  - DR=8 = strongest bullish number (64.1% WR on weekly)
+  - DR=3 = most bearish (43.3% WR on daily)
+
+  Golden Ratio (φ = 1.618):
+  - Move ratio = 1.618 → 57.14% reversal rate
+
+  Fibonacci:
+  - 21 days from major low = 89% positive, +13.23% avg
+  - 13 days from major high = 96.2% negative
+  - Sacred Fibs (reduce to 3/6/9): 3, 21, 144, 987, 6765
+
+  Vortex levels (multiples of $9K):
+  - $18K: 81.82% bounce rate
+  - $54K: 70.83% bounce rate
+
+============================
+  14. CONVERGENCE/JACKPOT SIGNALS
+============================
+
+100% Win Rate setups found:
+  - ATR_low + Moon South Node → LONG (N=15, +6.25% 5d)
+  - Day 13 + Saturn hour → LONG (N=11, +2.14% 1d)
+  - 3+ green + BTC 213 date → LONG (N=10, +4.94% 3d)
+  - Wednesday + below EMA + BB overbought → SHORT (N=6, -1.72%)
+  - BTC 213 date + Gold tweet → SHORT (N=6, -12.29% 12bars)
+  - Red tweet + Misdirection + Noon CST → LONG (N=30, +2.48%)
+
+80%+ Win Rate setups:
+  - Day 13 + #113 date → LONG (85.7%, N=7)
+  - DR6 + above EMA + BB oversold → LONG (83.3%, N=6)
+  - Day 13 + above EMA + #113 date → LONG (80%, N=5)
+
+============================
+  15. TIME CYCLES
+============================
+
+  Fibonacci day counts from swings (89% at Fib-21 from low)
+  Mars 780-day cycle (aligns with BTC tops/bottoms)
+  Lunar 29.53-day cycle (dark moon = best for longs)
+  Mercury 116-day synodic cycle
+  7-day and 9-day micro-cycles
+  52-week seasonality (Oct/Nov/Jan best, Jun/Sep worst)
+  BTC birthday (Jan 3 ±5 days = 86% bullish)
+  Super Bowl Monday (+4.14% avg, 100% hit rate)
+
+============================
+  16. NEWS CORRELATIONS
+============================
+
+  Headline gematria (caution numbers) → INVERTED (bullish)
+  Hour 17 UTC articles → bearish (Freemasonry sell hour)
+  Evening articles (18-23 UTC) → next morning +1.287% (83.8% WR)
+  Extreme bearish sentiment → contrarian LONG
+  Saturn hour headlines → bearish confirmation
+  Mercury hour headlines → bullish
+
+============================
+  17. RISK MANAGEMENT
+============================
+
+  14 active filters:
+    1.  EMA50 trend filter
+    2.  EMA200 repeat offender filter
+    3.  Trend regime (EMA50 slope)
+    4.  Weekly trend master filter
+    5.  VOC Moon (no entries during void of course)
+    6.  Cooldown (skip 2 after 3 consecutive losses)
+    7.  Equity curve (50% risk below 20-trade MA)
+    8.  DD-proportional scaling (75/50/25% at 5/10/15% DD)
+    9.  Daily loss cap (5% max)
+    10. Hour 20 UTC risk reduction (30%)
+    11. Bull regime boost (1.5x long risk)
+    12. kNN confirmation (+3 strength on 4H)
+    13. Wyckoff TA filter/boost
+    14. Max single trade risk cap (7%)
+
+  Additional:
+    - Seasonal adjustment (Oct/Nov/Jan boost, Jun/Sep reduce)
+    - Dark moon long boost
+    - Per-signal rolling WR tracker (being tuned)
+    - Max 2 trades per candle
+    - Pump number short suppression
+    - Bear range detector (min strength 8 when EMA declining + low ATR)
+
+============================
+  18. EXECUTION
+============================
+
+  Tiered risk per signal (3% to 15%):
+    JACKPOT convergence: 12-15%
+    Goldmine signals: 7-8%
+    Strong signals: 5-6%
+    Normal signals: 3%
+
+  Leverage (inverse to timeframe):
+    1D: 3-7x
+    4H: 10-25x
+    1H: 20-50x (not currently active)
+
+  Execution:
+    - 8-candle max hold (trailing stop)
+    - 50% partial TP at TP1, trail rest
+    - ATR-based stops (1D: 1.0 ATR, 4H: 0.7 ATR)
+    - R:R ratios (1D: 1.5:1, 4H: 2.0:1)
+
+  Fees modeled:
+    - Bitget taker: 0.06% each way (0.12% round-trip)
+    - Slippage: 0.05%
+    - Funding rate: 0.01% per 8 hours
+
+============================
+  19. INFRASTRUCTURE
+============================
+
+  paper_trader.py — live paper trading service
+  bitget_api.py — exchange API wrapper (credentials in .env)
+  start_paper_trader.bat — Windows launcher
+
+  Dashboard (Next.js 14):
+    - KLineChart with indicators
+    - Paper trading panel (4 tabs)
+    - Live BTC price from Binance.US (30s refresh)
+    - Signal panel, score gauge, tweet feed
+
+  Esoteric Knowledge Base:
+    - 290 documents, 110,038 chunks
+    - SQLite FTS5 + ChromaDB vector search
+    - Books: William Lilly, Vettius Valens, Chris Brennan,
+      Ptolemy, Alan Leo, Key of Solomon, Picatrix,
+      Chinese Horoscopes, Medical Astrology, and 280+ more
+
+============================
+  20. ML PIPELINE (BUILDING)
+============================
+
+  ml_signal_optimizer.py (pending):
+    - 70+ features per candle from ALL sources above
+    - XGBoost classifier (GPU: RTX 3090)
+    - Random Forest feature importance
+    - LASSO for optimal signal weights
+    - Genetic algorithm (200 pop × 500 gen)
+    - Walk-forward validation (7 yearly folds)
+    - Optuna Bayesian hyperparameter tuning
+    - SHAP interpretability
+
+============================
+  TOTAL DATA POINTS
+============================
+
+  Price candles:         3,855,164
+  Tweets:                  10,904
+  News articles:           56,051
+  Ephemeris days:           6,285
+  Fear & Greed days:        2,963
+  Funding rate records:     5,294
+  Discord messages:        52,498
+  Tweet images:             1,012
+  Hebrew holidays:             48
+  Esoteric KB chunks:     110,038
+
+  GRAND TOTAL: ~4,100,000+ data points

@@ -22,9 +22,15 @@ import sqlite3
 import json
 import datetime
 import textwrap
+import re
 import click
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ops_kb", "db", "ops_kb.db")
+TASK_TOKEN_RE = re.compile(
+    r"(?:\bTask\b|\bTASK\b)\s*[:=]\s*\[?([^\]\n\r;,{}()<>\s]+)\]?"
+    r"|\[(SAV-[A-Za-z0-9-]+)\]|\b(SAV-[A-Za-z0-9-]+)\b",
+    re.IGNORECASE,
+)
 VALID_TOPICS = {
     "training_result",
     "bug_attempt",
@@ -35,6 +41,7 @@ VALID_TOPICS = {
     "kb_query",
     "kb_source",
     "kb_gap",
+    "kb_gap_download",
     "perplexity_source",
     "general",
 }
@@ -169,6 +176,58 @@ def get_stats():
     return total, by_topic
 
 
+def _extract_task_token(content: str):
+    if not content:
+        return None
+    match = TASK_TOKEN_RE.search(content)
+    if not match:
+        return None
+    for group in match.groups():
+        if group:
+            return group.strip("[](){}")
+    return None
+
+
+def get_research_entries(task_token: str = None, hours: int = 72, topic_filter=None):
+    """Load recent KB/perplexity entries, optionally scoped to one task token."""
+    conn = init_db()
+    rows = conn.execute(
+        "SELECT id, topic, content, source, added_at FROM entries ORDER BY id DESC"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return []
+
+    cutoff = datetime.datetime.now() - datetime.timedelta(hours=hours)
+    topic_filter = set(topic_filter) if topic_filter else {
+        "kb_query", "kb_source", "kb_gap", "kb_gap_download", "perplexity_source"
+    }
+
+    filtered = []
+    for row_id, topic, content, source, added_at in rows:
+        if topic not in topic_filter:
+            continue
+        try:
+            parsed = datetime.datetime.fromisoformat(added_at)
+        except Exception:
+            continue
+        if parsed < cutoff:
+            continue
+        if task_token:
+            token = _extract_task_token(content)
+            if not token or token.lower() != task_token.lower():
+                continue
+        filtered.append({
+            "id": row_id,
+            "topic": topic,
+            "content": content,
+            "source": source,
+            "added_at": added_at,
+        })
+    return list(reversed(filtered))
+
+
 # --- CLI ---
 
 @click.group()
@@ -179,7 +238,8 @@ def cli():
 @cli.command()
 @click.argument("target")
 @click.option("--topic", "-t", default="general", help="Topic tag")
-def add(target, topic):
+@click.option("--source", "-s", default=None, help="Source label for provenance tracking")
+def add(target, topic, source):
     """Add a fact string or ingest a file/folder.
 
     \b
@@ -205,7 +265,7 @@ def add(target, topic):
         click.echo(f"Total: {total} chunks ingested")
     else:
         # Treat as a raw fact string
-        add_entry(target, topic=topic)
+        add_entry(target, topic=topic, source=source)
         click.echo(f"Added [{topic}]: {target[:80]}{'...' if len(target) > 80 else ''}")
 
 
@@ -262,6 +322,30 @@ def stats():
     for t, c in by_topic:
         click.echo(f"  {t:<20} {c:>6}")
     click.echo()
+
+
+@cli.command("usage-audit")
+@click.option("--task", "-t", required=True, help="Task token to trace, example: SAV-42")
+@click.option("--hours", default=72, help="Lookback window in hours")
+@click.option("--topic", "topics", multiple=True, help="Limit to explicit topic(s)")
+def usage_audit(task, hours, topics):
+    """Show a task-scoped KB/perplexity evidence timeline."""
+    entries = get_research_entries(
+        task_token=task,
+        hours=hours,
+        topic_filter=set(topics) if topics else None,
+    )
+    if not entries:
+        click.echo(f"No research evidence found for task '{task}' in last {hours}h.")
+        return
+
+    click.echo(f"\n  KB usage audit for {task} (last {hours}h)\n")
+    for entry in entries:
+        preview = entry["content"][:140].replace("\n", " ")
+        src = entry["source"] or "unknown"
+        click.echo(f"[{entry['id']}] {entry['added_at']} [{entry['topic'].upper()}] source={src}")
+        click.echo(f"  {preview}{'...' if len(entry['content']) > 140 else ''}")
+        click.echo()
 
 
 def _print_results(rows, query):

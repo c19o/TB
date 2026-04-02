@@ -1,0 +1,338 @@
+  NEW: Fear&Greed=2963 days, News=1832 days, Ephemeris=6285 days, HebrewHolidays=48 dates
+
+
+====================================================================================================
+  BEAR WINTER — WEAKEST — only losing period
+  ROI: -10.1% | PF: 0.84 | DD: 15.4% | Trades: 235 | WR: 41.3%
+====================================================================================================
+  BTC context: 2022-06-18 00:00:00 to 2022-12-15 00:00:00
+
+  BY CATEGORY:
+    astrology              66 trades   43.9% WR  $    -81.90
+    planetary              70 trades   34.3% WR  $    -47.34
+    tweets                  4 trades   50.0% WR  $    -22.37
+    time_cycle              2 trades   50.0% WR  $     -9.89
+    manipulation           16 trades   31.2% WR  $     -8.46
+    ritual                  4 trades    0.0% WR  $     -8.17
+    convergence             5 trades   40.0% WR  $     -1.67
+    news                   22 trades   54.5% WR  $    +27.40
+    numerology             46 trades   47.8% WR  $    +51.61
+
+  TOP 5 LOSING SIGNALS:
+    1D_PSI_Positive_SHORT                          21x   38.1% WR  $   -51.50
+    4H_SaturnHour_SHORT                            36x   27.8% WR  $   -39.01
+    1D_JACKPOT_LowATR_SouthNode_LONG                3x    0.0% WR  $   -25.11
+    4H_Purple_image_SHORT                           4x   50.0% WR  $   -22.37
+    1D_Wednesday_SHORT                             17x   52.9% WR  $   -22.33
+
+  TOP 5 WINNING SIGNALS:
+    4H_113_LONG                                     5x  100.0% WR  $   +69.41
+    1D_PumpDate_SHORT                               9x   66.7% WR  $   +31.78
+    1D_Hour17_Article_SHORT                        22x   54.5% WR  $   +27.40
+    1D_JACKPOT_Wed_BelowEMA_BBHigh_SHORT            2x  100.0% WR  $   +23.44
+    1D_BTC213_Energy_SHORT                          5x   80.0% WR  $   +17.90
+
+  DIRECTION: LONG 37 trades $-12.95 | SHORT 198 trades $-87.85
+  NEW signals: 24 trades $+17.50 | OLD signals: 211 trades $-118.30
+  EST. FEE DRAG: ~$399 (39.9% of capital)
+
+  WHAT WOULD FIX THIS PERIOD:
+  - WR < 42%: Too many low-quality trades firing
+  - Need: per-signal rolling WR tracker to disable cold signals
+  NEW: Fear&Greed=2963 days, News=1832 days, Ephemeris=6285 days, HebrewHolidays=48 dates
+
+
+====================================================================================================
+  POST-COVID — Barely profitable
+  ROI: +6.4% | PF: 1.08 | DD: 15.6% | Trades: 202 | WR: 38.6%
+====================================================================================================
+  BTC context: 2020-03-19 00:00:00 to 2020-09-15 00:00:00
+
+  BY CATEGORY:
+    tweets                 15 trades   26.7% WR  $    -32.84
+    planetary              24 trades   33.3% WR  $    -27.80
+    ritual                 20 trades   35.0% WR  $    -24.48
+    time_cycle              1 trades    0.0% WR  $    -17.48
+    sentiment               2 trades    0.0% WR  $     -4.75
+    orderflow               7 trades   57.1% WR  $     +5.63
+    convergence             3 trades   66.7% WR  $    +12.04
+    astrology              28 trades   35.7% WR  $    +16.70
+    manipulation           21 trades   23.8% WR  $    +26.08
+    news                    8 trades   62.5% WR  $    +28.58
+    numerology             73 trades   45.2% WR  $    +82.01
+
+  TOP 5 LOSING SIGNALS:
+    1D_BTC_anniv_LONG                               5x   40.0% WR  $   -55.21
+    4H_17dates_LONG                                22x   36.4% WR  $   -38.95
+    1D_Wednesday_SHORT                              4x    0.0% WR  $   -37.46
+    1D_BTC213_Energy_SHORT                          1x    0.0% WR  $   -29.97
+    1D_PumpDate_SHORT                               4x    0.0% WR  $   -21.58
+
+  TOP 5 WINNING SIGNALS:
+    4H_113_LONG                                    10x   90.0% WR  $  +107.84
+    4H_Day13_LONG                                  10x   70.0% WR  $   +84.75
+    1D_MoonSouthNode_LONG                           3x  100.0% WR  $   +51.79
+    1D_MoonMansion20_LONG                           4x   50.0% WR  $   +33.97
+    4H_BTC_anniv_LONG                              15x   33.3% WR  $   +30.73
+
+  DIRECTION: LONG 123 trades $+240.95 | SHORT 79 trades $-177.26
+  NEW signals: 18 trades $+11.98 | OLD signals: 184 trades $+51.71
+  EST. FEE DRAG: ~$343 (34.3% of capital)
+
+  WHAT WOULD FIX THIS PERIOD:
+  - WR < 42%: Too many low-quality trades firing
+  - Need: per-signal rolling WR tracker to disable cold signals
+  - Shorts bleeding: Need better short-entry timing
+  - Need: funding rate data (crowded shorts = squeeze coming)
+  NEW: Fear&Greed=2963 days, News=1832 days, Ephemeris=6285 days, HebrewHolidays=48 dates
+
+
+====================================================================================================
+  ETF RALLY — Low ROI
+  ROI: +24.4% | PF: 1.22 | DD: 18.9% | Trades: 366 | WR: 42.9%
+====================================================================================================
+  BTC context: 2023-12-18 00:00:00 to 2024-06-15 00:00:00
+
+  BY CATEGORY:
+    ritual                 77 trades   36.4% WR  $   -124.74
+    astrology              24 trades    8.3% WR  $    -76.51
+    convergence             3 trades    0.0% WR  $    -18.33
+    numerology             92 trades   51.1% WR  $    -11.33
+    manipulation           22 trades   31.8% WR  $     +0.36
+    planetary              37 trades   45.9% WR  $     +8.86
+    orderflow              24 trades   50.0% WR  $   +115.93
+    news                   87 trades   50.6% WR  $   +349.43
+
+  TOP 5 LOSING SIGNALS:
+    1D_BTC_anniv_LONG                              10x   20.0% WR  $  -100.63
+    1D_DateGem72_LONG                               1x    0.0% WR  $   -40.82
+    4H_BTC_anniv_LONG                              54x   37.0% WR  $   -24.20
+    4H_223_322_SHORT                                7x   14.3% WR  $   -20.85
+    1D_MoonSouthNode_LONG                           2x    0.0% WR  $   -20.18
+
+  TOP 5 WINNING SIGNALS:
+    1D_EveningArticle_LONG                         84x   51.2% WR  $  +348.67
+    1D_BuyPressure_LONG                            22x   54.5% WR  $  +119.85
+    4H_17dates_LONG                                35x   65.7% WR  $   +42.52
+    1D_Day13_LONG                                   1x  100.0% WR  $   +16.49
+    1D_93_39_LONG                                   2x  100.0% WR  $   +14.29
+
+  DIRECTION: LONG 284 trades $+303.24 | SHORT 82 trades $-59.58
+  NEW signals: 111 trades $+465.37 | OLD signals: 255 trades $-221.70
+  EST. FEE DRAG: ~$622 (62.2% of capital)
+
+  WHAT WOULD FIX THIS PERIOD:
+  NEW: Fear&Greed=2963 days, News=1832 days, Ephemeris=6285 days, HebrewHolidays=48 dates
+
+
+====================================================================================================
+  MID 2025 — Low ROI
+  ROI: +10.4% | PF: 1.09 | DD: 23.4% | Trades: 330 | WR: 42.4%
+====================================================================================================
+  BTC context: 2024-12-17 00:00:00 to 2025-06-15 00:00:00
+
+  BY CATEGORY:
+    manipulation           41 trades   36.6% WR  $    -58.18
+    ritual                 58 trades   41.4% WR  $    -49.48
+    news                   70 trades   48.6% WR  $    -46.85
+    astrology              25 trades   32.0% WR  $    -30.47
+    planetary              42 trades   40.5% WR  $     -4.05
+    tweets                  4 trades   50.0% WR  $    +19.56
+    orderflow              27 trades   48.1% WR  $    +21.41
+    convergence             3 trades   33.3% WR  $    +27.03
+    numerology             60 trades   43.3% WR  $   +225.49
+
+  TOP 5 LOSING SIGNALS:
+    1D_BTC_anniv_LONG                               9x   22.2% WR  $   -58.74
+    4H_Convergence5_LONG                            7x   14.3% WR  $   -39.60
+    1D_EveningArticle_LONG                         58x   48.3% WR  $   -35.91
+    4H_MoonMansion12_SHORT                          5x    0.0% WR  $   -26.68
+    1D_SellPressure_SHORT                          12x   25.0% WR  $   -19.50
+
+  TOP 5 WINNING SIGNALS:
+    4H_113_LONG                                    11x   45.5% WR  $  +180.59
+    1D_Day13_LONG                                   2x  100.0% WR  $   +41.59
+    1D_BuyPressure_LONG                            15x   66.7% WR  $   +40.91
+    1D_JACKPOT_Day13_113_LONG                       1x  100.0% WR  $   +31.70
+    4H_Gold_tweet_SHORT                             2x  100.0% WR  $   +28.18
+
+  DIRECTION: LONG 203 trades $+153.17 | SHORT 127 trades $-48.72
+  NEW signals: 97 trades $-25.44 | OLD signals: 233 trades $+129.89
+  EST. FEE DRAG: ~$561 (56.1% of capital)
+
+  WHAT WOULD FIX THIS PERIOD:
+  - NEW signals losing $-25: Some new signals need tighter filters
+  NEW: Fear&Greed=2963 days, News=1832 days, Ephemeris=6285 days, HebrewHolidays=48 dates
+
+
+====================================================================================================
+  ATH CRASH — Low ROI, moderate DD
+  ROI: +10.2% | PF: 1.09 | DD: 15.4% | Trades: 213 | WR: 41.8%
+====================================================================================================
+  BTC context: 2021-07-19 00:00:00 to 2022-01-15 00:00:00
+
+  BY CATEGORY:
+    ritual                 16 trades   25.0% WR  $    -88.18
+    tweets                  1 trades    0.0% WR  $    -14.29
+    time_cycle              1 trades    0.0% WR  $    -10.75
+    planetary              40 trades   35.0% WR  $     -1.04
+    convergence             1 trades  100.0% WR  $     +1.51
+    news                   21 trades   42.9% WR  $     +1.62
+    astrology              42 trades   50.0% WR  $    +12.54
+    orderflow               5 trades   60.0% WR  $    +13.87
+    manipulation            8 trades   37.5% WR  $    +30.91
+    numerology             78 trades   43.6% WR  $   +155.75
+
+  TOP 5 LOSING SIGNALS:
+    4H_17dates_LONG                                25x   24.0% WR  $  -124.67
+    4H_BTC_anniv_LONG                              14x   28.6% WR  $   -60.91
+    4H_113_LONG                                     8x   12.5% WR  $   -46.48
+    1D_BTC_anniv_LONG                               2x    0.0% WR  $   -27.27
+    1D_Day13_LONG                                   3x   33.3% WR  $   -24.86
+
+  TOP 5 WINNING SIGNALS:
+    4H_Day6_LONG                                   16x   56.2% WR  $  +143.68
+    4H_Day13_LONG                                   6x   66.7% WR  $   +78.51
+    1D_BTC213_Energy_SHORT                          2x  100.0% WR  $   +58.16
+    4H_Day21_SHORT                                  9x   66.7% WR  $   +36.36
+    1D_4RedStreak_LONG                              1x  100.0% WR  $   +34.26
+
+  DIRECTION: LONG 124 trades $+15.61 | SHORT 89 trades $+86.33
+  NEW signals: 27 trades $+4.73 | OLD signals: 186 trades $+97.20
+  EST. FEE DRAG: ~$362 (36.2% of capital)
+
+  WHAT WOULD FIX THIS PERIOD:
+  - WR < 42%: Too many low-quality trades firing
+  - Need: per-signal rolling WR tracker to disable cold signals
+  NEW: Fear&Greed=2963 days, News=1832 days, Ephemeris=6285 days, HebrewHolidays=48 dates
+
+
+====================================================================================================
+  BULL 2024 — High DD
+  ROI: +156.8% | PF: 1.76 | DD: 25.9% | Trades: 316 | WR: 47.2%
+====================================================================================================
+  BTC context: 2024-06-20 00:00:00 to 2024-12-17 00:00:00
+
+  BY CATEGORY:
+    planetary              36 trades   33.3% WR  $    -93.69
+    manipulation           18 trades   38.9% WR  $    -67.14
+    tweets                  5 trades   40.0% WR  $    -61.59
+    numerology             64 trades   39.1% WR  $    -49.61
+    convergence             1 trades    0.0% WR  $     -5.52
+    astrology              26 trades   42.3% WR  $    +67.85
+    orderflow              30 trades   56.7% WR  $   +230.00
+    news                   84 trades   52.4% WR  $   +678.78
+    ritual                 52 trades   59.6% WR  $   +868.71
+
+  TOP 5 LOSING SIGNALS:
+    4H_Day13_LONG                                   6x   50.0% WR  $  -114.51
+    4H_SaturnHour_SHORT                            17x   35.3% WR  $   -79.27
+    1D_Red_tweet_LONG                               2x    0.0% WR  $   -64.80
+    4H_TweetGematria_LONG                          16x   43.8% WR  $   -56.70
+    4H_17dates_LONG                                21x   33.3% WR  $   -32.53
+
+  TOP 5 WINNING SIGNALS:
+    1D_EveningArticle_LONG                         61x   57.4% WR  $  +713.53
+    4H_BTC_anniv_LONG                              43x   53.5% WR  $  +562.41
+    1D_BTC_anniv_LONG                               9x   88.9% WR  $  +306.30
+    1D_BuyPressure_LONG                            17x   52.9% WR  $  +202.54
+    4H_Day6_LONG                                    9x   77.8% WR  $  +100.12
+
+  DIRECTION: LONG 213 trades $+1731.99 | SHORT 103 trades $-164.21
+  NEW signals: 114 trades $+908.78 | OLD signals: 202 trades $+659.00
+  EST. FEE DRAG: ~$537 (53.7% of capital)
+
+  WHAT WOULD FIX THIS PERIOD:
+  - DD > 25%: Need better position correlation detection (max positions cap)
+  - Need: real-time volatility regime (ATR spike detection)
+  - Shorts bleeding: Need better short-entry timing
+  - Need: funding rate data (crowded shorts = squeeze coming)
+  NEW: Fear&Greed=2963 days, News=1832 days, Ephemeris=6285 days, HebrewHolidays=48 dates
+
+
+====================================================================================================
+  BEAR BOTTOM — High DD despite high ROI
+  ROI: +127.3% | PF: 1.79 | DD: 22.4% | Trades: 293 | WR: 49.5%
+====================================================================================================
+  BTC context: 2021-12-20 00:00:00 to 2022-06-18 00:00:00
+
+  BY CATEGORY:
+    manipulation           14 trades   28.6% WR  $   -125.76
+    ritual                 26 trades   42.3% WR  $    -39.75
+    convergence             3 trades   33.3% WR  $    -20.20
+    planetary             100 trades   43.0% WR  $     -3.39
+    tweets                  1 trades  100.0% WR  $     +2.85
+    news                   17 trades   52.9% WR  $    +88.77
+    numerology             47 trades   48.9% WR  $   +480.59
+    astrology              85 trades   62.4% WR  $   +889.57
+
+  TOP 5 LOSING SIGNALS:
+    4H_113_LONG                                    10x   20.0% WR  $   -95.26
+    4H_TweetGematria_SHORT                         11x   36.4% WR  $   -77.72
+    4H_DoublePower_SHORT                           48x   41.7% WR  $   -69.57
+    4H_322_proximity_LONG                          22x   36.4% WR  $   -51.30
+    4H_17dates_LONG                                 3x    0.0% WR  $   -30.91
+
+  TOP 5 WINNING SIGNALS:
+    1D_PSI_Positive_SHORT                          42x   64.3% WR  $  +439.06
+    4H_223_322_SHORT                                7x   42.9% WR  $  +267.26
+    1D_PumpDate_SHORT                              10x   80.0% WR  $  +262.97
+    4H_Day21_SHORT                                 15x   73.3% WR  $  +261.22
+    4H_MoonMansion12_SHORT                         13x   69.2% WR  $  +100.79
+
+  DIRECTION: LONG 53 trades $-220.65 | SHORT 240 trades $+1493.33
+  NEW signals: 17 trades $+88.77 | OLD signals: 276 trades $+1183.91
+  EST. FEE DRAG: ~$498 (49.8% of capital)
+
+  WHAT WOULD FIX THIS PERIOD:
+  - Longs bleeding: Need better long-entry timing
+  - Need: open interest data (rising OI + falling price = more downside)
+
+====================================================================================================
+  MISSING DATA THAT WOULD HELP ACROSS ALL WEAK PERIODS
+====================================================================================================
+
+  1. FUNDING RATE DATA (Bitget API — need user's API keys)
+     - When funding very positive → longs crowded → dump incoming
+     - When very negative → shorts crowded → squeeze incoming
+     - Would prevent: shorts during squeezes, longs during liquidation cascades
+     - IMPACT: Could fix 50%+ of DD in bear/volatile periods
+
+  2. OPEN INTEREST DATA (Bitget API — need user's API keys)
+     - Rising OI + rising price = healthy trend (trade with it)
+     - Rising OI + falling price = shorts building → squeeze risk
+     - Falling OI = positions closing → trend exhaustion
+     - IMPACT: Better trend exhaustion detection
+
+  3. LIQUIDATION DATA (free from Coinglass or exchange APIs)
+     - Large liquidation events = forced selling/buying
+     - Often marks local tops/bottoms
+     - IMPACT: Precise reversal timing
+
+  4. MORE TWEET ACCOUNTS (easy — just add handles to scraper)
+     - @michaelsaylor (MicroStrategy whale — couldn't scrape, rate limited)
+     - @BarackObama (rate limited — retry later)
+     - @whale_alert (whale movements — rate limited)
+     - More crypto influencers
+     - IMPACT: More tweet data = more predictive power (94% of edge)
+
+  5. GOOGLE TRENDS HISTORICAL (pytrends library — free)
+     - Peak interest = retail FOMO top → SHORT
+     - Low interest = accumulation → LONG
+     - IMPACT: Retail sentiment contrarian signal
+
+  6. EXCHANGE INFLOW/OUTFLOW (Glassnode free tier or CryptoQuant)
+     - Large BTC flows to exchanges = selling pressure
+     - Large outflows = accumulation
+     - IMPACT: Institutional flow detection
+
+  7. OPTIONS MAX PAIN (Deribit API — free)
+     - Monthly/quarterly expiry gravitational pull
+     - Price tends to move toward max pain level
+     - IMPACT: Predict monthly close direction
+
+  8. STABLECOIN SUPPLY (on-chain — free APIs)
+     - USDT minting = new capital entering → bullish
+     - USDC burns = redemptions → bearish
+     - IMPACT: Macro capital flow direction
+

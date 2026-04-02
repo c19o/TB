@@ -31,8 +31,12 @@ When using Perplexity MCP, ALWAYS include this context:
 Any non-trivial code task must use the Knowledge Base first.
 
 - ML, CUDA, training, feature engineering, deployment/runtime, daemon, supervisor, validation, and model-deployment tasks are NEVER considered "simple".
+- Bug diagnosis, runtime failures, dependency issues, calibration issues, sklearn/API compatibility issues, and cloud issues are also NEVER considered "simple".
 - Only trivial tasks such as typo fixes, formatting-only edits, and wording-only documentation cleanups are exempt.
+- For non-trivial issues, read repo truth first, then query the KB/database, then use Perplexity only if the KB is weak.
+- Do not begin implementation until research evidence exists.
 - If the KB is weak, log the gap and then use Perplexity. Do not skip straight to generic intuition or generic ML advice.
+- When reporting findings, distinguish repo facts, KB/database findings, and fallback web findings.
 
 ## OWNER GOVERNANCE
 The user is the company owner, not the runtime operator.

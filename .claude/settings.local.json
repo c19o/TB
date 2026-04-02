@@ -25,7 +25,11 @@
       "Bash(find C:UsersC.lmstudiomodels -name *.safetensors -exec ls -lh {})",
       "Bash(ssh:*)",
       "Bash(SSH_OPTS=\"-o StrictHostKeyChecking=no -o IdentityFile=/c/Users/C/.ssh/vast_key -o IdentitiesOnly=yes -o ConnectTimeout=15\")",
-      "Bash(tar czf:*)"
+      "Bash(tar czf:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker start:*)",
+      "Bash(docker stats:*)",
+      "Bash(echo \"exit code: $?\")"
     ]
   }
 }

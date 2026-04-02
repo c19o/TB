@@ -1,0 +1,654 @@
+==========================================================================================
+NEWS GEMATRIA DECODE — BTC NEXT-DAY CORRELATION REPORT
+Generated: 2026-03-17 16:05:51
+Headlines analysed: 478
+BTC daily candles:  2368
+==========================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — HEADLINE-BY-HEADLINE GEMATRIA DECODE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DATE           GEM  DR   WC  WCDR  INIT  INIT_DR  BULL  BEAR  NEXT_DAY%  TAGS + TITLE
+------------------------------------------------------------------------------------------
+2026-03-17     569   2   11     2   148        4     1     0      N/A    Bitcoin's rally faces key hurdle with Wednesday's Fed meetin
+2026-03-17     828   9   13     4   136        1     0     0      N/A    U.S SEC issues first-ever definitions for what crypto assets
+2026-03-17     763   7   18     9   171        9     0     0      N/A    [WC_DR9] Mastercard's $1.8 billion deal 'a clear answer' to a massive
+2026-03-17     767   2   10     1    62        8     1     1      N/A    Arizona Attorney General files criminal charges against pred
+2026-03-17     708   6   11     2   124        7     0     0      N/A    Facing a crisis, Bitcoin treasury companies need to pivot to
+2026-03-17     953   8   13     4   147        3     0     0      N/A    Strategy’s latest massive bitcoin purchase offers insight in
+2026-03-17     850   4   12     3   170        8     0     0      N/A    Popular Solana wallet Phantom wins CFTC nod to access regula
+2026-03-17     988   7   19     1   257        5     0     0      N/A    Sam Altman's World teams up with Coinbase to prove there is 
+2026-03-17     888   6   13     4   155        2     0     0      N/A    Vietnam pushes local crypto exchanges as Hanoi moves to bloc
+2026-03-17     794   2   13     4   182        2     0     0      N/A    Robinhood’s new venture fund just snapped up stakes in Strip
+2026-03-17    1005   6   17     8   147        3     0     0      N/A    'Gensler and Biden were just better for crypto,' says Tally 
+2026-03-17     844   7   12     3   108        9     0     0      N/A    Crypto trading firm GSR expands token advisory with $57 mill
+2026-03-17     806   5   12     3   161        8     0     1      N/A    U.S. Democrats target government officials gaming prediction
+2026-03-17     892   1   13     4   198        9     0     0      N/A    U.S. regional banks building tokenized deposit network on ZK
+2026-03-17     661   4   12     3   119        2     0     1      N/A    CoinDesk 20 performance update: Uniswap (UNI) drops 4.1%, le
+2026-03-17     648   9   10     1   105        6     0     0      N/A    Ripple looks to expand crypto and payment services in Brazil
+2026-03-17     711   9   12     3   109        1     0     0      N/A    Citigroup cuts BTC and ETH targets as U.S. crypto legislatio
+2026-03-17     713   2    9     9    67        4     0     0      N/A    [WC_DR9] Argentina joins growing list of countries blocking Polymarke
+2026-03-17     674   8   13     4   122        5     1     0      N/A    Mastercard agrees to buy stablecoin platform BVNK for up to 
+2026-03-17     447   6    7     7    71        8     0     0      N/A    PayPal expands its stablecoin into 70 markets
+2026-03-17     576   9   13     4   117        9     0     0      N/A    Bitcoin hits a wall at $75,000 while onchain energy markets 
+2026-03-17     703   1   16     7   142        7     0     1      N/A    Cango is selling off its bitcoin stash to pay down debt and 
+2026-03-17     701   8    9     9    99        9     0     0      N/A    [WC_DR9] Bitcoin consolidation seen with BTC remaining 'overbought' a
+2026-03-17     658   1   12     3   109        1     0     0      N/A    Equity, oil and bond markets have freaked out. Bitcoin trade
+2026-03-17     628   7   14     5   145        1     0     1      N/A    Bitcoin hits rare 8-day winning streak – but 2022 bear marke
+2026-03-17     748   1   10     1    95        5     0     0      N/A    Tether launches AI training framework for smartphones and co
+2026-03-17     518   5    9     9    54        9     1     0      N/A    [WC_DR9] Arizona AG files charges against Kalshi over ‘illegal gambli
+2026-03-17     667   1   14     5   160        7     3     0      N/A    [X-BULL] SOL price signal tied to previous 142% rally flashes again: 
+2026-03-17     691   7   10     1   109        1     0     0      N/A    VersaBank expands tokenized deposits with cross-border FX us
+2026-03-17     829   1   11     2    57        3     0     0      N/A    GSR acquires Autonomous, Architech as it builds crypto capit
+2026-03-17     618   6   12     3   114        6     0     0      N/A    Bitcoin analysis sees $68K support as gold slips at key $5K 
+2026-03-17     698   5   10     1   103        4     0     0      N/A    CFTC issues 'no-action' letter for crypto wallet provider Ph
+2026-03-17     514   1    9     9   107        8     0     0      N/A    [WC_DR9] Theo closes $100M facility backing gold-linked yield stablec
+2026-03-17     787   4   12     3   128        2     0     0      N/A    World launches AgentKit with Coinbase integration to enable 
+2026-03-17     610   7   11     2   118        1     2     0      N/A    Strategy halts Bitcoin buying via STRC: Will BTC price dip a
+2026-03-17     557   8   14     5   147        3     1     0      N/A    XRP holders hit a record 7.7M: Will price break through $1.6
+2026-03-17     361   1    7     7    90        9     0     0      N/A    Here’s what happened in crypto today
+2026-03-17     462   3   10     1    71        8     0     0      N/A    Mastercard agrees to acquire BVNK in $1.8B stablecoin deal
+2026-03-17     693   9    9     9    73        1     0     1      N/A    [WC_DR9] Maestro launches mining-backed Bitcoin credit market for ins
+2026-03-17     603   9    9     9   109        1     0     0      N/A    [WC_DR9] PayPal expands PYUSD stablecoin to users in 70 countries
+2026-03-17     813   3   10     1   121        4     0     0      N/A    ‘Bitcoin Standard’ author explores reality where decentraliz
+2026-03-17     573   6   12     3   110        2     1     0      N/A    Cango reports $285M Q4 loss as Bitcoin mining costs surge in
+2026-03-17     648   9   12     3   153        9     0     0      N/A    Stablecoins to replace old FX rails, but off-ramps remain a 
+2026-03-17     648   9   10     1   107        8     0     0      N/A    Bitcoin adoption metrics say one thing, price action says an
+2026-03-17     662   5    9     9    91        1     0     0      N/A    [WC_DR9] DAOs may need to ditch decentralization to court institution
+2026-03-17     770   5   12     3   122        5     0     0      N/A    Five companies vie for Vietnam crypto licences as overseas b
+2026-03-17     343   1    6     6    46        1     0     0      N/A    Decentralized compute has failed, so far
+2026-03-17     690   6   12     3   169        7     0     0      N/A    Cari picks ZKsync’s Prividium as US regional banks join stab
+2026-03-17     684   9    9     9    88        7     0     0      N/A    [WC_DR9] Argentina court orders nationwide block of Polymarket over g
+2026-03-17     582   6   11     2   115        7     1     0      N/A    Bitcoin sparks ‘bull trap’ warning after BTC price rejects a
+2026-03-17     695   2   11     2   129        3     0     0      N/A    Bitcoin’s ‘powerful move’ nears as Bollinger Bands warn of v
+2026-03-17     726   6   12     3   100        1     1     0      N/A    Do Bitcoin halvings matter? Strategy buys outpace new BTC su
+2026-03-17     838   1   11     2   124        7     0     0      N/A    South Korea police draft crypto seizure rules after custody 
+2026-03-17     792   9   12     3   130        4     0     0      N/A    Crypto.com taps KG Inicis for tourist crypto payments in Sou
+2026-03-17     657   9   10     1    78        6     1     1      N/A    DeFi lobby drops airdrop lawsuit against SEC, citing crypto 
+2026-03-17     648   9   11     2    85        4     0     0      N/A    Bitcoin Price Dances Near $75,000 as Market Questions ‘Decou
+2026-03-17     754   7   10     1   108        9     0     0      N/A    Bitrefill Discloses Cyberattack, Points to North Korea’s Laz
+2026-03-17     644   5   12     3   135        9     0     0      N/A    Strategy (MSTR) is About to Have More Bitcoin Than BlackRock
+2026-03-17     860   5   11     2   135        9     0     0      N/A    Vietnam Begins to Restrict Overseas Crypto Trading, Domestic
+2026-03-17     605   2   10     1    91        1     0     0      N/A    Capital B Raises €3 Million to Expand Bitcoin Treasury Holdi
+2026-03-17     541   1   10     1    56        2     3     0      N/A    [X-BULL] Bitcoin Price Surges Above $75,000 as Bullish Momentum Build
+2026-03-16     721   1   13     4   163        1     0     0 +113931.29%  Bitcoin at Key Support Levels — Why Jack Mallers Says Turn O
+2026-03-16     504   9    9     9    59        5     0     0 +113931.29%  [WC_DR9] Eric Trump Confirmed As Speaker For Bitcoin 2026 Conference
+2026-03-16     729   9   11     2   130        4     0     1 +113931.29%  Bitcoin’s Ownership Base is Maturing, Reducing Reliance on R
+2026-03-16     890   8   13     4   146        2     0     0 +113931.29%  South Korea Fines Bithumb $24M, Imposes 6-Month Partial Susp
+2026-03-17     812   2   14     5   185        5     0     0      N/A    The Fed issues its latest interest rate decision Wednesday. 
+2026-03-17     929   2   12     3   114        6     0     0      N/A    Orlando Bravo pushes back on private markets criticism: 'Eve
+2026-03-17     954   9   17     8   166        4     0     0      N/A    Mastercard says it's acquiring stablecoin startup BVNK in $1
+2026-03-17     760   4   13     4   144        9     0     0      N/A    Stocks making the biggest moves premarket: Nvidia, Delta Air
+2026-03-16    1015   7   15     6   212        5     0     0 +113931.29%  Apollo's John Zito questions private equity's software valua
+2026-03-16     730   1   12     3   160        7     0     0 +113931.29%  Stocks making the biggest moves midday: Nvidia, Peloton, Met
+2026-03-16     929   2   13     4   174        3     0     0 +113931.29%  Stocks making the biggest moves premarket: Micron Technology
+2026-03-16     953   8   16     7   212        5     0     0 +113931.29%  China talks up oil sufficiency as Trump seeks Beijing's help
+2026-03-16     850   4   14     5   133        7     0     0 +113931.29%  Holiday spending, export demand drive China’s economic momen
+2026-03-15     649   1   12     3   135        9     1     0     -3.91%  OpenClaw breathes new life into this Chinese tech stock ahea
+2026-03-14     695   2   17     8   209        2     0     0     +7.97%  Bitcoin beat the S&P 500, Nasdaq Composite and gold since th
+2026-03-13     879   6   16     7   180        9     0     0     -5.93%  Stocks making the biggest moves midday: Adobe, Ulta Beauty, 
+2026-03-13     952   7   20     2   216        9     0     0     -5.93%  Dividend stocks are catching up to tech stocks on a key earn
+2026-03-13     818   8   15     6   217        1     0     0     -5.93%  Inside JPMorgan Chase's push to become the startup world’s n
+2026-03-13     737   8   12     3   137        2     0     0     -5.93%  Stocks making the biggest moves premarket: Adobe, Coinbase, 
+2026-03-12     719   8   12     3   125        8     0     0     +2.17%  Stocks making the biggest moves after hours: Adobe, Ulta Bea
+2026-03-12     621   9   11     2    89        8     0     0     +2.17%  Markets' hopes for Fed interest rate cuts are rapidly fading
+2026-03-12     879   6   14     5   153        9     0     0     +2.17%  Stocks making the biggest moves premarket: Bumble, Hims & He
+2026-03-12     805   4   16     7   146        2     0     0     +2.17%  Lobster buffet: China’s tech firms feast on OpenClaw as comp
+2026-03-11     952   7   18     9   230        5     0     0     -3.08%  [WC_DR9] Stocks making the biggest moves midday: Oracle, Papa John's,
+2026-03-11     880   7   14     5   146        2     0     1     -3.08%  JPMorgan Chase reins in lending to private credit firms afte
+2026-03-11     817   7   12     3   130        4     0     0     -3.08%  Stocks making the biggest moves premarket: Oracle, AeroViron
+2026-03-10     917   8   13     4   167        5     0     0     +0.00%  Stocks making the biggest moves midday: Rivian, Hims & Hers,
+2026-03-10    1034   8   16     7   213        6     0     0     +0.00%  Stocks making the biggest moves premarket: Kohl's, Casey's G
+2026-03-10     754   7   13     4   144        9     0     0     +0.00%  Surging oil prices could wipe out benefits from Trump's 'big
+2026-03-10     917   8   17     8   196        7     0     0     +0.00%  There's another energy market that may get hit harder than o
+2026-03-09     872   8   15     6   176        5     0     0    +10.84%  Stocks making the biggest moves midday: Chevron, Hims and He
+2026-03-09     789   6   16     7   204        6     0     1    +10.84%  Three bear markets in stocks were caused by oil shocks — Her
+2026-03-09     804   3   13     4   139        4     0     0    +10.84%  The $100 oil playbook: How pro investors are investing aroun
+2026-03-09    1031   5   15     6   185        5     0     0    +10.84%  Stocks making the biggest moves premarket: Hims & Hers Healt
+2026-03-16    1061   8   17     8   180        9     0     0 +113931.29%  Bessent says Treasury is not intervening in oil commodities 
+2026-03-16    1092   3   18     9   248        5     0     0 +113931.29%  [WC_DR9] Trump signals possible delay to Beijing summit as U.S. press
+2026-03-13     867   3   16     7   235        1     0     1     -5.93%  Iran war oil shock stokes fears of 1970s-style stagflation —
+2026-03-13     823   4   16     7   134        8     0     0     -5.93%  Fourth-quarter GDP revised down to just 0.7% growth; January
+2026-03-15     595   1   14     5   142        7     1     0     -3.91%  Gig workers feel pain at the pump as gas prices hit 21-month
+2026-03-12     680   5   13     4   193        4     0     0     +2.17%  Why Section 301 probes matter — and what they mean for Trump
+2026-03-12     845   8   15     6   219        3     0     0     +2.17%  Trump raises the stakes on China with Section 301 trade prob
+2026-03-12     737   8   14     5   174        3     0     0     +2.17%  U.S. deficit tops $1 trillion through February but runs belo
+2026-03-11     556   7   10     1    59        5     0     0     -3.08%  Consumer prices rose 2.4% annually in February, as expected
+2026-03-11    1032   6   18     9   233        8     0     0     -3.08%  [WC_DR9] Iran sends millions of oil barrels to China through Strait o
+2026-03-10     725   5   16     7   178        7     0     0     +0.00%  Kevin Warsh faces an economic 'perfect storm' as he waits to
+2026-03-10     620   8   17     8   194        5     0     0     +0.00%  Gas prices pass $3.50 per gallon to highest level since 2024
+2026-03-12     731   2   17     8   205        7     1     1     +2.17%  Fears of 1970s-style stagflation arise with oil spike to $10
+2026-03-09     706   4   11     2   159        6     0     0    +10.84%  One year after Trump’s sovereignty threats, Canadians keep ‘
+2026-03-06     698   5   12     3   134        8     0     0     +1.45%  San Francisco Fed's Daly says jobs report complicates intere
+2026-03-06     815   5   16     7   177        6     1     0     +1.45%  U.S. payrolls unexpectedly fell by 92,000 in February; unemp
+2026-03-06     698   5   13     4   164        2     0     0     +1.45%  Here's how the U.S.-Iran war is already hitting consumers' p
+2026-03-06     674   8   11     2   100        1     0     0     +1.45%  UAE mulls freezing Iranian assets as Middle East conflict es
+2026-03-05     686   2   13     4   150        6     0     0     -2.34%  The February jobs numbers are coming out Friday. Here's what
+2026-03-04     826   7   17     8   124        7     0     0     +4.07%  Private companies added 63,000 jobs in February, January rev
+2026-03-04     798   6   14     5   138        3     0     0     +4.07%  Middle East conflict poses fresh test to central banks as oi
+2026-03-02     785   2   11     2   132        6     0     0     +0.51%  As Trump declares inflation tamed, Iran conflict threatens n
+2026-03-03     695   2   15     6   159        6     0     0     +0.83%  Why Iran should not count on allies Russia and China to come
+2026-03-02     686   2   11     2   140        5     0     0     +0.51%  Iran conflict: Where things stand, global responses — and wh
+2026-02-27     879   6   17     8   152        8     0     0    -13.28%  Are Jack Dorsey's aggressive job cuts the start of an AI job
+2026-02-27     602   8   12     3   130        4     0     0    -13.28%  Core wholesale prices rose 0.8% in January, much more than e
+2026-02-26    1207   1   18     9   232        7     0     0    +13.63%  [WC_DR9] Trump insists trade deals safe after Supreme Court ruling up
+2026-02-25     852   6   15     6   143        8     0     0     +3.28%  Top earners are more afraid for their employment than lower 
+2026-02-26     876   3   14     5   166        4     1     0    +13.63%  China’s leverage rises before high-stakes summit as Supreme 
+2026-02-23     876   3   14     5   180        9     1     0     +1.57%  Five key takeaways from the Supreme Court's landmark decisio
+2026-03-17     949   4   13     4   118        1     0     1      N/A    SEC Declares 'Most Crypto Assets' Not Securities, Including 
+2026-03-17     900   9   17     8   225        9     0     0      N/A    What If Elon Musk's Grok Leaks Classified Info? Elizabeth Wa
+2026-03-17     686   2   17     8   185        5     0     0      N/A    OpenAI Releases GPT-5.4 Mini and Nano, Which Could Be More U
+2026-03-17     667   1   10     1    96        6     1     0      N/A    Urea Surges 34% as Iran Conflict Ripples Through Commodities
+2026-03-17     697   4   10     1   105        6     0     0      N/A    PayPal Expands PYUSD Stablecoin Globally as Supply Tops $4 B
+2026-03-17     823   4   11     2   123        6     0     1      N/A    Democrats Target Prediction Market Insider Trading, Claim Tr
+2026-03-17     673   7   13     4   131        5     0     0      N/A    Allium Brings 65TB of Data from Bitcoin, Ethereum, Sui and M
+2026-03-17     814   4   16     7   175        4     0     0      N/A    XRP Flips BNB, Hitting Highest Price in a Month as Ripple Pl
+2026-03-17     806   5   15     6   189        9     0     0      N/A    Sam Altman’s World Taps Coinbase’s Open Protocol to Verify H
+2026-03-17     562   4   11     2   117        9     1     0      N/A    Morning Minute: Strategy's $1.58B Buy Pushes Bitcoin to $75k
+2026-03-17     626   5   13     4   130        4     0     0      N/A    Mastercard to Acquire Stablecoin Tech Firm BVNK for Up to $1
+2026-03-17     665   8   12     3   137        2     0     1      N/A    Theo Taps Gold Futures for Yield-Bearing Stablecoin Amid $10
+2026-03-17     501   6   10     1    85        4     1     0      N/A    AI, Privacy Coins Lead Altcoin Rally as Bitcoin Tops $75K
+2026-03-17     546   6   11     2   100        1     2     0      N/A    Myriad Traders Flip Bullish on Ethereum Amid Rebound to $2,3
+2026-03-17     584   8    8     8    49        4     0     0      N/A    Buenos Aires Court Orders Polymarket Blocked in Argentina
+2026-03-17     542   2   10     1   104        5     0     0      N/A    Minors Sue xAI in California Over Alleged Grok Deepfake Imag
+2026-03-17     851   5   12     3   153        9     1     0      N/A    Sheriff's Deputy Sentenced for Extorting Rivals of Self-Styl
+2026-03-17     423   9    7     7    72        9     0     0      N/A    Bitcoin Pushes Higher as Macro Tests Loom
+2026-03-16     451   1   11     2    86        5     0     0 +113931.29%  Did ChatGPT Really Cure a Dog's Cancer? It's Complicated
+2026-03-16     960   6   15     6   205        7     0     0 +113931.29%  Pokémon Go Players Helped Map the World—Now That Data Is Tra
+2026-03-16     675   9   12     3   110        2     1     0 +113931.29%  Man Alleges Wife Stole $172 Million in Bitcoin After 'Covert
+2026-03-16     790   7   11     2   141        6     0     0 +113931.29%  IBM Opens Quantum Hardware to Researchers as Bitcoin Securit
+2026-03-16     849   3   14     5   178        7     0     0 +113931.29%  Ethereum Founder Vitalik Buterin Wants Running a Node to Fee
+2026-03-16     799   7   13     4   167        5     0     0 +113931.29%  OpenAI Pushes Ahead With ChatGPT Erotica Mode Despite 'Sexy 
+2026-03-16     472   4    9     9    64        1     1     1 +113931.29%  [WC_DR9] SEC Drops Case Against BitClout Founder Nader Al-Naji
+2026-03-16     765   9   15     6   185        5     0     0 +113931.29%  Trump-Backed World Liberty Puts $5.3 Million Price Tag on 'G
+2026-03-16     810   9   13     4   190        1     0     0 +113931.29%  'Operation Atlantic': US Secret Service Teams With UK, Canad
+2026-03-16     538   7   13     4   127        1     0     0 +113931.29%  Crypto Firm Abra to Go Public on Nasdaq in $750 Million SPAC
+2026-03-16     791   8   14     5   143        8     0     0 +113931.29%  Crypto Funds Pull In $1B for Third Straight Week as US Inves
+2026-03-16     699   6   15     6   151        7     1     0 +113931.29%  Ethereum Price Hits 6-Week High as Tom Lee's BitMine Reveals
+2026-03-16     722   2   13     4   131        5     2     1 +113931.29%  Strategy Makes Biggest Bitcoin Buy Yet in 2026 as Preferred 
+2026-03-16     491   5    8     8    89        8     0     0 +113931.29%  Steven Spielberg Is ‘Not For’ AI Replacing Creatives
+2026-03-16     567   9    8     8    85        4     0     0 +113931.29%  Morning Minute: Crypto Holds Strong as War Escalates
+2026-03-16     578   2   13     4   173        2     0     0 +113931.29%  Bitcoin Hits $74K as US-Iran War Enters Third Week: Here's W
+2026-03-17     650   2   13     4    72        9     1     0      N/A    CryptoQuant says bitcoin rally could face resistance between
+2026-03-17     850   4   14     5   124        7     0     0      N/A    SEC and CFTC unveil new crypto guidance declaring most digit
+2026-03-17     990   9   14     5   137        2     0     0      N/A    Morgan Stanley exec says crypto ETF adoption still ‘very ear
+2026-03-17     627   6   11     2    95        5     0     0      N/A    Arizona AG charges Kalshi with illegal betting as state batt
+2026-03-17     966   3   15     6   172        1     0     0      N/A    TD Cowen says crypto bill window extends to August recess, r
+2026-03-17    1138   4   24     6   207        9     0     0      N/A    The Daily: Messari CEO steps down amid layoffs in ‘AI-first’
+2026-03-17     597   3   10     1   104        5     0     0      N/A    Charlie Lee on Litecoin, crypto cycles, and what still matte
+2026-03-17    1045   1   19     1   138        3     0     0      N/A    Hyperliquid’s HIP-3 markets hit $1.43 billion open interest 
+2026-03-17    1136   2   16     7   139        4     0     0      N/A    Crypto e-commerce firm Bitrefill discloses cyberattack, name
+2026-03-17     705   3   11     2   135        9     0     0      N/A    Injective to support native USDC and cross-chain transfers v
+2026-03-17     835   7   11     2   121        4     0     0      N/A    ASTER token rallies as privacy-preserving native blockchain 
+2026-03-17     616   4   15     6    86        5     0     0      N/A    Bitcoin holds above $74,000 as Fed and global central banks 
+2026-03-17     782   8   15     6   170        8     0     0      N/A    Bitcoin Layer 2 Stacks says its latest upgrade boosts DeFi c
+2026-03-17     787   4   15     6   161        8     0     0      N/A    Sam Altman-backed World adds identity toolkit for AI bots on
+2026-03-17     973   1   14     5   121        4     0     0      N/A    GSR expands into token lifecycle management with $57 million
+2026-03-17     991   1   13     4   145        1     1     0      N/A    CFTC won’t pursue broker registration action against Phantom
+2026-03-17     924   6   14     5   136        1     0     0      N/A    Digital Chamber, Money20/20 partner to broaden crypto policy
+2026-03-17     864   9   14     5   131        5     0     0      N/A    Robinhood’s startup fund invests roughly $35 million across 
+2026-03-17     511   7    8     8    90        9     0     0      N/A    PayPal expands PYUSD stablecoin access to 70 markets
+2025-10-15     297   9    5     5    56        2     0     0    -13.66%  Bitcoin Newcomers FAQ - Please read!
+2026-03-17     226   1    5     5    21        3     0     0      N/A    Daily Discussion, March 17, 2026
+2026-03-17    1420   7   26     8   243        9     0     2      N/A    Brittany Kaiser on Yahoo Finance just dropped that ~67% of n
+2026-03-17    1473   6   25     7   291        3     0     0      N/A    Australian Senate panel just endorsed a new bill to integrat
+2026-03-17     460   1    9     9    88        7     0     0      N/A    [WC_DR9] Being behind is not your fault. Staying behind is.
+2026-03-17     963   9   16     7   200        2     0     1      N/A    Square updates TOS to enable Bitcoin payments by default for
+2026-03-17     599   5   17     8   121        4     0     0      N/A    From nearly zero in 2017 to ~1.2 million BTC held by 50+ pub
+2026-03-17     330   6    6     6    59        5     0     0      N/A    finally hit my first whole coin
+2026-03-17     412   7    9     9   125        8     1     0      N/A    [WC_DR9] My Mom told me she wants to buy Bitcoin 👀
+2026-03-17     227   2    7     7    58        4     1     0      N/A    Dang it, I miss the boat again!
+2026-03-17     432   9    7     7    56        2     0     0      N/A    Bitcoin Histomap: 50 events that shaped Bitcoin
+2026-03-17     801   9   13     4   148        4     0     0      N/A    Is it reasonable to just allocate 1% to Bitcoin without full
+2026-03-17     376   7    6     6    92        2     0     0      N/A    Not your keys, not your coins.
+2026-03-17     745   7   15     6   216        9     0     1      N/A    Wow! This great Bitcoin post on the front page of Reddit rig
+2026-03-17     165   3    4     4    28        1     0     0      N/A    Be careful out here !!
+2026-03-16     117   9    6     6    42        6     0     0 +113931.29%  I am in the 1% club!
+2026-03-17     232   7    3     3    44        8     0     0      N/A    Starting from scratch
+2026-03-17     401   5    6     6    65        2     0     0      N/A    Bitcoin Optech Newsletter #396 Recap Podcast
+2026-03-17     158   5    4     4    53        8     0     0      N/A    Where to hold btc?
+2026-03-16     664   7   12     3   166        4     0     1 +113931.29%  "Old" Coins Volume Is Incredibly (Noticible) Silent Today As
+2026-03-17     429   6   12     3   123        6     0     0      N/A    I’ve just come out of a social coma after 5 years
+2026-03-17     693   9   12     3   179        8     0     0      N/A    What if the whole world would use BTC as payment method ever
+2026-03-17     315   9    7     7    75        3     1     0      N/A    Made profit $3 from this bull run!
+2026-03-16     581   5   11     2   130        4     0     0 +113931.29%  Is "HODL forever" actually a trap we’ve set for ourselves?
+2026-03-17     151   7    2     2    31        4     0     0      N/A    Hardware wallet?
+2026-03-17     461   2    8     8   125        8     0     0      N/A    Rap song about why we should self custody
+2026-03-17     289   1    7     7    78        6     0     0      N/A    Bitcoin is the Modern Noah's Ark
+2026-03-17     783   9   15     6   175        4     0     0      N/A    BTC in this early stage currently offers more than just bein
+2026-03-16     715   4   14     5    97        7     1     0 +113931.29%  Bitcoin has literally been protecting my mental health as an
+2026-03-16     228   3    5     5    46        1     0     0 +113931.29%  Bottom is in ? Who cares
+2026-03-16     491   5    9     9    79        7     1     0 +113931.29%  [WC_DR9] New: $0 spread on recurring bitcoin buys for Canadians 🇨🇦
+2026-03-17     693   9   15     6   172        1     1     0      N/A    The 2 × Pain Rule That Makes Bitcoin So Emotionally Hard to 
+2026-03-16     576   9    9     9    91        1     0     1 +113931.29%  [WC_DR9] The Bitcoin narrative right now falls into four buckets:
+2026-03-16     838   1   15     6   162        9     0     0 +113931.29%  Is there a reputable and trustworthy company capable of reco
+2026-03-16     166   4    4     4    61        7     0     0 +113931.29%  HEY IT WENT UP!
+2026-03-17     123   6    3     3    24        6     0     0      N/A    Need help bros
+2026-03-16     754   7   15     6   184        4     0     0 +113931.29%  Thoughts on DCA'ing vs. Waiting: Is the "Big Cycle" shift ou
+2026-03-16     666   9   12     3   145        1     0     1 +113931.29%  See you guys tomorrow morning for the inevitable dump back t
+2026-03-16     262   1    4     4    56        2     0     0 +113931.29%  My question for today
+2026-03-17      88   7    1     1     5        5     0     0      N/A    Exodus
+2026-03-16     239   5    7     7    36        9     0     0 +113931.29%  $75,000,000 Crypto Wallet Bulk Hack
+2026-03-16     966   3   16     7   252        9     0     0 +113931.29%  The more you spend your Bitcoin, the faster we hit whatever 
+2026-03-17     388   1    6     6   117        9     0     0      N/A    What is wrong with this strategy?
+2026-03-15    1512   9   32     5   397        1     1     1     -3.91%  Hope you all have enough bitcoin to weather the storm - Ray 
+2026-03-16     191   2    4     4    36        9     1     0 +113931.29%  Looking to buy BTC
+2026-03-16     200   2    4     4    65        2     0     0 +113931.29%  this point in time
+2026-03-16     358   7    5     5    31        4     0     0 +113931.29%  BTC growth &amp; adoption. Thoughts?
+2026-03-16     418   4    9     9   142        7     0     0 +113931.29%  [WC_DR9] What do you prefer to do with your BTC?
+2026-03-16     340   7    5     5    25        7     0     0 +113931.29%  Bitcoin and Canadian Dollar Observation
+2026-03-16     425   2    7     7    47        2     1     0 +113931.29%  Bitcoin Brushes Off Conflict as Funds Rally
+2026-03-15     399   3    7     7   130        4     0     0     -3.91%  Are you ready to understand this yet?
+2026-03-15     182   2    5     5    50        5     0     0     -3.91%  The life of a Bitcoiner
+2026-03-16     406   1    6     6    66        3     1     0 +113931.29%  Any explaination for this recent pump?
+2026-03-16     226   1    5     5    21        3     0     0 +113931.29%  Daily Discussion, March 16, 2026
+2026-03-15     809   8   14     5   179        8     0     0     -3.91%  Bitcoin set for best week since September 2025 as correlatio
+2026-03-15     565   7   10     1   112        4     0     0     -3.91%  Life is Simple when it comes to Bitcoin. Billionaire Mindset
+2026-03-15     704   2   12     3   122        5     0     0     -3.91%  Bitcoin Long-Term Holders Retain 79% of Supply as Exchange R
+2026-03-16     113   5    2     2    39        3     0     0 +113931.29%  [CAUTION] watch please!!
+2026-03-15     698   5   14     5   189        9     0     0     -3.91%  VanEck Says Up To 13 Governments Are Mining Bitcoin - Here's
+2026-03-16     546   6   10     1    85        4     0     0 +113931.29%  Mentor Monday, March 16, 2026: Ask all your bitcoin question
+2026-03-16     225   9    4     4    39        3     0     0 +113931.29%  Bitcoin mining in orbit
+2026-03-15     479   2    9     9    78        6     0     0     -3.91%  [WC_DR9] Devaluation: One Dollar - Oil on canvas by Alex Schaefer
+2026-03-15     243   9    5     5    49        4     0     0     -3.91%  Bitcoin right after I sold
+2026-03-16     142   7    3     3    45        9     1     0 +113931.29%  Where to buy?
+2026-03-17     641   2   17     8   149        5     0     0      N/A    He Threw Away $800 Million in Bitcoin… Now He’s Digging a LA
+2026-03-14     321   6    6     6    83        2     0     0     +7.97%  The price action of recent months
+2026-03-16      42   6    1     1    23        5     0     0 +113931.29%  War
+2026-03-15     331   7    7     7    84        3     0     0     -3.91%  What happens if bitcoin hits 1m usd?
+2026-03-16     332   8    6     6   112        4     0     0 +113931.29%  Store the seed phrase on washers
+2026-03-15     217   1    2     2    18        9     0     0     -3.91%  Bitcoin psychology
+2026-03-16     188   8    4     4    44        8     1     0 +113931.29%  Should I buy now?
+2026-03-15     301   4    7     7    61        7     0     0     -3.91%  DCA all my money on mostly btc
+2026-03-15     665   8   13     4   144        9     0     0     -3.91%  stack sats and save on the blockchain. its the boycott of al
+2026-03-15     363   3    8     8   102        3     0     0     -3.91%  Help me Bitcoin, you're my only hope
+2026-03-15     127   1    2     2    16        7     0     0     -3.91%  Educating kids
+2026-03-16     436   4    8     8   107        8     0     0 +113931.29%  The User Doesn't Care About Your Mission
+2026-03-16     949   4   19     1   208        1     0     0 +113931.29%  We built a free, open-source Bitcoin DCA bot for Android whe
+2026-03-15    2435   5   37     1   364        4     0     0     -3.91%  The Pikachu Standard: Why Boris Johnson's Bizarre Attack on 
+2026-03-14    1191   3   25     7   194        5     0     0     +7.97%  Andreas Antonopoulos explaining Bitcoin to an empty room at 
+2026-03-16     353   2    8     8    87        6     1     0 +113931.29%  Why I'm holding off on buying Bitcoin
+2026-03-15     125   8    3     3    53        8     1     0     -3.91%  To the moon 🌕
+2026-03-16     269   8    6     6    89        8     0     0 +113931.29%  This time won't be different!
+2026-03-14      93   3    3     3    34        7     0     0     +7.97%  [CAUTION] Haha so good
+2026-03-15     226   1    5     5    21        3     0     0     -3.91%  Daily Discussion, March 15, 2026
+2026-03-14     119   2    3     3    47        2     0     0     +7.97%  Who did this?
+2026-03-15     156   3    4     4    50        5     0     0     -3.91%  DCA or lump sum
+2026-03-14     422   8    8     8   128        2     0     0     +7.97%  what's your btc stacking plan looking like
+2026-03-14     392   5    8     8   122        5     0     0     +7.97%  Paid for my Wife’s tattoo with Bitcoin
+2026-03-14     415   1    9     9    66        3     0     0     +7.97%  [WC_DR9] I just bought my first Bitcoin. I need Advice
+2026-03-14     695   2   15     6   182        2     0     1     +7.97%  Fear &amp; Greed might be the worst indicator for the people
+2026-03-16     313   7    8     8   136        1     0     0 +113931.29%  What's the reason it's going up?
+2026-03-15     617   5   10     1   122        5     0     0     -3.91%  Is night UTC, European countries good time to trade crypto?
+2026-03-14     980   8   14     5   120        3     0     0     +7.97%  Crypto Expert Explains How Bitcoin Exchange Gave Police Cont
+2026-03-15     330   6    6     6    84        3     0     0     -3.91%  no selfie kyc-only uploading docs
+2026-03-14     681   6   14     5   159        6     0     0     +7.97%  Air-gapped message signing with Coldcard. How to sign with a
+2026-03-15     151   7    2     2    11        2     0     0     -3.91%  bitcoinlaws.io
+2026-03-14     713   2   12     3   124        7     0     0     +7.97%  How to import Cash App bitcoin transactions into Turbo Tax f
+2026-03-14     946   1   14     5   180        9     0     0     +7.97%  Using Bitcoin to fund small solar installations in South Afr
+2026-03-13     803   2   17     8   167        5     0     0     -5.93%  A big win for Bitcoin and freedom: US Senate Votes to Ban Fe
+2026-03-14     234   9    6     6    66        3     0     0     +7.97%  M1 MacBook Air w/Bitcoin node
+2026-03-17     363   3    8     8    31        4     0     0      N/A    Daily Crypto Discussion - March 17, 2026 (GMT+0)
+2026-03-17     569   2   13     4   177        6     0     0      N/A    UK man says his wife used CCTV footage to steal $176M in Bit
+2026-03-17     536   5    7     7    63        9     0     0      N/A    Polymarket banned in Argentina after regulatory probe
+2026-03-17     948   3   18     9   175        4     0     0      N/A    [WC_DR9] Mastercard to acquire crypto startup BVNK for up to $1.8 bil
+2026-03-17     710   8   16     7   172        1     0     0      N/A    If the Bitcoin bottom is in, Michael Burry will be the Paul 
+2026-03-17     664   7   12     3   112        4     0     0      N/A    Metaplanet Moves 4,986 BTC as Stock Slides 12% Following Tre
+2026-03-16     697   4   12     3   134        8     0     0 +113931.29%  Polymarket bettors threatened to kill a journalist over a $1
+2026-03-17     639   9   12     3    87        6     1     0      N/A    Crypto ATM losses surge 33% in 2025 as AI superpowers scams:
+2026-03-16    1914   6   36     9   462        3     2     1 +113931.29%  [WC_DR9] BTC hits $75K! Why is the market pumping? Anyone know what's
+2026-03-17     524   2    8     8    68        5     0     0      N/A    PayPal Officially Enables Stablecoin Access in 70 Countries
+2026-03-17     778   4    8     8   105        6     0     0      N/A    South Korean Police Accidentally Post Cryptocurrency Wallet 
+2026-03-17     589   4   10     1   122        5     0     1      N/A    Long vs Short Bitcoin Liquidations over the past 7 days
+2026-03-17     782   8   11     2   125        8     0     0      N/A    Bitget Expands Spot Market With Ondo Tokenized Stocks, ETFs,
+2026-03-16     561   3   15     6    78        6     0     0 +113931.29%  Strategy Acquires 22,337 BTC for $1.57 Billion – Total Holdi
+2026-03-17     667   1    9     9   128        2     0     1      N/A    [WC_DR9] Wall Street Rushes Into Prediction Markets Amid Iran Tension
+2026-03-17     593   8    7     7    65        2     0     0      N/A    Australian Senate panel backs crypto regulation framework
+2026-03-17     607   4    9     9    71        8     0     1      N/A    [WC_DR9] Private Credit Stress Builds a Surprising Case for Bitcoin
+2026-03-16     508   4   10     1    79        7     0     0 +113931.29%  20 of Europe's Largest Banks Are Moving into Crypto
+2026-03-17     519   6   10     1   103        4     1     0      N/A    UK Court Allows $172M Bitcoin Case Against Wife to Proceed
+2026-03-17     525   3    9     9   100        1     1     0      N/A    [WC_DR9] Bitcoin Bulls Risk Getting Trapped at Six-Week Highs
+2026-03-17     685   1   11     2   150        6     0     0      N/A    Bitcoin in Wartime: The Iran Conflict Is Replaying the Ukrai
+2026-03-16     472   4    7     7   104        5     0     0 +113931.29%  Reminder: NEVER Swap inside Metamask or Phantom
+2026-03-17    1065   3   16     7   195        6     0     0      N/A    Upcoming Events at SuperteamUK Co-working Space London (Netw
+2026-03-17     716   5   15     6   127        1     0     0      N/A    AI Cryptos Set for a Massive Recovery, Sector Already up 21%
+2026-03-17     640   1   10     1    90        9     0     0      N/A    CFTC Grants Phantom No-Action Relief for Derivatives Trading
+2026-03-16     121   4    5     5    50        5     0     0 +113931.29%  WE ARE BACK. Are we?
+2026-03-17     227   2    6     6    29        2     0     0      N/A    Does a chain need a foundation?
+2026-03-17     514   1    8     8    77        5     0     0      N/A    PayPal expands stablecoin access to 68 more countries
+2026-03-17     507   3    7     7    48        3     0     0      N/A    Looking for Block Explorers or Bootstrap files...
+2026-03-17     485   8    8     8    61        7     0     0      N/A    CPA/Financial Advisor Recs for Inheritance of Crypto
+2026-03-16     746   8   15     6    80        8     0     0 +113931.29%  Crypto Fund Inflows Hit $1.06 Billion as Iran Crisis Fuels B
+2026-03-17     548   8    8     8    80        8     0     0      N/A    PayPal Expands PYUSD Stablecoin Access to 70 Countries
+2026-03-17     939   3   12     3   165        3     0     0      N/A    Russia Turns Pro-Crypto with Proposed Asset Tokenization and
+2026-03-17     527   5    9     9    71        8     0     0      N/A    [WC_DR9] Messari CEO Eric Turner Steps Down Amid AI Expansion
+2026-03-16    1033   7   17     8   145        1     0     0 +113931.29%  J.P. Morgan reportedly allowing BTC and ETH as collateral wh
+2026-03-16     531   9   10     1   100        1     0     0 +113931.29%  Bitcoin Is Beating Gold During War, Peter Schiff Pushes Back
+2026-03-17     672   6    7     7    79        7     0     0      N/A    Ironlight Secures $21mn Institutional Capital for Tokenizati
+2026-03-17    1042   7   22     4   298        1     0     0      N/A    A whale just opened a $50M BTC long position. Do you think t
+2026-03-16     640   1   13     4   132        6     0     0 +113931.29%  SEC Is Changing a Major Rule That Could Benefit US Stocks an
+2026-03-16     884   2   13     4   115        7     0     0 +113931.29%  BitMEX Launches Crypto Olympus Trading Competition Featuring
+2026-03-17     436   4    9     9    91        1     0     0      N/A    [WC_DR9] Are we actually seeing a recovery trend for BNB?
+2026-03-16     846   9   17     8   172        1     0     1 +113931.29%  Coinbase’s $70B Bitcoin move made it look like investors wer
+2026-03-16     532   1   11     2   130        4     0     0 +113931.29%  Aave to Roll Out Aave Shield After $50M User Loss Incident
+2026-03-16    1014   6   13     4   122        5     0     0 +113931.29%  Institutional investors held firm through bitcoin’s downturn
+2026-03-17     773   8   11     2   130        4     0     0      N/A    TRON Joins Mastercard's Crypto Program to Drive Global Block
+2026-03-16     959   5   15     6   142        7     0     1 +113931.29%  Longs and Shorts are almost entirely equal on all sides now,
+2026-03-15     977   5   20     2   188        8     0     0     -3.91%  After Holding Out for Eight Months, the Whale Couldn’t Take 
+2026-03-15    1175   5   23     5   263        2     0     0     -3.91%  NC Man Lost $1M in Just 10 Minutes. What His Experience Show
+2026-03-16     638   8   13     4   133        7     0     0 +113931.29%  Goodbye, Cheap USDT: Brazil Plans to Introduce a 3.5% Tax on
+2026-03-17    1178   8   21     3   263        2     0     0      N/A    Charlie Lee on Quantum Computing, the Satoshi Stash Threat, 
+2026-03-16    1357   7   20     2   224        8     0     0 +113931.29%  Coinbase built wallets for AI agents in February. The compli
+2026-03-16     917   8   18     9   181        1     0     0 +113931.29%  [WC_DR9] The Coinbase Chain – Base is Growing! | Data on TVL, Wallets
+2026-03-16     686   2    9     9    72        9     0     0 +113931.29%  [WC_DR9] Australian Senate Committee Backs New Crypto Platform Licens
+2026-03-16    1105   7   21     3   256        4     0     0 +113931.29%  The IRS already has your 2025 crypto transactions. Here's wh
+2026-03-16     656   8   10     1    98        8     1     0 +113931.29%  Metaplanet raises $255M and adds warrant structure for Bitco
+2026-03-16     987   6   15     6   208        1     0     0 +113931.29%  Argentina Presidents Libra tied to report claiming $5M payme
+2026-03-16     651   3    9     9   111        3     0     0 +113931.29%  [WC_DR9] Testing a delta-neutral perp strategy across two platforms
+2026-03-16     658   1   11     2    88        7     0     1 +113931.29%  Hana Financial, Standard Chartered sign deal on global busin
+2026-03-16     881   8   17     8   242        8     0     0 +113931.29%  Solana just had one of its highest volume days in weeks is t
+2026-03-16     176   5    3     3    43        7     0     0 +113931.29%  Help with LEVLX
+2026-03-17     592   7   11     2   121        4     0     0      N/A    Former UK PM Boris Johnson Says Bitcoin Is a Ponzi Scheme
+2026-03-16     716   5   13     4   120        3     1     0 +113931.29%  The BCH Bullet - Bliss Entry NFTs - Paytaca CLI - Roman Stor
+2026-03-15     447   6    9     9    79        7     0     0     -3.91%  [WC_DR9] US Bitcoin ETFs Register a 5-Day Inflow Streak
+2026-03-16     363   3    8     8    31        4     0     0 +113931.29%  Daily Crypto Discussion - March 16, 2026 (GMT+0)
+2026-03-15     560   2   14     5   147        3     1     0     -3.91%  BTC pumped 8% and the $1.67B short added more. they're still
+2026-03-16     878   5   19     1   147        3     0     0 +113931.29%  BitMine increased its holdings by 60,999 ETH last week, brin
+2026-03-16     634   4   12     3   160        7     0     0 +113931.29%  Has anyone heard of the "piety paychain token" launched by U
+2026-03-16     607   4   14     5   146        2     1     1 +113931.29%  Crypto Fear &amp; Greed Index rises to 23 today, up from 8 l
+2026-03-17     113   5    2     2    25        7     0     0      N/A    [CAUTION] Market leader
+2026-03-16     644   5   11     2    84        3     0     0 +113931.29%  Crypto lender BlockFills files for Chapter 11 bankruptcy in 
+2026-03-16     243   9    4     4    49        4     0     0 +113931.29%  Happy 6th Birthday, Solana! 🎂
+2026-03-16     623   2   11     2   103        4     1     1 +113931.29%  SEC Drops Case Against BitClout Founder Nader Al-Naji With P
+2026-03-16    1007   8   14     5   168        6     1     0 +113931.29%  Ledger Partners with MoonPay to Give Users Manual Control Ov
+2026-03-16    1265   5   25     7   269        8     0     0 +113931.29%  All but 5 of the top 20 nonstablecoin Crypto are down since 
+2026-03-15     354   3    8     8    94        4     0     0     -3.91%  Is this possible to bridge BTC to ETH?
+2026-03-16     548   8   10     1   118        1     1     0 +113931.29%  XRP testing the $1.48 resistance area breakout or rejection?
+2026-03-16     840   3   11     2   141        6     0     0 +113931.29%  Ironlight raises $21 million to expand regulated marketplace
+2026-03-15    1048   4   15     6   195        6     0     0     -3.91%  Mastercard Scales Up: Launches Crypto Partner Program to Bri
+2026-03-16     176   5    6     6    36        9     0     0 +113931.29%  What $1,000 in Bitcoin Became
+2026-03-14     848   2   17     8   197        8     0     1     +7.97%  Strategy's Bitcoin Bet Now $3.35 Billion In The Red As Saylo
+2026-03-15     316   1    7     7    58        4     0     0     -3.91%  The 20 millionth bitcoin has been mined
+2026-03-16     710   8   10     1    84        3     0     0 +113931.29%  CLARITY Act risks handing crypto to centralized players: Gno
+2026-03-16     462   3    8     8    80        8     0     0 +113931.29%  Nigeria Leads Global Stablecoin Adoption in 2026 Report
+2026-03-14     687   3   10     1    91        1     0     0     +7.97%  Trump crypto venture offers “guaranteed direct access” for $
+2026-03-14     502   7   11     2    94        4     0     1     +7.97%  BlackRock Says 90% of Its Bitcoin ETF Holders Did Not Panic
+2026-03-16     568   1   10     1   147        3     0     0 +113931.29%  Whales trigger Bitcoin’s largest rebound signal; Is $100k ne
+2026-03-15     734   5   18     9   186        6     0     0     -3.91%  [WC_DR9] The CLARITY Act has an 18% chance of passing. The SEC and CF
+2026-03-16     870   6   17     8   174        3     1     0 +113931.29%  built a crypto safety tool that checks 5 on-chain signals be
+2026-03-15     961   7   15     6   141        6     0     0     -3.91%  F1's Multi-Million Crypto Sponsorships at Risk as Middle Eas
+2026-03-15     858   3   11     2   137        2     0     0     -3.91%  Solana is proposed Alpenglow consensus upgrade major improve
+2026-03-16     504   9    8     8    76        4     0     0 +113931.29%  Tether CEO Paolo Ardoino Teases Major AI Breakthrough
+2026-03-15     525   3    9     9    86        5     0     0     -3.91%  [WC_DR9] Ethereum Users Warned as USDT Dust Attacks Jump 612%
+2026-03-14     980   8   14     5   120        3     0     0     +7.97%  Crypto Expert Explains How Bitcoin Exchange Gave Police Cont
+2026-03-15    1115   8   17     8   196        7     0     0     -3.91%  India’s Landmark Asset Tokenization Bill Unlikely to Pass in
+2026-03-16     912   3   15     6   183        3     1     0 +113931.29%  TRUMP tokens hold onto price gains as whale holders compete 
+2026-03-16     464   5    9     9   110        2     0     0 +113931.29%  [WC_DR9] Is Monero essentially what BTC was meant to be?
+2026-03-15     570   3    8     8   113        5     0     0     -3.91%  Introducing eIOU, an open source p2p payment protocol
+2026-03-14     558   9   14     5   146        2     1     0     +7.97%  The math behind Strategy's path to 1 million Bitcoin by end 
+2026-03-15     363   3    8     8    31        4     0     0     -3.91%  Daily Crypto Discussion - March 15, 2026 (GMT+0)
+2026-03-15     581   5   10     1   120        3     0     0     -3.91%  Why Binance suddenly isn’t afraid of negative press anymore
+2026-03-17     321   6    6     6    41        5     0     0      N/A    [Daily Discussion] - Tuesday, March 17, 2026
+2026-03-01     249   6    4     4    18        9     0     0     +2.73%  [Altcoin Discussion] - March 2026
+2026-03-16     298   1    6     6    34        7     0     0 +113931.29%  [Daily Discussion] - Monday, March 16, 2026
+2026-03-15     310   4    6     6    40        4     0     0     -3.91%  [Daily Discussion] - Sunday, March 15, 2026
+2026-03-14     335   2    6     6    40        4     0     0     +7.97%  [Daily Discussion] - Saturday, March 14, 2026
+2026-03-13     289   1    6     6    27        9     0     0     -5.93%  [Daily Discussion] - Friday, March 13, 2026
+2026-03-12     342   9    6     6    41        5     0     0     +2.17%  [Daily Discussion] - Thursday, March 12, 2026
+2026-03-11     427   4    9     9   105        6     0     0     -3.08%  [WC_DR9] Are you just trading BTC or holding as well?
+2026-03-11     326   2    6     6    44        8     0     0     -3.08%  [Daily Discussion] - Wednesday, March 11, 2026
+2026-03-10     321   6    6     6    41        5     0     0     +0.00%  [Daily Discussion] - Tuesday, March 10, 2026
+2026-03-09     298   1    6     6    34        7     0     0    +10.84%  [Daily Discussion] - Monday, March 09, 2026
+2026-03-08     310   4    6     6    40        4     0     0     -6.41%  [Daily Discussion] - Sunday, March 08, 2026
+2026-03-07     335   2    6     6    40        4     0     0     -3.72%  [Daily Discussion] - Saturday, March 07, 2026
+2026-03-06     289   1    6     6    27        9     0     0     +1.45%  [Daily Discussion] - Friday, March 06, 2026
+2026-03-05     342   9    6     6    41        5     0     0     -2.34%  [Daily Discussion] - Thursday, March 05, 2026
+2026-03-04     326   2    6     6    44        8     0     0     +4.07%  [Daily Discussion] - Wednesday, March 04, 2026
+2026-03-03     321   6    6     6    41        5     0     0     +0.83%  [Daily Discussion] - Tuesday, March 03, 2026
+2026-03-02     298   1    6     6    34        7     0     0     +0.51%  [Daily Discussion] - Monday, March 02, 2026
+2026-03-01     310   4    6     6    40        4     0     0     +2.73%  [Daily Discussion] - Sunday, March 01, 2026
+2026-02-28     388   1    6     6    33        6     0     0    +11.51%  [Daily Discussion] - Saturday, February 28, 2026
+2026-02-27     342   9    6     6    20        2     0     0    -13.28%  [Daily Discussion] - Friday, February 27, 2026
+2026-02-26     395   8    6     6    34        7     0     0    +13.63%  [Daily Discussion] - Thursday, February 26, 2026
+2026-02-25     379   1    6     6    37        1     0     0     +3.28%  [Daily Discussion] - Wednesday, February 25, 2026
+2026-02-24     374   5    6     6    34        7     0     0    -15.53%  [Daily Discussion] - Tuesday, February 24, 2026
+2026-02-23     351   9    6     6    27        9     0     0     +1.57%  [Daily Discussion] - Monday, February 23, 2026
+2026-02-23     429   6   10     1   137        2     0     0     +1.57%  What would you do if someone gave you 100 BTC?
+2026-02-22     363   3    6     6    33        6     0     0     -4.02%  [Daily Discussion] - Sunday, February 22, 2026
+2026-02-21     388   1    6     6    33        6     0     0     -1.26%  [Daily Discussion] - Saturday, February 21, 2026
+2026-02-20     342   9    6     6    20        2     0     0     -2.01%  [Daily Discussion] - Friday, February 20, 2026
+2026-02-19     395   8    6     6    34        7     0     0     +5.97%  [Daily Discussion] - Thursday, February 19, 2026
+2026-02-18     379   1    6     6    37        1     0     0     -7.09%  [Daily Discussion] - Wednesday, February 18, 2026
+2026-02-17     374   5    6     6    34        7     0     0     +6.38%  [Daily Discussion] - Tuesday, February 17, 2026
+2026-02-16     351   9    6     6    27        9     0     0     -8.79%  [Daily Discussion] - Monday, February 16, 2026
+2026-02-15     363   3    6     6    33        6     0     0     -0.31%  [Daily Discussion] - Sunday, February 15, 2026
+2026-02-14     388   1    6     6    33        6     0     0     -3.71%  [Daily Discussion] - Saturday, February 14, 2026
+2026-02-13     342   9    6     6    20        2     0     0     +5.36%  [Daily Discussion] - Friday, February 13, 2026
+2026-02-12     395   8    6     6    34        7     0     0     +2.72%  [Daily Discussion] - Thursday, February 12, 2026
+2026-02-11     379   1    6     6    37        1     0     0     +0.00%  [Daily Discussion] - Wednesday, February 11, 2026
+2026-02-10     374   5    6     6    34        7     0     0     -1.39%  [Daily Discussion] - Tuesday, February 10, 2026
+2026-02-09     351   9    6     6    27        9     0     0     -0.03%  [Daily Discussion] - Monday, February 09, 2026
+2026-02-08     363   3    6     6    33        6     0     0     +3.44%  [Daily Discussion] - Sunday, February 08, 2026
+2026-02-07     388   1    6     6    33        6     0     0     +5.38%  [Daily Discussion] - Saturday, February 07, 2026
+2026-02-06     342   9    6     6    20        2     0     0     -1.13%  [Daily Discussion] - Friday, February 06, 2026
+2026-02-05     395   8    6     6    34        7     0     0     +9.49%  [Daily Discussion] - Thursday, February 05, 2026
+2026-02-04     379   1    6     6    37        1     0     0     -7.23%  [Daily Discussion] - Wednesday, February 04, 2026
+2026-02-03     374   5    6     6    34        7     0     0     +7.90%  [Daily Discussion] - Tuesday, February 03, 2026
+2026-02-02     429   6    8     8    48        3     0     0    -13.80%  I built a "Bitcoin priced in everything" dashboard
+2026-02-02     351   9    6     6    27        9     0     0    -13.80%  [Daily Discussion] - Monday, February 02, 2026
+2026-02-01     363   3    6     6    33        6     0     0     -0.62%  [Daily Discussion] - Sunday, February 01, 2026
+2026-02-01     302   5    4     4    11        2     0     0     -0.62%  [Altcoin Discussion] - February 2026
+2026-01-31     382   4    6     6    37        1     0     0     +5.59%  [Daily Discussion] - Saturday, January 31, 2026
+2026-01-30     336   3    6     6    24        6     0     0     -2.14%  [Daily Discussion] - Friday, January 30, 2026
+2026-01-29     389   2    6     6    38        2     0     0     -8.25%  [Daily Discussion] - Thursday, January 29, 2026
+2026-01-28     373   4    6     6    41        5     0     0     -4.09%  [Daily Discussion] - Wednesday, January 28, 2026
+2026-01-27     404   8    9     9   118        1     0     0     -6.57%  [WC_DR9] How do you keep your BTC safe these days?
+2026-01-27     368   8    6     6    38        2     0     0     -6.57%  [Daily Discussion] - Tuesday, January 27, 2026
+2026-01-26     345   3    6     6    31        4     0     0    +15.10%  [Daily Discussion] - Monday, January 26, 2026
+2026-01-25     357   6    6     6    37        1     0     0     -1.30%  [Daily Discussion] - Sunday, January 25, 2026
+2026-01-24     382   4    6     6    37        1     0     0     -5.26%  [Daily Discussion] - Saturday, January 24, 2026
+2026-01-23     336   3    6     6    24        6     0     0     -6.22%  [Daily Discussion] - Friday, January 23, 2026
+2026-01-22     389   2    6     6    38        2     0     0     -0.10%  [Daily Discussion] - Thursday, January 22, 2026
+2026-01-21     373   4    6     6    41        5     0     0     +0.64%  [Daily Discussion] - Wednesday, January 21, 2026
+2026-01-20     368   8    6     6    38        2     0     0     -0.37%  [Daily Discussion] - Tuesday, January 20, 2026
+2026-01-19     636   6   11     2   122        5     1     0     -2.52%  A U.S. State Pension Fund Is Quietly Gaining Bitcoin Exposur
+2026-01-19     345   3    6     6    31        4     0     0     -2.52%  [Daily Discussion] - Monday, January 19, 2026
+2026-01-18     357   6    6     6    37        1     0     0     +4.93%  [Daily Discussion] - Sunday, January 18, 2026
+2026-01-17     382   4    6     6    37        1     0     0     -8.08%  [Daily Discussion] - Saturday, January 17, 2026
+2026-01-16     233   8    3     3    44        8     1     0    +19.74%  The Greenland question.
+2026-01-16     336   3    6     6    24        6     0     0    +19.74%  [Daily Discussion] - Friday, January 16, 2026
+2026-01-15     389   2    6     6    38        2     0     0     -4.63%  [Daily Discussion] - Thursday, January 15, 2026
+2026-01-14     373   4    6     6    41        5     0     0     +5.64%  [Daily Discussion] - Wednesday, January 14, 2026
+2026-01-13     368   8    6     6    38        2     0     0     -0.66%  [Daily Discussion] - Tuesday, January 13, 2026
+2026-01-12     345   3    6     6    31        4     0     0     -6.27%  [Daily Discussion] - Monday, January 12, 2026
+2026-01-11     357   6    6     6    37        1     0     0     -0.64%  [Daily Discussion] - Sunday, January 11, 2026
+2026-01-10     382   4    6     6    37        1     0     0     +2.69%  [Daily Discussion] - Saturday, January 10, 2026
+2026-01-09     336   3    6     6    24        6     0     0     -4.24%  [Daily Discussion] - Friday, January 09, 2026
+2026-01-08     389   2    6     6    38        2     0     0     +3.22%  [Daily Discussion] - Thursday, January 08, 2026
+2026-01-07     373   4    6     6    41        5     0     0     -5.81%  [Daily Discussion] - Wednesday, January 07, 2026
+2026-01-06     368   8    6     6    38        2     0     0     +4.18%  [Daily Discussion] - Tuesday, January 06, 2026
+2026-01-05     345   3    6     6    31        4     0     0     -1.41%  [Daily Discussion] - Monday, January 05, 2026
+2026-01-04     357   6    6     6    37        1     0     0     +2.12%  [Daily Discussion] - Sunday, January 04, 2026
+2026-01-03     382   4    6     6    37        1     0     0     -0.01%  [Daily Discussion] - Saturday, January 03, 2026
+2026-01-02     336   3    6     6    24        6     0     0     -2.62%  [Daily Discussion] - Friday, January 02, 2026
+2026-01-01     389   2    6     6    38        2     0     0     +6.25%  [Daily Discussion] - Thursday, January 01, 2026
+2026-01-01     296   8    4     4    15        6     0     0     +6.25%  [Altcoin Discussion] - January 2026
+2025-12-31     338   5    6     6    35        8     0     0     +8.04%  [Daily Discussion] - Wednesday, December 31, 2025
+2025-12-30     333   9    6     6    32        5     0     0     +1.84%  [Daily Discussion] - Tuesday, December 30, 2025
+2025-12-29     310   4    6     6    25        7     0     0     -6.08%  [Daily Discussion] - Monday, December 29, 2025
+2025-12-28     322   7    6     6    31        4     0     0     +1.26%  [CAUTION] [Daily Discussion] - Sunday, December 28, 2025
+2025-12-27     347   5    6     6    31        4     0     0     -3.58%  [Daily Discussion] - Saturday, December 27, 2025
+2025-12-26     301   4    6     6    18        9     0     0     +2.94%  [Daily Discussion] - Friday, December 26, 2025
+2025-12-25     354   3    6     6    32        5     0     0     +1.03%  [Daily Discussion] - Thursday, December 25, 2025
+2025-12-24     338   5    6     6    35        8     0     0     -3.46%  [Daily Discussion] - Wednesday, December 24, 2025
+2025-12-23     333   9    6     6    32        5     0     0     -2.72%  [Daily Discussion] - Tuesday, December 23, 2025
+2025-12-22     310   4    6     6    25        7     0     0     +1.84%  [Daily Discussion] - Monday, December 22, 2025
+2025-12-21     322   7    6     6    31        4     0     0     -1.31%  [CAUTION] [Daily Discussion] - Sunday, December 21, 2025
+2025-12-21     552   3    8     8    72        9     0     0     -1.31%  Investing in Bitcoin/ETFs vs. BTC Treasury companies
+2025-12-20     347   5    6     6    31        4     0     0     -1.21%  [Daily Discussion] - Saturday, December 20, 2025
+2025-12-19     244   1    4     4    43        7     1     0     +2.61%  Benjamin Cowen Track Record
+2025-12-19     301   4    6     6    18        9     0     0     +2.61%  [Daily Discussion] - Friday, December 19, 2025
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — CAUTION & PUMP GEMATRIA FREQUENCY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Headlines with CAUTION gematria ({322, 39, 43, 48, 17, 113, 93, 223}): 5
+Headlines with PUMP gematria    ({72, 73, 27, 37}): 0
+
+CAUTION hits:
+  GEM=113  DR=5  2026-03-16  watch please!!
+  GEM= 93  DR=3  2026-03-14  Haha so good
+  GEM=113  DR=5  2026-03-17  Market leader
+  GEM=322  DR=7  2025-12-28  [Daily Discussion] - Sunday, December 28, 2025
+  GEM=322  DR=7  2025-12-21  [Daily Discussion] - Sunday, December 21, 2025
+
+PUMP hits:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — GEMATRIA DIGITAL ROOT DISTRIBUTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  DR=1:   57 headlines
+  DR=2:   52 headlines
+  DR=3:   52 headlines
+  DR=4:   52 headlines
+  DR=5:   53 headlines
+  DR=6:   49 headlines
+  DR=7:   47 headlines
+  DR=8:   59 headlines
+  DR=9:   57 headlines
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — BTC NEXT-DAY RETURN CORRELATION BY SIGNAL BUCKET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SIGNAL BUCKET                           N    WIN%    MEAN%   MEDIAN%     W     L
+------------------------------------------------------------------------------------------
+  CAUTION_GEMATRIA_EXACT                4    75.0 28484.80      4.62     3     1
+  WC_DR9_REVERSAL                      21    61.9 59677.82 113931.29    13     8
+  INIT_DR9                             28    57.1 32550.57      1.57    16    11
+
+  GEM DR breakdown:
+  GEM_DR_1                             34    64.7 40211.53      6.68    22    11
+  GEM_DR_2                             34    67.6 33509.84      5.16    23    11
+  GEM_DR_3                             40    50.0 28483.33      0.36    20    20
+  GEM_DR_4                             35    65.7 42316.80      2.73    23    12
+  GEM_DR_5                             36    61.1 41141.70      4.28    22    13
+  GEM_DR_6                             29    65.5 31429.32      2.73    19     9
+  GEM_DR_7                             27    59.3 54854.99      7.97    16    10
+  GEM_DR_8                             45    66.7 37978.20      6.25    30    11
+  GEM_DR_9                             32    65.6 49843.80      6.67    21    11
+
+  Other buckets:
+  CAUTION_CONTAINS_113                  1   100.0 113931.29 113931.29     1     0
+  CAUTION_CONTAINS_17                  10    40.0 45571.03      0.00     4     4
+  CAUTION_CONTAINS_322                  2    50.0    -0.03     -0.03     1     1
+  CAUTION_CONTAINS_39                   7    85.7 16281.02      7.97     6     1
+  CAUTION_CONTAINS_43                   4    50.0 56963.69  56963.69     2     2
+  CAUTION_CONTAINS_48                   3    66.7 37978.45      7.97     2     1
+  CAUTION_CONTAINS_93                   1   100.0     7.97      7.97     1     0
+  CAUTION_EXACT                         4    75.0 28484.80      4.62     3     1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — SENTIMENT INVERSION TEST (Contrarian / Fade)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THEORY: MSM extremely bullish headlines → BTC dumps (inversion);
+        extremely bearish headlines → BTC pumps (contrarian).
+
+  Extreme BULL headlines (3+ bull, 0 bear)
+    No data.
+
+  Extreme BEAR headlines (3+ bear, 0 bull)
+    No data.
+
+  Net sentiment ≥ +3 (bull - bear)
+    No data.
+
+  Net sentiment ≤ -3 (bear - bull)
+    No data.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — WORD COUNT DIGITAL ROOT = 9 (Reversal Signal)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Headlines with WC_DR=9: 21
+  Next-day BTC up:   61.9%
+  Next-day BTC down: 38.1%
+  Mean return: +59677.82%
+
+  Sample WC_DR=9 headlines:
+    WC=9 DR=9  2026-03-16  +113931.29%  Eric Trump Confirmed As Speaker For Bitcoin 2026 Conference
+    WC=18 DR=9  2026-03-11  -3.08%  Stocks making the biggest moves midday: Oracle, Papa John's, Nebi
+    WC=18 DR=9  2026-03-16  +113931.29%  Trump signals possible delay to Beijing summit as U.S. pressures 
+    WC=18 DR=9  2026-03-11  -3.08%  Iran sends millions of oil barrels to China through Strait of Hor
+    WC=18 DR=9  2026-02-26  +13.63%  Trump insists trade deals safe after Supreme Court ruling upends 
+    WC=9 DR=9  2026-03-16  +113931.29%  SEC Drops Case Against BitClout Founder Nader Al-Naji
+    WC=9 DR=9  2026-03-16  +113931.29%  New: $0 spread on recurring bitcoin buys for Canadians 🇨🇦
+    WC=9 DR=9  2026-03-16  +113931.29%  The Bitcoin narrative right now falls into four buckets:
+    WC=9 DR=9  2026-03-16  +113931.29%  What do you prefer to do with your BTC?
+    WC=9 DR=9  2026-03-15  -3.91%  Devaluation: One Dollar - Oil on canvas by Alex Schaefer
+    WC=9 DR=9  2026-03-14  +7.97%  I just bought my first Bitcoin. I need Advice
+    WC=36 DR=9  2026-03-16  +113931.29%  BTC hits $75K! Why is the market pumping? Anyone know what's goin
+    WC=18 DR=9  2026-03-16  +113931.29%  The Coinbase Chain – Base is Growing! | Data on TVL, Wallets, Act
+    WC=9 DR=9  2026-03-16  +113931.29%  Australian Senate Committee Backs New Crypto Platform Licensing B
+    WC=9 DR=9  2026-03-16  +113931.29%  Testing a delta-neutral perp strategy across two platforms
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — CAUTION NUMBER GEMATRIA: WHAT DOES BTC DO NEXT DAY?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Caution-gematria headlines with price data: 4
+  BTC up next day:   75.0%   (3 times)
+  BTC down next day: 25.0%   (1 times)
+  Mean return: +28484.80%   Median: +4.62%
+
+  Per caution number:
+    GEM=93   N=  1  UP=100%  MEAN=+7.97%
+    GEM=113  N=  1  UP=100%  MEAN=+113931.29%
+    GEM=322  N=  2  UP=50%  MEAN=-0.03%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — PUMP NUMBER GEMATRIA: INVERSION TEST (does it dump?)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  No pump headlines with matching price data found.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — INITIALS GEMATRIA DIGITAL ROOT = 9
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Headlines where INITIALS gematria DR=9: 28
+  Next-day BTC up:   57.1%
+  Mean return: +32550.57%   Median: +1.57%
+
+  Sample:
+    INIT=135  DR=9  2026-03-15  -3.91%  OpenClaw breathes new life into this Chinese tech stock ahead of 
+    INIT=180  DR=9  2026-03-13  -5.93%  Stocks making the biggest moves midday: Adobe, Ulta Beauty, Insul
+    INIT=216  DR=9  2026-03-13  -5.93%  Dividend stocks are catching up to tech stocks on a key earnings 
+    INIT=153  DR=9  2026-03-12  +2.17%  Stocks making the biggest moves premarket: Bumble, Hims & Hers He
+    INIT=144  DR=9  2026-03-10  +0.00%  Surging oil prices could wipe out benefits from Trump's 'big beau
+    INIT=180  DR=9  2026-03-16  +113931.29%  Bessent says Treasury is not intervening in oil commodities marke
+    INIT=180  DR=9  2026-02-23  +1.57%  Five key takeaways from the Supreme Court's landmark decision aga
+    INIT=162  DR=9  2026-03-16  +113931.29%  Is there a reputable and trustworthy company capable of recoverin
+    INIT=36  DR=9  2026-03-16  +113931.29%  $75,000,000 Crypto Wallet Bulk Hack
+    INIT=252  DR=9  2026-03-16  +113931.29%  The more you spend your Bitcoin, the faster we hit whatever price
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 10 — SENTIMENT FADE WIN-RATE SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Fading = taking opposite position to headline sentiment.
+  FADE STRATEGY                                     N  FADE_WIN%  MEAN_RET%
+  ------------------------------------------------------------------------
+  Fade Net-Bull ≥2  → SHORT BTC                     0         N/A         N/A
+  Fade Net-Bull ≥3  → SHORT BTC                     0         N/A         N/A
+  Fade Net-Bear ≥2  → LONG  BTC                     0         N/A         N/A
+  Fade Net-Bear ≥3  → LONG  BTC                     0         N/A         N/A
+  Invert Extreme-Bull (3+b,0bear)                   0         N/A         N/A
+  Invert Extreme-Bear (3+b,0bull)                   0         N/A         N/A
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 11 — KEY FINDINGS & DECODE SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  1. CAUTION gematria (4 hits): BTC up 75.0% next day — INVERTED — pumps on caution headlines
+  2. WC_DR=9 reversal: 21 headlines, BTC up 61.9% next day (mean +59677.82%)
+
+  STRONGEST FADE STRATEGY:
+    Insufficient sample size for reliable fade strategy.
+
+==========================================================================================
+END OF REPORT
+==========================================================================================

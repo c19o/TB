@@ -1,0 +1,18 @@
+Score: 880.2
+Timestamp: 2026-03-16 21:51:11
+Config: UNIFORM RISK 5.0% all TFs
+
+ROI:            +1642.7%
+Final Balance:  $17,426.91
+Profit Factor:  1.31
+Max Drawdown:   59.2%
+Trades:         3049
+Win Rate:       35.6%
+Avg Win:        $63.35
+Avg Loss:       $-26.63
+
+TF P&L:
+  1D:  $+170.69
+  4H:  $+5512.93
+  1H:  $+3748.12
+  15M: $+6995.18

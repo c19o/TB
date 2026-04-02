@@ -1,0 +1,178 @@
+========================================================================================================================
+  DEEP ANALYSIS: Pre-ETF Period (Jun-Dec 2023)
+  BTC $25K -> $42K (+68%), system made only +12.5%, WR 37.3%
+========================================================================================================================
+
+  Running simulation: 2023-06-18 to 2023-12-15
+  Loading data... (window: 2023-06-18 → 2023-12-15)
+  Loaded 400 1D, 2399 4H, 9594 1H, 38373 15m, 71 1W candles
+  Loaded 2605 tweets
+  Weekly trend data: 497 days mapped
+  1D sim: 2023-06-18 00:00 to 2023-12-15 00:00 (181 candles)
+  4H sim: 2023-06-18 00:00 to 2023-12-15 04:00 (1082 candles)
+  1H sim: 2023-06-18 00:00 to 2023-12-15 06:00 (4327 candles)
+  15M sim: 2023-06-18 00:00 to 2023-12-15 06:00 (17305 candles)
+  Pre-computing kNN for 4H...
+  kNN computed for 2329 4H candles
+
+  Running 1D swing trader...
+    1D done: balance=$1001.75, trades=53
+  Running 4H intraday (kNN confirm)...
+    4H done: balance=$1124.55, trades=202
+    15M done: balance=$1124.55, trades=0
+
+  Total trades: 255
+  ROI: +12.5%
+  Win rate: 37.3%
+  Profit Factor: 1.24
+  Max DD: 7.9%
+
+========================================================================================================================
+  PART B: DETAILED TRADE-BY-TRADE ANALYSIS
+========================================================================================================================
+
+  Winning trades: 95
+  Losing trades: 160
+  Win %: 37.3%
+
+========================================================================================================================
+  PART C: PATTERN ANALYSIS
+========================================================================================================================
+
+  [C1] TEMPORAL CLUSTERING OF LOSSES
+  Month         Trades   Wins  Losses     WR        PnL
+  ------------------------------------------------------------
+  2023-06           10      6       4  60.0% $    +87.4
+  2023-07           31      9      22  29.0% $    -53.6
+  2023-08           69     31      38  44.9% $   +107.9
+  2023-09           39     10      29  25.6% $    -41.4
+  2023-10           29     14      15  48.3% $    +39.0
+  2023-11           62     22      40  35.5% $     +6.3
+  2023-12           15      3      12  20.0% $    -21.1
+
+  [C2] SHORT SIGNALS IN UPTREND
+  Short losses in uptrend: 39/160 = 24.4%
+  Total PnL from shorting uptrend: $-54.9
+
+  Top 10 worst short-in-uptrend losses:
+    2023-11-21 4H_Day21_SHORT                           $    -6.7  BTC=$35,780  EMA50_slope=12.0%
+    2023-08-02 1D_Wednesday_SHORT                       $    -5.7  BTC=$29,185  EMA50_slope=1.0%
+    2023-11-18 4H_223_322_SHORT                         $    -4.7  BTC=$36,569  EMA50_slope=13.0%
+    2023-06-19 1D_Hidden17_SHORT                        $    -4.6  BTC=$26,833  EMA50_slope=-2.2%
+    2023-06-19 1D_PSI_Positive_SHORT                    $    -4.0  BTC=$26,833  EMA50_slope=-2.2%
+    2023-08-02 1D_17dates_SHORT                         $    -3.7  BTC=$29,185  EMA50_slope=1.0%
+    2023-07-26 1D_Wednesday_SHORT                       $    -2.7  BTC=$29,352  EMA50_slope=2.7%
+    2023-06-18 1D_PSI_Positive_SHORT                    $    -2.3  BTC=$26,349  EMA50_slope=-2.1%
+    2023-07-27 4H_SaturnHour_SHORT                      $    -2.0  BTC=$29,220  EMA50_slope=2.5%
+    2023-09-25 4H_SaturnHour_SHORT                      $    -1.7  BTC=$26,300  EMA50_slope=-2.4%
+
+  [C3] LONG SIGNALS WITH LOW ATR (didn't run far enough)
+  Long losses with ATR < 50% of avg: 15/160 = 9.4%
+  Total PnL: $-46.6
+
+  [C4] EMA50 SLOPE ANALYSIS (Slow Grind Detection)
+  Trades when EMA50 slope 0-3% (flat/slow grind): 54
+  Win rate in flat EMA50: 35.2%
+  PnL in flat EMA50: $+26.0
+  Trades when EMA50 slope > 3% (trending): 97
+  Win rate in trending: 32.0%
+  PnL in trending: $-71.2
+  Trades when EMA50 slope < 0% (declining): 104
+  Win rate in declining: 43.3%
+  PnL in declining: $+169.8
+
+  [C5] BOLLINGER BAND WIDTH ANALYSIS
+  Trades in BB squeeze (width < 10): 117, WR=35.0%, PnL=$+38.3
+  Trades in normal vol (width >= 10): 138, WR=39.1%, PnL=$+86.3
+
+  [C6] SIGNAL BREAKDOWN — WHICH SIGNALS LOST THE MOST
+  Signal                                           N  Wins     WR        PnL
+  --------------------------------------------------------------------------------
+  4H_Day13_LONG                                    9     1  11.1% $    -42.2
+  1D_Day13_LONG                                    2     0   0.0% $    -32.8
+  4H_17dates_LONG                                 25     7  28.0% $    -23.0
+  4H_Day6_LONG                                    14     5  35.7% $    -10.0
+  1D_Wednesday_SHORT                               8     2  25.0% $     -9.5
+  4H_113_LONG                                      4     0   0.0% $     -6.6
+  1D_17dates_SHORT                                 3     1  33.3% $     -5.4
+  1D_Day6_SHORT                                    2     1  50.0% $     -4.8
+  4H_223_322_SHORT                                 1     0   0.0% $     -4.7
+  4H_Day21_SHORT                                  10     3  30.0% $     -2.7
+  1D_MoonSouthNode_LONG                            4     1  25.0% $     -2.2
+  1D_Hidden17_SHORT                                2     1  50.0% $     -0.5
+  1D_93_39_LONG                                    1     1 100.0% $     +2.4
+  4H_SaturnHour_SHORT                             37     9  24.3% $     +6.4
+  1D_PSI_Positive_SHORT                           14     6  42.9% $     +6.4
+  1D_BTC_anniv_LONG                                9     5  55.6% $    +10.6
+  4H_DoublePower_SHORT                            44    19  43.2% $    +17.0
+  1D_PumpDate_SHORT                                5     2  40.0% $    +17.2
+  1D_BTC213_Energy_SHORT                           3     3 100.0% $    +20.3
+  4H_37_73_LONG                                   11    10  90.9% $    +71.5
+  4H_BTC_anniv_LONG                               47    18  38.3% $   +117.1
+
+  [C7] DIRECTION BREAKDOWN
+  LONG:  126 trades, WR=38.1%, PnL=$+84.8
+  SHORT: 129 trades, WR=36.4%, PnL=$+39.8
+
+  [C8] RSI AT ENTRY FOR LOSERS
+  RSI oversold (<30)      :   40 trades, WR= 47.5%, PnL=$    +29.2
+  RSI low (30-45)         :   63 trades, WR= 34.9%, PnL=$    +27.3
+  RSI mid (45-55)         :   35 trades, WR= 17.1%, PnL=$    -30.3
+  RSI high (55-70)        :   44 trades, WR= 45.5%, PnL=$     -6.6
+  RSI overbought (>70)    :   73 trades, WR= 38.4%, PnL=$   +104.9
+
+  [C9] ASTROLOGY CONTEXT FOR LOSERS
+  Losses during VOC Moon: 0
+  Losses during pump dates: 14
+
+  [C10] PRICE POSITION RELATIVE TO EMAs
+  Above EMA50 & EMA200               :  124 trades, WR= 39.5%, PnL=$    +83.9
+  Below EMA50, Above EMA200          :   44 trades, WR= 31.8%, PnL=$    +58.5
+  Below EMA50 & EMA200               :   87 trades, WR= 36.8%, PnL=$    -17.8
+
+========================================================================================================================
+  PART D: TESTING POTENTIAL FIXES
+========================================================================================================================
+
+  [D1] ATR FILTER: Skip when ATR < 50% of 50-period avg
+  Original: 255 trades, PnL=$+124.5
+  After ATR filter: 188 trades (skipped 67), WR=43.1%, PnL=$+176.1
+  Improvement: $+51.6
+
+  [D2] EMA50 SLOPE FILTER: Reduce risk 50% when slope 0-3% (flat grind)
+  Original PnL: $+124.5
+  After slope filter: $+111.6
+  Improvement: $-13.0
+
+  [D3] MULTI-TF EMA AGREEMENT: Only trade when direction matches all EMAs
+  Original: 255 trades, PnL=$+124.5
+  After MTF filter: 119 trades (skipped 136), WR=40.3%, PnL=$+95.7
+  Improvement: $-28.8
+
+  [D4] BB WIDTH FILTER: Skip when BB width < 10 (squeeze)
+  Original: 255 trades, PnL=$+124.5
+  After BB filter: 138 trades (skipped 117), WR=39.1%, PnL=$+86.3
+  Improvement: $-38.3
+
+  [D5] COMBINED: ATR + EMA50 slope + BB width
+  Original: 255 trades, PnL=$+124.5
+  Combined: 120 trades, WR=40.0%, PnL=$+94.9
+  Improvement: $-29.7
+
+  [D6] COULD WE HAVE DETECTED THE SLOW GRIND?
+  Checking BB width + EMA50 slope + ATR ratio month by month:
+  Month        Avg BB Width  Avg EMA50 Slope  Avg ATR Ratio     WR
+  ----------------------------------------------------------------------
+  2023-06             12.53           -1.17%         21.98  60.0%
+  2023-07             11.77            4.11%          0.26  29.0%
+  2023-08             12.13           -1.37%          0.91  44.9%
+  2023-09              9.57           -4.57%          0.84  25.6%
+  2023-10              8.53            1.07%          1.03  48.3%
+  2023-11             20.39           13.72%          1.20  35.5%
+  2023-12             23.60           11.66%          1.45  20.0%
+
+  CONCLUSION: Look for months where BB Width < 10, EMA50 slope 0-3%, ATR ratio < 0.7
+  These conditions indicate slow grind => reduce position sizes or skip trades
+
+  Results saved context above. Analysis complete.
+========================================================================================================================

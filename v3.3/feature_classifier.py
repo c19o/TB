@@ -148,7 +148,7 @@ def train_dual_models(features, forward_return, direction, use_gpu, tf_name='1d'
     base_params = {
         "max_depth": 6,
         "learning_rate": 0.05,
-        "bagging_fraction": 0.8,
+        "bagging_fraction": 0.95,
         "feature_fraction": 0.8,
         "min_data_in_leaf": TF_MIN_DATA_IN_LEAF.get(tf_name.lower(), 3),  # Per-TF from config
         "verbosity": -1,

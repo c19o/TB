@@ -28,7 +28,9 @@
 - Always run scripts with progress logs (tee/unbuffered). Never run blind
 - NEVER kill processes without explicit user permission
 - Don't search user's PC for files. Use the sources they provide
-- Use Perplexity MCP for technical queries — ALWAYS include matrix thesis context
+- For every non-trivial bug or issue: repo truth first, database/KB second, Perplexity fallback third
+- Do not use Perplexity as the first research step on any non-trivial technical issue
+- If the KB is weak, log the gap and then use Perplexity MCP with matrix thesis context
 - Stagger feature builds: small TFs parallel, then 15m separately
 - Build features locally (13900K), train on cloud GPU
 - Always maximize parallelism. Launch up to 20 agents simultaneously
@@ -62,6 +64,13 @@
 - `ALLOW_CPU=1` is REQUIRED on CUDA 13+ environments (cuDF dropped) — must be in all setup/deploy scripts
 - Constant features for 1w (hour_sin/cos, dow, etc.) must be gated via `SKIP_FEATURES_1W` in config.py
 - Every bug found during training gets a `check()` in validate.py BEFORE the fix is deployed
+
+## 4c. DATABASE-FIRST RESEARCH
+
+- The local KB/vector database is mandatory for every non-trivial bug, runtime issue, calibration issue, CUDA issue, cloud issue, or dependency issue.
+- The KB includes technical books and documents, not just esoteric material. Use it for trading algorithms, calibration, NVIDIA/CUDA guidance, sparse ML behavior, and deployment/runtime issues.
+- Repo docs alone do not satisfy this rule for non-trivial issues.
+- Perplexity is fallback only. If the KB returns weak results, log `KB_GAP`, then use Perplexity, then log `PERPLEXITY_SOURCE`.
 
 ## 5. AUDIT PIPELINE
 

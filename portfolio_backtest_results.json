@@ -1,0 +1,43 @@
+{
+  "balance": 326897669.97260475,
+  "initial": 10000,
+  "roi_pct": 3268876.6997260475,
+  "peak": 340129677.96223986,
+  "dd_pct": 3.8902832792803475,
+  "total_exposure": 0.0,
+  "net_direction": 0,
+  "active_positions": 0,
+  "total_trades": 20686,
+  "wins": 17227,
+  "losses": 3459,
+  "per_model": {
+    "4h": {
+      "equity": 10845.672228236494,
+      "dd_pct": 0.0,
+      "suspended": false,
+      "active": 0,
+      "trades": 324
+    },
+    "1h": {
+      "equity": 148839.97122238032,
+      "dd_pct": 0.0,
+      "suspended": false,
+      "active": 0,
+      "trades": 3109
+    },
+    "15m": {
+      "equity": 326747702.0023383,
+      "dd_pct": 3.8949059135936013,
+      "suspended": false,
+      "active": 0,
+      "trades": 17243
+    },
+    "5m": {
+      "equity": 20282.326815832934,
+      "dd_pct": 25.280066885451234,
+      "suspended": true,
+      "active": 0,
+      "trades": 10
+    }
+  }
+}

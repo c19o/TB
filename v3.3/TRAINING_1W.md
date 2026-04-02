@@ -310,15 +310,15 @@ early stopping at 50 rounds.
 
 ```bash
 cd "C:/Users/C/Documents/Savage22 Server/v3.3" && \
-python -u run_optuna_local.py --tf 1w
+python -u run_optuna_local.py --tf 1w --search-only
 ```
 
 **What Optuna searches:**
 - num_leaves: [4, 31] (v3.2's best was num_leaves=7)
 - min_data_in_leaf: [3, 15]
-- feature_fraction: [0.02, 0.3] (lower bound 0.02, not 0.01)
-- feature_fraction_bynode: [0.1, 1.0]
-- bagging_fraction: [0.5, 1.0]
+- feature_fraction: [0.7, 1.0]
+- feature_fraction_bynode: [0.7, 1.0]
+- bagging_fraction: [0.95, 1.0]
 - lambda_l1, lambda_l2: [0, 10]
 - min_gain_to_split: [0, 5]
 - path_smooth: [0, 10]
@@ -331,6 +331,7 @@ Downstream TFs (1d, 4h, etc.) will inherit 1w's best params as seeded trials.
 - **PatientPruner** wraps MedianPruner with patience=5 and min_delta=0.001 (5 stagnant reports = prune)
 - **Dataset.subset()** used for Optuna fold construction (1000x faster than `reference=` re-parsing)
 - **save_binary bridge:** Optuna saves `lgbm_dataset_1w.bin` via `save_binary()` which the final training step reuses (skips EFB rebuild)
+- **Launcher contract:** use `--search-only` when a separate production retrain step follows, so Optuna does not pay for a duplicate final fit
 - **40% accuracy floor:** Model is NOT saved if CPCV mean accuracy < 40% (prevents garbage models)
 
 ### Verify Step 4
@@ -481,8 +482,9 @@ for f in features_BTC_1w.parquet \
          v2_cross_names_BTC_1w.json \
          model_1w.json \
          optuna_configs_1w.json \
+         lgbm_dataset_1w.bin \
          meta_model_1w.pkl \
-         cpcv_oos_1w.pkl; do
+         cpcv_oos_predictions_1w.pkl; do
   if [ -f "$f" ]; then
     SIZE=$(ls -la "$f" | awk '{print $5}')
     echo "OK   $f ($SIZE bytes)"

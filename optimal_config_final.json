@@ -1,0 +1,132 @@
+{
+  "generated": "2026-03-17 20:58:41.368279",
+  "dataset": {
+    "rows": 2368,
+    "features": 472,
+    "target": "next_1d_direction"
+  },
+  "top30_features": [
+    "w_close_vs_ema10",
+    "w_stoch_k",
+    "return_1d",
+    "alts_avg_return",
+    "w_bb_pctb",
+    "close_vs_ema_100",
+    "upper_wick",
+    "gtrends_interest_roc",
+    "lunar_phase_cos",
+    "lunar_phase_sin",
+    "m_monthly_return",
+    "kurtosis_5d",
+    "w_rsi14",
+    "rsi_3d_momentum",
+    "volume_ratio_lag10",
+    "lower_wick",
+    "volume_x_atr",
+    "gann_sq9_distance",
+    "fractal_dimension",
+    "close_vs_sma_50",
+    "close_vs_sma_100",
+    "close_vs_sma_10",
+    "close_vs_pivot",
+    "volume_trend_10d",
+    "return_5d",
+    "volatility_10d",
+    "hurst_exponent",
+    "volume_ratio_lag1",
+    "rsi_7",
+    "skew_5d"
+  ],
+  "walk_forward_accuracy": {
+    "Train->2023, Test 2024": {
+      "XGBoost": 0.5738,
+      "LightGBM": 0.582,
+      "RandomForest": 0.5628,
+      "LASSO": 0.6421
+    },
+    "Train->2024, Test 2025": {
+      "XGBoost": 0.5918,
+      "LightGBM": 0.6192,
+      "RandomForest": 0.5973,
+      "LASSO": 0.5863
+    },
+    "Train->2025, Test 2026": {
+      "XGBoost": 0.5789,
+      "LightGBM": 0.5921,
+      "RandomForest": 0.5395,
+      "LASSO": 0.7105
+    }
+  },
+  "ga_params": {
+    "leverage": 7,
+    "risk_pct": 5,
+    "stop_atr": 1.5,
+    "rr": 2.5,
+    "trail_atr": 0.5,
+    "max_hold": 1,
+    "partial_tp": 0,
+    "conf_threshold": 0.8,
+    "features_on": 14
+  },
+  "ga_genome_raw": {
+    "leverage_idx": 4,
+    "risk_idx": 3,
+    "stop_idx": 4,
+    "rr_idx": 3,
+    "trail_idx": 0,
+    "max_hold_idx": 0,
+    "partial_idx": 0,
+    "conf_idx": 6,
+    "feature_mask": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      1,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      0,
+      0,
+      1,
+      1,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1
+    ]
+  },
+  "performance": {
+    "static": {
+      "roi": 9287.38,
+      "max_dd": 42.75,
+      "win_rate": 68.15,
+      "trades": 135,
+      "sharpe": 2.66,
+      "final_balance": 93873.75
+    },
+    "adaptive": {
+      "roi": 1208.39,
+      "max_dd": 37.8,
+      "win_rate": 68.15,
+      "trades": 135,
+      "sharpe": 2.98,
+      "final_balance": 13083.92
+    },
+    "buy_hold_roi": 69.31
+  }
+}

@@ -1,0 +1,27 @@
+## LiteLLM Proxy Config — Dual Claude Max Failover
+## Start: litellm --config litellm_config.yaml --port 4000
+
+model_list:
+  - model_name: anthropic-claude
+    litellm_params:
+      model: anthropic/claude-sonnet-4-20250514
+
+  - model_name: anthropic-claude-opus
+    litellm_params:
+      model: anthropic/claude-opus-4-20250514
+
+general_settings:
+  # CRITICAL: forwards OAuth token from Claude Max subscription
+  forward_client_headers_to_llm_api: true
+
+  # Retry on 429 (rate limit) — fail over to next key
+  num_retries: 3
+  retry_after: 5
+
+litellm_settings:
+  # Master key for proxy auth
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+  # Enable request logging
+  success_callback: ["log_to_file"]
+  log_file: "litellm_usage.log"

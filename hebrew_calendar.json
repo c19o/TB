@@ -1,0 +1,442 @@
+{
+  "generated": "2026-03-17",
+  "description": "Hebrew calendar key dates for crypto/numerology analysis",
+  "shmita": {
+    "description": "Shmita (Sabbatical Year) every 7 Hebrew years",
+    "recent_shmita_years": [
+      {
+        "hebrew_year": "5782",
+        "gregorian": "Sep 6 2021 (Rosh Hashanah 5782) to Sep 25 2022 (Erev Rosh Hashanah 5783)",
+        "significance": "7th year land sabbatical; debt release; financial reset themes in numerology"
+      },
+      {
+        "hebrew_year": "5789",
+        "gregorian": "Starts ~Sep 2028",
+        "significance": "Next Shmita year"
+      }
+    ],
+    "jubilee_note": "50-year Jubilee follows 7 Shmita cycles. Last notable jubilee ~1917 or 1967."
+  },
+  "holidays_by_year": {
+    "2019": {
+      "year_name": "5779-5780",
+      "rosh_hashanah": "2019-09-29",
+      "yom_kippur": "2019-10-08",
+      "sukkot_start": "2019-10-13",
+      "hanukkah_start": "2019-12-22",
+      "passover_start": "2020-04-08",
+      "shavuot": "2020-05-28",
+      "shmita": false
+    },
+    "2020": {
+      "year_name": "5780-5781",
+      "rosh_hashanah": "2020-09-18",
+      "yom_kippur": "2020-09-27",
+      "sukkot_start": "2020-10-02",
+      "hanukkah_start": "2020-12-10",
+      "passover_start": "2021-03-27",
+      "shavuot": "2021-05-16",
+      "shmita": false
+    },
+    "2021": {
+      "year_name": "5781-5782",
+      "rosh_hashanah": "2021-09-06",
+      "yom_kippur": "2021-09-15",
+      "sukkot_start": "2021-09-20",
+      "hanukkah_start": "2021-11-28",
+      "passover_start": "2022-04-15",
+      "shavuot": "2022-06-04",
+      "shmita": false,
+      "shmita_begins": "2021-09-06"
+    },
+    "2022": {
+      "year_name": "5782-5783",
+      "rosh_hashanah": "2022-09-25",
+      "yom_kippur": "2022-10-04",
+      "sukkot_start": "2022-10-09",
+      "hanukkah_start": "2022-12-18",
+      "passover_start": "2023-04-05",
+      "shavuot": "2023-05-25",
+      "shmita": true,
+      "shmita_year": "Tishrei 5782 - Elul 5782 (Sep 6 2021 - Sep 25 2022)"
+    },
+    "2023": {
+      "year_name": "5783-5784",
+      "rosh_hashanah": "2023-09-15",
+      "yom_kippur": "2023-09-24",
+      "sukkot_start": "2023-09-29",
+      "hanukkah_start": "2023-12-07",
+      "passover_start": "2024-04-22",
+      "shavuot": "2024-06-11",
+      "shmita": false
+    },
+    "2024": {
+      "year_name": "5784-5785",
+      "rosh_hashanah": "2024-10-02",
+      "yom_kippur": "2024-10-11",
+      "sukkot_start": "2024-10-16",
+      "hanukkah_start": "2024-12-25",
+      "passover_start": "2025-04-12",
+      "shavuot": "2025-06-01",
+      "shmita": false
+    },
+    "2025": {
+      "year_name": "5785-5786",
+      "rosh_hashanah": "2025-09-22",
+      "yom_kippur": "2025-10-01",
+      "sukkot_start": "2025-10-06",
+      "hanukkah_start": "2025-12-14",
+      "passover_start": "2026-04-01",
+      "shavuot": "2026-05-21",
+      "shmita": false
+    },
+    "2026": {
+      "year_name": "5786-5787",
+      "rosh_hashanah": "2026-09-11",
+      "yom_kippur": "2026-09-20",
+      "sukkot_start": "2026-09-25",
+      "hanukkah_start": "2026-12-04",
+      "passover_start": "2027-04-21",
+      "shavuot": "2027-06-10",
+      "shmita": false
+    }
+  },
+  "all_key_dates_sorted": [
+    {
+      "date": "2019-09-29",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2019,
+      "hebrew_year": "5779-5780",
+      "shmita_year": false
+    },
+    {
+      "date": "2019-10-08",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2019,
+      "hebrew_year": "5779-5780",
+      "shmita_year": false
+    },
+    {
+      "date": "2019-10-13",
+      "holiday": "Sukkot",
+      "gregorian_year": 2019,
+      "hebrew_year": "5779-5780",
+      "shmita_year": false
+    },
+    {
+      "date": "2019-12-22",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2019,
+      "hebrew_year": "5779-5780",
+      "shmita_year": false
+    },
+    {
+      "date": "2020-04-08",
+      "holiday": "Passover",
+      "gregorian_year": 2019,
+      "hebrew_year": "5779-5780",
+      "shmita_year": false
+    },
+    {
+      "date": "2020-05-28",
+      "holiday": "Shavuot",
+      "gregorian_year": 2019,
+      "hebrew_year": "5779-5780",
+      "shmita_year": false
+    },
+    {
+      "date": "2020-09-18",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2020,
+      "hebrew_year": "5780-5781",
+      "shmita_year": false
+    },
+    {
+      "date": "2020-09-27",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2020,
+      "hebrew_year": "5780-5781",
+      "shmita_year": false
+    },
+    {
+      "date": "2020-10-02",
+      "holiday": "Sukkot",
+      "gregorian_year": 2020,
+      "hebrew_year": "5780-5781",
+      "shmita_year": false
+    },
+    {
+      "date": "2020-12-10",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2020,
+      "hebrew_year": "5780-5781",
+      "shmita_year": false
+    },
+    {
+      "date": "2021-03-27",
+      "holiday": "Passover",
+      "gregorian_year": 2020,
+      "hebrew_year": "5780-5781",
+      "shmita_year": false
+    },
+    {
+      "date": "2021-05-16",
+      "holiday": "Shavuot",
+      "gregorian_year": 2020,
+      "hebrew_year": "5780-5781",
+      "shmita_year": false
+    },
+    {
+      "date": "2021-09-06",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2021,
+      "hebrew_year": "5781-5782",
+      "shmita_year": false
+    },
+    {
+      "date": "2021-09-15",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2021,
+      "hebrew_year": "5781-5782",
+      "shmita_year": false
+    },
+    {
+      "date": "2021-09-20",
+      "holiday": "Sukkot",
+      "gregorian_year": 2021,
+      "hebrew_year": "5781-5782",
+      "shmita_year": false
+    },
+    {
+      "date": "2021-11-28",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2021,
+      "hebrew_year": "5781-5782",
+      "shmita_year": false
+    },
+    {
+      "date": "2022-04-15",
+      "holiday": "Passover",
+      "gregorian_year": 2021,
+      "hebrew_year": "5781-5782",
+      "shmita_year": false
+    },
+    {
+      "date": "2022-06-04",
+      "holiday": "Shavuot",
+      "gregorian_year": 2021,
+      "hebrew_year": "5781-5782",
+      "shmita_year": false
+    },
+    {
+      "date": "2022-09-25",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2022,
+      "hebrew_year": "5782-5783",
+      "shmita_year": true
+    },
+    {
+      "date": "2022-10-04",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2022,
+      "hebrew_year": "5782-5783",
+      "shmita_year": true
+    },
+    {
+      "date": "2022-10-09",
+      "holiday": "Sukkot",
+      "gregorian_year": 2022,
+      "hebrew_year": "5782-5783",
+      "shmita_year": true
+    },
+    {
+      "date": "2022-12-18",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2022,
+      "hebrew_year": "5782-5783",
+      "shmita_year": true
+    },
+    {
+      "date": "2023-04-05",
+      "holiday": "Passover",
+      "gregorian_year": 2022,
+      "hebrew_year": "5782-5783",
+      "shmita_year": true
+    },
+    {
+      "date": "2023-05-25",
+      "holiday": "Shavuot",
+      "gregorian_year": 2022,
+      "hebrew_year": "5782-5783",
+      "shmita_year": true
+    },
+    {
+      "date": "2023-09-15",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2023,
+      "hebrew_year": "5783-5784",
+      "shmita_year": false
+    },
+    {
+      "date": "2023-09-24",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2023,
+      "hebrew_year": "5783-5784",
+      "shmita_year": false
+    },
+    {
+      "date": "2023-09-29",
+      "holiday": "Sukkot",
+      "gregorian_year": 2023,
+      "hebrew_year": "5783-5784",
+      "shmita_year": false
+    },
+    {
+      "date": "2023-12-07",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2023,
+      "hebrew_year": "5783-5784",
+      "shmita_year": false
+    },
+    {
+      "date": "2024-04-22",
+      "holiday": "Passover",
+      "gregorian_year": 2023,
+      "hebrew_year": "5783-5784",
+      "shmita_year": false
+    },
+    {
+      "date": "2024-06-11",
+      "holiday": "Shavuot",
+      "gregorian_year": 2023,
+      "hebrew_year": "5783-5784",
+      "shmita_year": false
+    },
+    {
+      "date": "2024-10-02",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2024,
+      "hebrew_year": "5784-5785",
+      "shmita_year": false
+    },
+    {
+      "date": "2024-10-11",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2024,
+      "hebrew_year": "5784-5785",
+      "shmita_year": false
+    },
+    {
+      "date": "2024-10-16",
+      "holiday": "Sukkot",
+      "gregorian_year": 2024,
+      "hebrew_year": "5784-5785",
+      "shmita_year": false
+    },
+    {
+      "date": "2024-12-25",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2024,
+      "hebrew_year": "5784-5785",
+      "shmita_year": false
+    },
+    {
+      "date": "2025-04-12",
+      "holiday": "Passover",
+      "gregorian_year": 2024,
+      "hebrew_year": "5784-5785",
+      "shmita_year": false
+    },
+    {
+      "date": "2025-06-01",
+      "holiday": "Shavuot",
+      "gregorian_year": 2024,
+      "hebrew_year": "5784-5785",
+      "shmita_year": false
+    },
+    {
+      "date": "2025-09-22",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2025,
+      "hebrew_year": "5785-5786",
+      "shmita_year": false
+    },
+    {
+      "date": "2025-10-01",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2025,
+      "hebrew_year": "5785-5786",
+      "shmita_year": false
+    },
+    {
+      "date": "2025-10-06",
+      "holiday": "Sukkot",
+      "gregorian_year": 2025,
+      "hebrew_year": "5785-5786",
+      "shmita_year": false
+    },
+    {
+      "date": "2025-12-14",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2025,
+      "hebrew_year": "5785-5786",
+      "shmita_year": false
+    },
+    {
+      "date": "2026-04-01",
+      "holiday": "Passover",
+      "gregorian_year": 2025,
+      "hebrew_year": "5785-5786",
+      "shmita_year": false
+    },
+    {
+      "date": "2026-05-21",
+      "holiday": "Shavuot",
+      "gregorian_year": 2025,
+      "hebrew_year": "5785-5786",
+      "shmita_year": false
+    },
+    {
+      "date": "2026-09-11",
+      "holiday": "Rosh Hashanah",
+      "gregorian_year": 2026,
+      "hebrew_year": "5786-5787",
+      "shmita_year": false
+    },
+    {
+      "date": "2026-09-20",
+      "holiday": "Yom Kippur",
+      "gregorian_year": 2026,
+      "hebrew_year": "5786-5787",
+      "shmita_year": false
+    },
+    {
+      "date": "2026-09-25",
+      "holiday": "Sukkot",
+      "gregorian_year": 2026,
+      "hebrew_year": "5786-5787",
+      "shmita_year": false
+    },
+    {
+      "date": "2026-12-04",
+      "holiday": "Hanukkah",
+      "gregorian_year": 2026,
+      "hebrew_year": "5786-5787",
+      "shmita_year": false
+    },
+    {
+      "date": "2027-04-21",
+      "holiday": "Passover",
+      "gregorian_year": 2026,
+      "hebrew_year": "5786-5787",
+      "shmita_year": false
+    },
+    {
+      "date": "2027-06-10",
+      "holiday": "Shavuot",
+      "gregorian_year": 2026,
+      "hebrew_year": "5786-5787",
+      "shmita_year": false
+    }
+  ]
+}

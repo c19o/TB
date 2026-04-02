@@ -8,7 +8,7 @@ INFRASTRUCTURE ONLY — does NOT import or modify any trading/ML code.
 
 Commands (via Discord DM):
     !status          — Full status of all training + agents
-    !agents          — List active Paperclip agents and their tasks
+    !agents          — List active local company agents and their tasks
     !logs [n]        — Last n events from discord_gate_log.json
     !approve [id]    — Approve a pending gate
     !deny [id]       — Deny a pending gate
@@ -59,7 +59,10 @@ GATEWAY_URL = None  # Fetched dynamically
 POLL_INTERVAL = 2.0  # seconds between message checks
 HEARTBEAT_INTERVAL = 60  # seconds between heartbeat status checks
 BOT_PREFIX = "!"
-CEO_WORKSPACE = Path.home() / "claude-ceo" / "workspace"
+CEO_WORKSPACE = Path(os.environ.get(
+    "SAVAGE22_CEO_WORKSPACE",
+    str(SCRIPT_DIR / ".ceo" / "workspace")
+))
 
 SCRIPT_DIR = Path(__file__).parent
 LOG_FILE = SCRIPT_DIR / "discord_gate_log.json"
@@ -95,11 +98,11 @@ class BotState:
         self.max_concurrent_agents: int = 5  # Max agents running simultaneously (1-20)
         self.active_machines: list = []
         self.training_status: dict = {
-            "1w": {"status": "COMPLETE", "accuracy": "57.5%", "binary": "79.3%"},
-            "1d": {"status": "BLOCKED", "blocker": "daemon RELOAD bug"},
-            "4h": {"status": "QUEUED", "blocker": "waiting on 1d"},
-            "1h": {"status": "QUEUED", "blocker": "waiting on 4h"},
-            "15m": {"status": "QUEUED", "blocker": "user picks machine"},
+            "1w": {"status": "UNKNOWN"},
+            "1d": {"status": "UNKNOWN"},
+            "4h": {"status": "UNKNOWN"},
+            "1h": {"status": "UNKNOWN"},
+            "15m": {"status": "UNKNOWN"},
         }
         self.agents: dict = {}  # agent_id -> {role, status, task, last_heartbeat}
         self._load()
@@ -119,6 +122,8 @@ class BotState:
                 logger.info("Loaded bot state from disk")
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"Failed to load state: {e}")
+        else:
+            logger.info(f"Using CEO workspace at {CEO_WORKSPACE}")
 
     def save(self):
         """Persist state to disk."""
@@ -378,7 +383,7 @@ def cmd_budget(state: BotState, args: str) -> dict:
 def cmd_machine(state: BotState, args: str) -> dict:
     """Show active machines."""
     if not state.active_machines:
-        return {"content": "No active machines. Sichuan (33876301) is PAUSED."}
+        return {"content": "No active machines tracked."}
 
     lines = ["**Active Machines**\n"]
     for m in state.active_machines:

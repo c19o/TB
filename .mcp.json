@@ -4,13 +4,13 @@
       "command": "npx",
       "args": ["-y", "socraticode"],
       "env": {
-        "EMBEDDING_PROVIDER": "google",
-        "QDRANT_MODE": "external",
-        "QDRANT_URL": "https://d6c35777-db30-4e90-b174-517fbb0de1af.us-east4-0.gcp.cloud.qdrant.io:6333",
-        "QDRANT_API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.2hOnSHNORd8xrEV9Cpq5qSVISRmTMXztNYhmzsHljq4",
         "SOCRATICODE_LOG_LEVEL": "warn",
-        "GOOGLE_API_KEY": "AIzaSyAzWOFoc9JLYcxO-CErlZaMNAITnfAltc8"
+        "MAX_FILE_SIZE_MB": "2"
       }
+    },
+    "perplexity-browser": {
+      "command": "node",
+      "args": ["C:\\Users\\C\\Perplexity-MCP-server\\index.mjs"]
     }
   }
 }

@@ -24,13 +24,13 @@ cd "C:/Users/C/Documents/Savage22 Server/v3.3"
 python ops_kb.py smart "cross supervisor return contract sav-4 sav-12" -n 5
 
 cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
-python kb.py smart "software contract mismatch caller callee return tuple audit" -n 10
-python kb.py smart "supervisor child process contract fallback telemetry mismatch" -n 10
-python kb.py smart "interface contract audit runtime fallback correctness" -n 10
+python kb.py smart "software contract mismatch caller callee return tuple audit" --limit 10
+python kb.py smart "supervisor child process contract fallback telemetry mismatch" --limit 10
+python kb.py smart "interface contract audit runtime fallback correctness" --limit 10
 ```
 
 If KB is weak:
-- use Perplexity with matrix-thesis context
+- use Perplexity with matrix-thesis context as fallback only, never the first research step
 - log `KB_GAP` then `PERPLEXITY_SOURCE`
 
 ## Rules

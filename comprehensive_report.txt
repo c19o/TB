@@ -1,0 +1,119 @@
+==================================================================================================================================
+  COMPREHENSIVE MULTI-TF TRADING SYSTEM PERFORMANCE REPORT
+  Generated: 2026-03-17 22:58:11
+==================================================================================================================================
+
+  STRATEGY OVERVIEW
+  ------------------------------------------------------------
+  Models:          4H (swing) + 1H (scalp) + 15m (micro-scalp)
+  ML:              XGBoost with SHAP pruning, HMM regime, Platt calibration
+  Optimization:    NSGA-II multi-objective GA (god_mode configs)
+  Risk:            2x scaled + regime-adaptive multipliers
+  Fees:            0.12% round-trip (Bitget taker 0.06% × 2)
+  Data:            21 systems: TA + 5 astrology + numerology + gematria + sacred geometry
+                   + tweets + news + macro + on-chain + funding + Google Trends + sports
+  Leakage:         VERIFIED CLEAN (shuffle=49.5%, own-TF=72.1%)
+
+  EXECUTION CONFIGS:
+      4H: 25x lev | 3.0% risk (×2=6.0%) | 1.9 ATR stop | 2.4:1 R:R | 4bar hold | conf>0.81
+      1H: 46x lev | 1.0% risk (×2=2.0%) | 0.7 ATR stop | 1.3:1 R:R | 3bar hold | conf>0.85
+     15M: 46x lev | 0.5% risk (×2=1.0%) | 0.5 ATR stop | 1.9:1 R:R | 7bar hold | conf>0.83
+  Regime scaling: Bull=1.0-1.25x | Bear=1.5-1.75x | Sideways=0.4x
+
+==================================================================================================================================
+  #   PERIOD                            REGIME            ROI   MAX DD     WR  TRADES     W     L |    4H ROI    1H ROI   15M ROI
+  ===============================================================================================================================
+  1   2019 Q4 Accumulation              sideways      +444.2%     2.8%  80.7%    306   247    59 |     +128%     +469%         —
+  2   2020 Q1 COVID Crash               bear         +1201.0%    10.5%  77.3%   1804  1395   409 |      +91%    +1521%    +1152%
+  3   2020 Q2-Q3 Recovery               bull         +1736.5%     4.0%  77.6%   3682  2857   825 |     +184%    +3086%    +1471%
+  4   2020 Q4 Bull Run Start            bull          +923.1%     3.6%  79.5%   1899  1510   389 |     +194%    +1322%     +854%
+  5   2021 Q1 Peak Mania                bull        +14625.5%    11.8%  79.4%   2050  1627   423 |    +2055%    +7887%   +16487%
+  6   2021 Q2-Q3 Summer Crash           bear        +93709.5%    11.3%  78.1%   3243  2532   711 |    +5952%  +214523%   +66162%
+  7   2021 Q4 ATH Run                   bull          +158.7%     3.2%  75.2%    836   629   207 |     +107%     +164%     +159%
+  8   2021 Q4-2022 Q2 Bear Start        bear       +200210.7%    12.6%  78.0%   4339  3385   954 |    +5196%  +431354%  +148775%
+  9   2022 Q3-Q4 Bear Winter            bear         +9905.7%     3.1%  70.1%   2963  2078   885 |    +1122%   +31864%    +4544%
+  10  2023 Q1-Q2 Recovery               bull          +747.2%     6.8%  76.3%   3277  2500   777 |     +501%    +1615%     +565%
+  11  2023 Q3-Q4 Grind                  sideways      +269.1%     5.5%  70.5%   3384  2387   997 |     +221%     +741%     +176%
+  12  2024 Q1-Q2 ETF Rally              bull         +1937.9%    11.1%  80.4%   3579  2879   700 |     +569%    +3605%    +1610%
+  13  2024 Q3-2025 Q1                   sideways    +40919.5%     7.4%  78.8%   5513  4343  1170 |    +1670%  +178327%   +10318%
+  14  2025 Q2-2026 Q1                   bull        +63670.8%     3.9%  78.3%   7068  5533  1535 |    +2211%  +209894%   +33869%
+  ===============================================================================================================================
+      AGGREGATE                                     +30747.1%    12.6%  77.1%  43943 33902 10041
+
+  AGGREGATE STATISTICS
+  ------------------------------------------------------------
+  Average ROI per period:          +30747.1%
+  Median ROI per period:            +1837.2%
+  Min ROI (worst period):            +158.7%
+  Max ROI (best period):          +200210.7%
+  Profitable periods:                 14/14 (100%)
+  Max drawdown (any period):          12.6%
+  Total trades:                      43,943
+  Overall win rate:                   77.1%
+  Wins / Losses:               33,902 / 10,041
+
+  PER-REGIME BREAKDOWN
+  --------------------------------------------------------------------------------
+  REGIME        PERIODS    AVG ROI    MED ROI   AVG WR   TRADES   PROFITABLE
+  BULL                7  +11971.4%   +1736.5%    78.1%  22,391        7/7
+  BEAR                4  +76256.7%  +51807.6%    75.9%  12,349        4/4
+  SIDEWAYS            3  +13877.6%    +444.2%    76.7%   9,203        3/3
+
+  PER-TIMEFRAME BREAKDOWN
+  --------------------------------------------------------------------------------
+  TF        AVG ROI    MED ROI   MAX DD   AVG WR   TRADES   PROFITABLE
+  4H       +1443.1%    +534.7%    11.8%    88.2%     820       14/14
+  1H      +77597.9%   +3345.6%    12.6%    87.3%   8,082       14/14
+  15M     +22010.9%   +1609.8%    10.5%    74.5%  35,041       13/13
+
+  TRADE ANALYSIS (all 43,943 trades)
+  --------------------------------------------------------------------------------
+  LONG trades:    22,045 (50.2%) | WR=79.2% | Avg PnL=$+3370.37
+  SHORT trades:   21,898 (49.8%) | WR=75.0% | Avg PnL=$+2967.01
+
+  BY EXIT REASON:
+      TP:  28,176 (64.1%) | WR=98.2% | Avg PnL=$+4019.45
+      SL:   6,303 (14.3%) | WR=0.0% | Avg PnL=$-2798.72
+    TIME:   9,464 (21.5%) | WR=65.9% | Avg PnL=$+4613.26
+
+  BY TRADE REGIME:
+  bull        :  23,550 (53.6%) | WR=78.5% | Avg PnL=$+1119.68 | Total=$+26,368,560
+  bear        :  13,220 (30.1%) | WR=72.9% | Avg PnL=$+8046.91 | Total=$+106,380,207
+  sideways    :   3,732 (8.5%) | WR=83.5% | Avg PnL=$+360.73 | Total=$+1,346,234
+  transition  :   3,234 (7.4%) | WR=77.6% | Avg PnL=$+1599.23 | Total=$+5,171,922
+  unknown     :     207 (0.5%) | WR=77.3% | Avg PnL=$+22.29 | Total=$+4,615
+
+  BY TIMEFRAME:
+    4H:     820 trades | WR=88.2% | Avg PnL=$+2463.78 | Avg hold=4.0 bars | Total=$+2,020,300
+    1H:   8,082 trades | WR=87.3% | Avg PnL=$+13441.85 | Avg hold=2.4 bars | Total=$+108,637,043
+   15M:  35,041 trades | WR=74.5% | Avg PnL=$+816.59 | Avg hold=3.4 bars | Total=$+28,614,196
+
+  RISK METRICS:
+  ------------------------------------------------------------
+  Avg winning trade:       $   +4,745.49
+  Avg losing trade:        $   -2,152.18
+  Win/Loss ratio:                  2.20x
+  Expectancy per trade:    $   +3,169.37
+  Profit factor:                   7.44
+  Max win streak:                    85
+  Max loss streak:                   29
+  Largest single win:      $+1,388,611.27
+  Largest single loss:     $-1,263,549.56
+
+  ML MODEL ACCURACY
+  ------------------------------------------------------------
+  TF      WF Accuracy     Pruned   Features Top SHAP Feature                   
+  4H            64.0%      64.4%         70 d_return, hmm_bull_prob            
+  1H            76.4%      74.7%         80 h4_return, hmm_bull_prob (#8)      
+  15M           83.2%      80.3%         50 h1_return, stoch_k, close_vs_sma_5 
+  5M            86.8%      82.6%         50 m15_return (timing layer only)     
+
+  LEAKAGE VERIFICATION: ALL 4 TESTS PASSED
+    Shuffle test:        49.5% (random — PASS)
+    Own-TF accuracy:     72.1% (real signal without higher-TF)
+    Majority baseline:   50.8% (XGBoost beats by +29.3pp)
+    Feature alignment:   Correct (forward-fill uses last closed bar)
+
+==================================================================================================================================
+  END OF REPORT — Time: [23s]
+==================================================================================================================================

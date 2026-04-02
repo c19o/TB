@@ -1,0 +1,2808 @@
+{
+  "generated": "2026-03-19 17:08:55",
+  "days_covered": 365,
+  "total_events": 350,
+  "dates_with_events": 241,
+  "events": [
+    {
+      "date": "2026-03-19",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-03-20",
+      "name": "Spring Equinox",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Equinox/solstice \u2014 regime shift signal (p~1e-14 in backtests)",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-03-22",
+      "name": "Mercury Retrograde Ends",
+      "category": "astrological",
+      "type": "bullish",
+      "description": "Mercury goes direct \u2014 retrograde ends, markets often rally on station direct",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-03-23",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-03-24",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-03-27",
+      "name": "Quarterly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-03-27",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-03-28",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 5)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-03-28",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-03-29",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 6)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-01",
+      "name": "Passover",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Passover \u2014 reduced institutional activity",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-04-02",
+      "name": "Passover",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Passover \u2014 reduced institutional activity",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-04-02",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-04-02",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-03",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-03",
+      "name": "Passover",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Passover \u2014 reduced institutional activity",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-04-03",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-04-03",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-06",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-07",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-10",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 18)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-11",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 19)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-04-12",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-13",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-14",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "4/15"
+    },
+    {
+      "date": "2026-04-15",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "4/15"
+    },
+    {
+      "date": "2026-04-15",
+      "name": "US Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Final tax deadline \u2014 peak selling pressure, often reversal point",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-16",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "4/15"
+    },
+    {
+      "date": "2026-04-16",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-17",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-04-17",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-18",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-04-22",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-23",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 11)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-23",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-24",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-24",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 12)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-26",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-27",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-04-29",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-01",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-01",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-05-02",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-05-02",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-03",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-06",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 4)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-06",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-07",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 5)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-07",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-05-12",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-13",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-16",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-05-16",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-17",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-05-17",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-19",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 17)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-20",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 18)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-22",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-23",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-26",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-27",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-29",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-05-31",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-06-01",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-06-01",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 10)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-01",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-02",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 11)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-02",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-05",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-05",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-06",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-11",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-06-12",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-14",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "6/15"
+    },
+    {
+      "date": "2026-06-14",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 3)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-15",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "6/15"
+    },
+    {
+      "date": "2026-06-15",
+      "name": "Summer Doldrums Begin",
+      "category": "seasonal",
+      "type": "volatility",
+      "description": "Low volume season starts (Jun 15 - Aug 31) \u2014 reduced liquidity, choppy markets",
+      "window": "Jun 15 - Aug 31"
+    },
+    {
+      "date": "2026-06-15",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-06-15",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 4)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-15",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-16",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "6/15"
+    },
+    {
+      "date": "2026-06-16",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-06-16",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-17",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-21",
+      "name": "Summer Solstice",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Equinox/solstice \u2014 regime shift signal (p~1e-14 in backtests)",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-06-21",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-22",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-25",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-26",
+      "name": "Quarterly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-26",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-27",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 16)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-28",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 17)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-06-30",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-07-01",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-07-01",
+      "name": "Mercury Retrograde Begins",
+      "category": "astrological",
+      "type": "bearish",
+      "description": "Mercury retrograde starts \u2014 ~3 weeks of communication/tech disruptions, historically bearish",
+      "window": "~21 days"
+    },
+    {
+      "date": "2026-07-01",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-02",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-03",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-05",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-06",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-10",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 9)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-11",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 10)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-11",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-07-12",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-14",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-07-15",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-07-15",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-16",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-21",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-22",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-23",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 2)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-24",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 3)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-25",
+      "name": "Mercury Retrograde Ends",
+      "category": "astrological",
+      "type": "bullish",
+      "description": "Mercury goes direct \u2014 retrograde ends, markets often rally on station direct",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-25",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-26",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-29",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-29",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-07-30",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-07-31",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-07-31",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-01",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-04",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-05",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 15)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-05",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-06",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 16)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-07",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-10",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-11",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-08-12",
+      "name": "Eclipse",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Solar/lunar eclipse \u2014 correlated with volatility spikes (\u00b17 day window)",
+      "window": "\u00b17 days"
+    },
+    {
+      "date": "2026-08-13",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-08-14",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-08-14",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-15",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-18",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 8)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-19",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 9)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-20",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-21",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-24",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-25",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-28",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-28",
+      "name": "Eclipse",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Solar/lunar eclipse \u2014 correlated with volatility spikes (\u00b17 day window)",
+      "window": "\u00b17 days"
+    },
+    {
+      "date": "2026-08-28",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-08-29",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-08-30",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-31",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 1)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-08-31",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-01",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 2)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-03",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-04",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-04",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-09",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-10",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-11",
+      "name": "Rosh Hashanah",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Jewish New Year \u2014 historically marks market turning points",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-11",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-09-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-09-12",
+      "name": "Rosh Hashanah",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Jewish New Year \u2014 historically marks market turning points",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-12",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-09-13",
+      "name": "Rosh Hashanah",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Jewish New Year \u2014 historically marks market turning points",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-13",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 14)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-13",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-14",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "9/15"
+    },
+    {
+      "date": "2026-09-14",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 15)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-14",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-15",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "9/15"
+    },
+    {
+      "date": "2026-09-16",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-16",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "9/15"
+    },
+    {
+      "date": "2026-09-19",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-20",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-21",
+      "name": "Yom Kippur",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Day of Atonement \u2014 low volume, institutional caution",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-22",
+      "name": "Yom Kippur",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Day of Atonement \u2014 low volume, institutional caution",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-22",
+      "name": "Autumn Equinox",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Equinox/solstice \u2014 regime shift signal (p~1e-14 in backtests)",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-23",
+      "name": "Yom Kippur",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Day of Atonement \u2014 low volume, institutional caution",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-23",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-24",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-25",
+      "name": "Quarterly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-26",
+      "name": "Sukkot",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Festival of Tabernacles \u2014 low institutional volume",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-26",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-09-26",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 7)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-27",
+      "name": "Sukkot",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Festival of Tabernacles \u2014 low institutional volume",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-27",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-09-27",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 8)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-28",
+      "name": "Sukkot",
+      "category": "hebrew",
+      "type": "volatility",
+      "description": "Festival of Tabernacles \u2014 low institutional volume",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-09-29",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-09-30",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-02",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-03",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-04",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-09",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 20)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-09",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-10",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 1)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-10",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-11",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-10-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-10-12",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-10-13",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-14",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-19",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-20",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-22",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 13)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-23",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 14)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-23",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-24",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-25",
+      "name": "Mercury Retrograde Begins",
+      "category": "astrological",
+      "type": "bearish",
+      "description": "Mercury retrograde starts \u2014 ~3 weeks of communication/tech disruptions, historically bearish",
+      "window": "~21 days"
+    },
+    {
+      "date": "2026-10-26",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-10-27",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-10-29",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-30",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-10-30",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-02",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-03",
+      "name": "US Midterm Elections",
+      "category": "political",
+      "type": "volatility",
+      "description": "Midterm elections \u2014 historically bullish after resolution of uncertainty",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-03",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-04",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-04",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 6)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-05",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 7)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-06",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-07",
+      "name": "Diwali",
+      "category": "cultural",
+      "type": "volatility",
+      "description": "Festival of Lights \u2014 Indian market sentiment event",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-11-08",
+      "name": "Diwali",
+      "category": "cultural",
+      "type": "volatility",
+      "description": "Festival of Lights \u2014 Indian market sentiment event",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-11-08",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-09",
+      "name": "Diwali",
+      "category": "cultural",
+      "type": "volatility",
+      "description": "Festival of Lights \u2014 Indian market sentiment event",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-11-09",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-11-09",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-10",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-11-12",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-13",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-15",
+      "name": "Mercury Retrograde Ends",
+      "category": "astrological",
+      "type": "bullish",
+      "description": "Mercury goes direct \u2014 retrograde ends, markets often rally on station direct",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-17",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 19)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-18",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 20)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-18",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-19",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-22",
+      "name": "Black Friday Week",
+      "category": "seasonal",
+      "type": "bullish",
+      "description": "Thanksgiving/Black Friday week \u2014 retail spending spike, risk-on sentiment",
+      "window": "Nov 22-30"
+    },
+    {
+      "date": "2026-11-22",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-23",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-24",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-11-25",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-11-27",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-28",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-29",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-11-30",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 12)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-01",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 13)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-02",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-03",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-04",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-08",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-09",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-12-09",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-10",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-12-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2026-12-12",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-13",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 5)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-13",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-14",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 6)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-15",
+      "name": "Tax Loss Harvesting Begins",
+      "category": "tax",
+      "type": "bearish",
+      "description": "End-of-year tax loss selling season opens (Dec 15-31)",
+      "window": "Dec 15-31"
+    },
+    {
+      "date": "2026-12-16",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-18",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-19",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-20",
+      "name": "Bonus Season / Year-End",
+      "category": "seasonal",
+      "type": "bullish",
+      "description": "Year-end bonuses + January allocation season (Dec 20 - Jan 15)",
+      "window": "Dec 20 - Jan 15"
+    },
+    {
+      "date": "2026-12-21",
+      "name": "Winter Solstice",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Equinox/solstice \u2014 regime shift signal (p~1e-14 in backtests)",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2026-12-22",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-23",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-24",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-12-25",
+      "name": "Quarterly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-25",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2026-12-26",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 18)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-27",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 19)",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-28",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2026-12-29",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-01",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-01",
+      "name": "January Effect",
+      "category": "seasonal",
+      "type": "bullish",
+      "description": "New year capital allocation \u2014 fresh money enters markets (Jan 1-15)",
+      "window": "Jan 1-15"
+    },
+    {
+      "date": "2027-01-01",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-02",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-03",
+      "name": "Bitcoin Birthday (Genesis Block)",
+      "category": "crypto",
+      "type": "bullish",
+      "description": "Anniversary of the Bitcoin genesis block \u2014 community sentiment event",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-07",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-01-07",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-08",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-01-08",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 11)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-08",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-09",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 12)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-11",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2027-01-12",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-14",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "1/15"
+    },
+    {
+      "date": "2027-01-15",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "1/15"
+    },
+    {
+      "date": "2027-01-16",
+      "name": "Quarterly Tax Deadline",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Estimated tax payment due \u2014 selling pressure as traders liquidate for taxes",
+      "window": "1/15"
+    },
+    {
+      "date": "2027-01-17",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-18",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-21",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 4)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-21",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-22",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-01-22",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 5)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-22",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-23",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-01-27",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-27",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-28",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-29",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-01-31",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-01",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-03",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 17)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-04",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 18)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-05",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-05",
+      "name": "Chinese New Year",
+      "category": "cultural",
+      "type": "volatility",
+      "description": "Chinese New Year \u2014 Asian market flows shift",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2027-02-06",
+      "name": "Chinese New Year",
+      "category": "cultural",
+      "type": "volatility",
+      "description": "Chinese New Year \u2014 Asian market flows shift",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2027-02-06",
+      "name": "Eclipse",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Solar/lunar eclipse \u2014 correlated with volatility spikes (\u00b17 day window)",
+      "window": "\u00b17 days"
+    },
+    {
+      "date": "2027-02-06",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-02-06",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-07",
+      "name": "Super Bowl",
+      "category": "seasonal",
+      "type": "volatility",
+      "description": "Super Bowl indicator \u2014 cultural event with anomalous market behavior",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-07",
+      "name": "Chinese New Year",
+      "category": "cultural",
+      "type": "volatility",
+      "description": "Chinese New Year \u2014 Asian market flows shift",
+      "window": "\u00b13 days"
+    },
+    {
+      "date": "2027-02-07",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-02-07",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-08",
+      "name": "Ramadan Begins",
+      "category": "cultural",
+      "type": "volatility",
+      "description": "Ramadan month starts \u2014 altered trading patterns in Islamic markets",
+      "window": "~30 days"
+    },
+    {
+      "date": "2027-02-10",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-11",
+      "name": "Mercury Retrograde Begins",
+      "category": "astrological",
+      "type": "bearish",
+      "description": "Mercury retrograde starts \u2014 ~3 weeks of communication/tech disruptions, historically bearish",
+      "window": "~21 days"
+    },
+    {
+      "date": "2027-02-11",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2027-02-16",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 10)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-16",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-17",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 11)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-17",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-20",
+      "name": "Eclipse",
+      "category": "astronomical",
+      "type": "volatility",
+      "description": "Solar/lunar eclipse \u2014 correlated with volatility spikes (\u00b17 day window)",
+      "window": "\u00b17 days"
+    },
+    {
+      "date": "2027-02-20",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-21",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-02-21",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-22",
+      "name": "Full Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "Full moon \u2014 correlated with heightened volatility and emotional trading",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-02-26",
+      "name": "Monthly Options Expiry",
+      "category": "crypto",
+      "type": "volatility",
+      "description": "BTC/ETH options expire \u2014 max pain convergence, high volatility expected",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-26",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-02-27",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-01",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 3)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-02",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 4)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-02",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-03",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-05",
+      "name": "NFP (Non-Farm Payroll)",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Jobs report \u2014 first Friday of month, typically 8:30am ET",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-05",
+      "name": "Mercury Retrograde Ends",
+      "category": "astrological",
+      "type": "bullish",
+      "description": "Mercury goes direct \u2014 retrograde ends, markets often rally on station direct",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-08",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-03-08",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-09",
+      "name": "New Moon",
+      "category": "lunar",
+      "type": "volatility",
+      "description": "New moon \u2014 historically low volume, potential reversal point",
+      "window": "\u00b11 day"
+    },
+    {
+      "date": "2027-03-09",
+      "name": "BaZi BTC-Friendly (Fire-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-12",
+      "name": "CPI Release Window",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Consumer Price Index release window \u2014 inflation data moves markets",
+      "window": "10th-15th of month"
+    },
+    {
+      "date": "2027-03-12",
+      "name": "BaZi BTC-Friendly (Metal+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-13",
+      "name": "BaZi BTC-Friendly (Metal-)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Metal- \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-14",
+      "name": "Mayan Tone 13 (Completion)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 13 \u2014 completion/transcendence energy (sign 16)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-15",
+      "name": "US Tax Window Opens",
+      "category": "tax",
+      "type": "bearish",
+      "description": "Start of tax selling season \u2014 selling pressure through April 20",
+      "window": "Mar 15 - Apr 20"
+    },
+    {
+      "date": "2027-03-15",
+      "name": "Mayan Tone 1 (New Cycle)",
+      "category": "esoteric",
+      "type": "volatility",
+      "description": "Tzolkin tone 1 \u2014 beginning of new 13-day wavespell (sign 17)",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-17",
+      "name": "FOMC Meeting",
+      "category": "economic",
+      "type": "volatility",
+      "description": "Federal Reserve interest rate decision \u2014 historically high volatility",
+      "window": "exact day"
+    },
+    {
+      "date": "2027-03-18",
+      "name": "BaZi BTC-Friendly (Fire+)",
+      "category": "esoteric",
+      "type": "bullish",
+      "description": "BaZi day element Fire+ \u2014 Fire/Metal days historically favorable for BTC",
+      "window": "exact day"
+    }
+  ]
+}

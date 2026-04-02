@@ -13,7 +13,7 @@ Runs continuously. Every 15 minutes:
 Usage: python live_trader.py [--mode paper|live]
 """
 
-import sys, os, io, time, json, warnings, argparse, traceback
+import sys, os, io, time, json, warnings, argparse, traceback, signal, threading
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 warnings.filterwarnings('ignore')
@@ -78,6 +78,7 @@ live_dal.initial_load()
 
 # ── Kill Switch ──
 KILL_SWITCH_FILE = os.path.join(PROJECT_DIR, 'KILL_SWITCH')
+_TRADING_STOP_EVENT = threading.Event()
 
 def check_kill_switch():
     """Check if kill switch file exists. Create this file to immediately halt all trading.
@@ -85,6 +86,22 @@ def check_kill_switch():
     Remove the file to resume: rm KILL_SWITCH
     """
     return os.path.exists(KILL_SWITCH_FILE)
+
+def _handle_shutdown_signal(signum, _frame):
+    _TRADING_STOP_EVENT.set()
+    try:
+        signame = signal.Signals(signum).name
+    except Exception:
+        signame = str(signum)
+    print(f"\n  Shutdown signal received ({signame}) â€” stopping after current step...")
+
+def _sleep_or_stop(seconds):
+    deadline = time.time() + max(0, seconds)
+    while time.time() < deadline:
+        if _TRADING_STOP_EVENT.is_set():
+            return True
+        time.sleep(min(1.0, max(0.0, deadline - time.time())))
+    return _TRADING_STOP_EVENT.is_set()
 
 # ── Circuit Breaker State ──
 _order_timestamps = []  # recent order times for rate limiting
@@ -202,8 +219,7 @@ def compute_features_live(tf_name, feat_names):
             try:
                 from gcp_feature_builder import build_gcp_features
                 gcp_feats = build_gcp_features(df_features)
-                for col in gcp_feats.columns:
-                    df_features[col] = gcp_feats[col]
+                df_features = pd.concat([df_features, gcp_feats], axis=1)
 
                 # GCP x trend crosses
                 # NaN-preserving crosses: NaN * anything = NaN (correct missing semantics)
@@ -241,12 +257,16 @@ def compute_features_live(tf_name, feat_names):
                 # GCP columns stay NaN — model handles missing natively
 
         last_row = df_features.iloc[-1]
-        result = {}
-        for fn in feat_names:
-            val = last_row.get(fn, np.nan)
+
+        def _clean_live_value(val):
             if isinstance(val, (int, float)) and np.isinf(val):
-                val = np.nan
-            result[fn] = val
+                return np.nan
+            return val
+
+        result = {
+            fn: _clean_live_value(last_row.get(fn, np.nan))
+            for fn in feat_names
+        }
         return result, df_features
     except Exception as e:
         # PHILOSOPHY: crash > silent degradation. Log full traceback and RE-RAISE.
@@ -1006,17 +1026,22 @@ def run_trading_loop(mode='paper'):
             now = datetime.now(timezone.utc)
 
             # ── Kill Switch Check (top of every loop iteration) ──
+            if _TRADING_STOP_EVENT.is_set():
+                print("\n  Stop requested — shutting down trading loop.")
+                break
             if check_kill_switch():
                 print(f"\n  *** KILL SWITCH ACTIVE *** — File: {KILL_SWITCH_FILE}")
                 print(f"  All trading halted. Remove the file to resume.")
-                time.sleep(10)
+                if _sleep_or_stop(10):
+                    break
                 continue
 
             # Wait for 15m bar close (at :00, :15, :30, :45 + 5 second buffer)
             minutes = now.minute
             seconds_to_next = ((15 - minutes % 15) * 60 - now.second + 5) % (15 * 60)
             if seconds_to_next > 10:
-                time.sleep(min(seconds_to_next, 30))
+                if _sleep_or_stop(min(seconds_to_next, 30)):
+                    break
                 continue
 
             # Update portfolio-level DD
@@ -1233,7 +1258,7 @@ def run_trading_loop(mode='paper'):
                 # lleaves requires dense numpy; lgb.Booster accepts sparse directly.
                 # Single-row .toarray() is cheap (~1ms even for 6M features).
                 if tf in _lleaves_tfs:
-                    raw_pred = models[tf].predict(X.toarray())
+                    raw_pred = models[tf].predict(X.toarray())  # noqa: convention - reviewed single-row lleaves input
                 else:
                     raw_pred = models[tf].predict(X)
                 if raw_pred.ndim == 2:
@@ -1802,7 +1827,8 @@ def run_trading_loop(mode='paper'):
                 except Exception as e:
                     print(f"  [journal] monitor error: {e}")
 
-            time.sleep(5)
+            if _sleep_or_stop(5):
+                break
 
         except KeyboardInterrupt:
             print("\n  Shutting down...")
@@ -1810,9 +1836,15 @@ def run_trading_loop(mode='paper'):
         except Exception as e:
             print(f"  ERROR: {e}")
             traceback.print_exc()
-            time.sleep(30)
+            if _sleep_or_stop(30):
+                break
 
 if __name__ == '__main__':
+    try:
+        signal.signal(signal.SIGINT, _handle_shutdown_signal)
+        signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    except Exception:
+        pass
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', default='paper', choices=['paper', 'live'])
     args = parser.parse_args()

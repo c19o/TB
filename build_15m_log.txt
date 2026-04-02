@@ -1,0 +1,56 @@
+2026-03-19 19:58:53 [INFO] llm_features: LLM features: 37399 bars have text (out of 217446 total bars)
+2026-03-19 19:58:54 [INFO] llm_features: Batch sentiment: all 37399 texts cached
+======================================================================
+BUILD 15m FEATURE MATRIX (unified pipeline)
+======================================================================
+
+[0s] Loading 15m BTC/USDT candles...
+  15m candles: 217446 (2020-01-01 00:00:00+00:00 to 2026-03-16 21:00:00+00:00)
+[1s] Loading higher TF candles...
+  1H: 56753 candles
+  4H: 14194 candles
+  1D: 2368 candles
+  1W: 339 candles
+[1s] Loading auxiliary data...
+  Ephemeris: 6285
+  Astrology: 6285
+  Fear/Greed: 2963
+  News: 56051
+  Tweets: 10866
+  Macro: 1816
+  On-chain: 4481
+  Google Trends: 377
+  Funding: 2270
+[2s] Loading sports data...
+  Games: 7053, Horse races: 27
+[2s] Loading space weather data...
+  kp_history.txt: 34411 days loaded
+  space_weather.db: 1 live rows merged
+  Combined space weather: 34412 days (1932-01-01 00:00:00+00:00 to 2026-03-19 00:00:00+00:00)
+
+[3s] All data loaded.
+
+======================================================================
+Computing 15m features via feature_library.build_all_features()...
+======================================================================
+[KNN] CuPy GPU detected — GPU-accelerated KNN
+[3s] Calling build_all_features(tf_name='15m', mode='backfill')...
+  OHLCV: 217446 rows
+  Space weather: 34412 rows
+    KNN [15m]: 217365/217365 bars (100.0%) | 3288 bars/s | ETA: 0.0min
+    KNN [15m] DONE: 217365 valid features in 66.1s (GPU)
+
+[394s] Feature computation complete.
+  Result shape: (217446, 1127)
+
+[394s] Saving to features_15m.db...
+
+======================================================================
+15m FEATURE MATRIX COMPLETE
+======================================================================
+  Total samples:  217446
+  Total features: 1116
+  Target cols:    ['next_15m_return', 'next_15m_direction', 'next_4bar_return', 'next_16bar_return', 'next_96bar_return']
+  Date range:     2020-01-01 00:00:00 to 2026-03-16 21:00:00
+  Output: C:\Users\C\Documents\Savage22 Server/features_15m.db
+  Time: [437s]

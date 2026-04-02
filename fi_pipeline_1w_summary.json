@@ -1,0 +1,44 @@
+{
+  "tf": "1w",
+  "n_total_features": 1448,
+  "n_folds": 4,
+  "timings": {
+    "stage1_gain": 0.0009999275207519531,
+    "stage2_stability": 0.005505800247192383,
+    "stage3_sign": 0.11363887786865234,
+    "stage4_composite": 0.009099960327148438,
+    "stage10_diagnostics": 0.000997781753540039
+  },
+  "n_nonzero_per_fold": [
+    "83",
+    "81",
+    "85",
+    "71"
+  ],
+  "n_nonzero_any_fold": 93,
+  "stability_N": 500,
+  "n_candidates": 93,
+  "n_stable_75pct": 82,
+  "n_pass_all_filters": 47,
+  "overfitting_diagnostics": {
+    "entropy": {
+      "H": 4.2699,
+      "H_normalized": 0.9421,
+      "gini_concentration": 0.3883,
+      "effective_features": 71.5,
+      "interpretation": "NEAR-UNIFORM (possible noise fitting)"
+    },
+    "jaccard": {
+      "mean_jaccard": 0.8006,
+      "pairwise_values": [
+        0.8427,
+        0.8667,
+        0.75,
+        0.8444,
+        0.7471,
+        0.7528
+      ],
+      "interpretation": "STABLE (genuine signal)"
+    }
+  }
+}

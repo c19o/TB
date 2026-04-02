@@ -1,0 +1,234 @@
+{
+  "a2_planetary_day_r_vedic_key_naksh": [
+    "planetary_day_resonance",
+    "vedic_key_nakshatra"
+  ],
+  "a2_planetary_day_r_bazi_btc_friend": [
+    "planetary_day_resonance",
+    "bazi_btc_friendly"
+  ],
+  "a2_planetary_day_r_planetary_hour_": [
+    "planetary_day_resonance",
+    "planetary_hour_at_midpoint"
+  ],
+  "a2_planetary_day_r_tweet_astro_is_": [
+    "planetary_day_resonance",
+    "tweet_astro_is_new_moon"
+  ],
+  "a2_planetary_day_r_tweet_astro_nak": [
+    "planetary_day_resonance",
+    "tweet_astro_nakshatra_LOW"
+  ],
+  "a2_planetary_day_r_tweet_astro_key": [
+    "planetary_day_resonance",
+    "tweet_astro_key_nakshatra"
+  ],
+  "a2_planetary_day_r_game_astro_naks": [
+    "planetary_day_resonance",
+    "game_astro_nakshatra_nature"
+  ],
+  "a2_planetary_day_r_eclipse_window": [
+    "planetary_day_resonance",
+    "eclipse_window"
+  ],
+  "a2_planetary_day_r_equinox_pre_pos": [
+    "planetary_day_resonance",
+    "equinox_pre_post"
+  ],
+  "a2_planetary_day_r_prime_x_mercury": [
+    "planetary_day_resonance",
+    "prime_x_mercury_retro"
+  ],
+  "a2_planetary_day_r_tithi_auspiciou": [
+    "planetary_day_resonance",
+    "tithi_auspicious"
+  ],
+  "a2_planetary_day_r_planetary_day_d": [
+    "planetary_day_resonance",
+    "planetary_day_dr_combo_LOW"
+  ],
+  "a2_planetary_day_r_vedic_nakshatra": [
+    "planetary_day_resonance",
+    "vedic_nakshatra_LOW"
+  ],
+  "a2_planetary_day_r_vedic_tithi_HIG": [
+    "planetary_day_resonance",
+    "vedic_tithi_HIGH"
+  ],
+  "a2_planetary_day_r_vedic_tithi_LOW": [
+    "planetary_day_resonance",
+    "vedic_tithi_LOW"
+  ],
+  "a2_planetary_day_r_vedic_karana_EX": [
+    "planetary_day_resonance",
+    "vedic_karana_EXTREME_HIGH"
+  ],
+  "a2_planetary_day_r_vedic_karana_HI": [
+    "planetary_day_resonance",
+    "vedic_karana_HIGH"
+  ],
+  "a2_planetary_day_r_vedic_karana_LO": [
+    "planetary_day_resonance",
+    "vedic_karana_LOW"
+  ],
+  "a2_planetary_day_r_bazi_day_stem_H": [
+    "planetary_day_resonance",
+    "bazi_day_stem_HIGH"
+  ],
+  "a2_planetary_day_r_bazi_day_stem_L": [
+    "planetary_day_resonance",
+    "bazi_day_stem_LOW"
+  ],
+  "a2_planetary_day_r_bazi_day_branch": [
+    "planetary_day_resonance",
+    "bazi_day_branch_LOW"
+  ],
+  "a2_planetary_day_r_bazi_day_clash_": [
+    "planetary_day_resonance",
+    "bazi_day_clash_branch_LOW"
+  ],
+  "a2_planetary_day_r_bazi_day_elemen": [
+    "planetary_day_resonance",
+    "bazi_day_element_idx_LOW"
+  ],
+  "a2_planetary_day_r_mercury_retro_d": [
+    "planetary_day_resonance",
+    "mercury_retro_days_into_HIGH"
+  ],
+  "a2_planetary_day_r_tweet_astro_moo": [
+    "planetary_day_resonance",
+    "tweet_astro_moon_phase_day_LOW"
+  ],
+  "a2_planetary_day_r_tweet_astro_baz": [
+    "planetary_day_resonance",
+    "tweet_astro_bazi_element_HIGH"
+  ],
+  "a2_planetary_day_r_tweet_astro_tzo": [
+    "planetary_day_resonance",
+    "tweet_astro_tzolkin_sign_idx_LOW"
+  ],
+  "a2_planetary_day_r_tweet_astro_pla": [
+    "planetary_day_resonance",
+    "tweet_astro_planetary_hour_idx_LOW"
+  ],
+  "ta2_above_sma200_rsi_14_ob": [
+    "above_sma200",
+    "rsi_14_ob"
+  ],
+  "ta2_above_sma200_rsi_14_os": [
+    "above_sma200",
+    "rsi_14_os"
+  ],
+  "ta2_above_sma200_sar_flip": [
+    "above_sma200",
+    "sar_flip"
+  ],
+  "ta2_above_sma200_supertrend_bull": [
+    "above_sma200",
+    "supertrend_bullish"
+  ],
+  "ta2_above_sma200_shooting_star": [
+    "above_sma200",
+    "shooting_star"
+  ],
+  "ta2_above_sma200_wyckoff_phase": [
+    "above_sma200",
+    "wyckoff_phase"
+  ],
+  "ta2_above_sma200_wyckoff_volume_": [
+    "above_sma200",
+    "wyckoff_volume_trend"
+  ],
+  "ta2_above_sma200_avwap_position": [
+    "above_sma200",
+    "avwap_position"
+  ],
+  "ta2_above_sma200_near_fib_13": [
+    "above_sma200",
+    "near_fib_13"
+  ],
+  "ta2_above_sma200_near_fib_ret_23": [
+    "above_sma200",
+    "near_fib_ret_236"
+  ],
+  "ta2_above_sma200_near_fib_ret_38": [
+    "above_sma200",
+    "near_fib_ret_382"
+  ],
+  "ta2_above_sma200_near_fib_ret_50": [
+    "above_sma200",
+    "near_fib_ret_500"
+  ],
+  "ta2_above_sma200_near_fib_ret_61": [
+    "above_sma200",
+    "near_fib_ret_618"
+  ],
+  "ta2_above_sma200_fib_confluence_": [
+    "above_sma200",
+    "fib_confluence_count"
+  ],
+  "ta2_above_sma200_ema_cross_21_50": [
+    "above_sma200",
+    "ema_cross_21_50"
+  ],
+  "ta2_above_sma200_is_quarter_end": [
+    "above_sma200",
+    "is_quarter_end"
+  ],
+  "ta2_above_sma200_price_is_master": [
+    "above_sma200",
+    "price_is_master"
+  ],
+  "ta2_above_sma200_vortex_369": [
+    "above_sma200",
+    "vortex_369"
+  ],
+  "ta2_above_sma200_shemitah_year": [
+    "above_sma200",
+    "shemitah_year"
+  ],
+  "ta2_above_sma200_is_day_5": [
+    "above_sma200",
+    "is_day_5"
+  ],
+  "ta2_above_sma200_is_day_7": [
+    "above_sma200",
+    "is_day_7"
+  ],
+  "ta2_above_sma200_is_day_11": [
+    "above_sma200",
+    "is_day_11"
+  ],
+  "ta2_above_sma200_is_day_12": [
+    "above_sma200",
+    "is_day_12"
+  ],
+  "ta2_above_sma200_is_day_15": [
+    "above_sma200",
+    "is_day_15"
+  ],
+  "ta2_above_sma200_is_day_17": [
+    "above_sma200",
+    "is_day_17"
+  ],
+  "ta2_above_sma200_is_day_20": [
+    "above_sma200",
+    "is_day_20"
+  ],
+  "ta2_above_sma200_is_day_28": [
+    "above_sma200",
+    "is_day_28"
+  ],
+  "ta2_above_sma200_is_fibonacci_da": [
+    "above_sma200",
+    "is_fibonacci_day"
+  ],
+  "ta2_above_sma200_is_sequential_d": [
+    "above_sma200",
+    "is_sequential_date"
+  ],
+  "ta2_above_sma200_base_tension": [
+    "above_sma200",
+    "base_tension"
+  ]
+}

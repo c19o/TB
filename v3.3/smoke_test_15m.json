@@ -1,0 +1,62 @@
+{
+  "tf": "15m",
+  "steps": {
+    "load_data": {
+      "status": "PASS",
+      "rows": 1000
+    },
+    "feature_build": {
+      "status": "PASS",
+      "n_features": 736,
+      "time": 11.6,
+      "source": "computed",
+      "ta": 221,
+      "frac": 6,
+      "time_feats": 37,
+      "numerology": 472
+    },
+    "gpu_engines": {
+      "status": "PASS",
+      "time": 0.01
+    },
+    "labels": {
+      "status": "PASS",
+      "n_valid": 986,
+      "n_long": 720,
+      "n_flat": 15,
+      "n_short": 251
+    },
+    "cpcv": {
+      "status": "PASS",
+      "n_paths": 3,
+      "uniqueness_min": 0.04,
+      "uniqueness_max": 0.153
+    },
+    "lgbm_train": {
+      "status": "PASS",
+      "accuracy": 0.988,
+      "n_trees": 50,
+      "time": 1.4,
+      "n_features": 736
+    },
+    "pbo_dsr": {
+      "status": "PASS",
+      "pbo": NaN,
+      "dsr_p_value": 1.0
+    },
+    "meta_labeling": {
+      "status": "PASS",
+      "auc": 0.941
+    },
+    "kelly": {
+      "status": "PASS",
+      "kelly_f": 0.475
+    },
+    "lstm_blend": {
+      "status": "PASS"
+    }
+  },
+  "errors": [],
+  "passed": true,
+  "total_time": 21.7
+}

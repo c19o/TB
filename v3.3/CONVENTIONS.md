@@ -55,19 +55,18 @@ Injected into every agent session. These are non-negotiable.
 
 - The user is the company owner, not the runtime manager. Keep them out of the loop unless escalation is required.
 - Escalate to the owner BEFORE any production change that can materially affect training speed, throughput, or runtime behavior.
+- Owner override in effect as of 2026-04-01: speed-positive changes are pre-approved if they preserve Matrix Thesis, rare-signal retention, OOS accuracy, and calibration. Do not re-ask for approval on speed work that stays inside those bounds.
 - Examples that REQUIRE owner approval before production use:
-  - RIGHT_CHUNK / batch sizing / fold parallelism / num_threads changes
   - dense vs sparse execution-path changes
   - GPU vs CPU execution-path changes
-  - daemon / supervisor scheduling or retry behavior changes
-  - histogram pool / memory pool / cache / checkpoint / I/O-path changes
   - machine-selection changes that alter speed, throughput, or cost profile
 - Also escalate for:
   - renting or destroying cloud machines
   - Matrix Thesis / protected-feature policy changes
   - rollback decisions after a bad run
 - If a change is intended to increase speed, the burden of proof is: faster WITHOUT loss of OOS accuracy, calibration, or rare-signal retention.
-- If owner approval has not been given, limit work to auditing, instrumentation, verification, documentation, and issue escalation.
+- RIGHT_CHUNK / batch sizing / fold parallelism / num_threads / daemon scheduling / cache / checkpoint / I/O-path changes are authorized under the owner override above unless they introduce a credible matrix, calibration, or cost-risk exception.
+- Under the 2026-04-01 owner override, implement the change directly if the evidence says it improves speed and does not weaken matrix richness, calibration, or OOS behavior. Escalate only if those protections are uncertain.
 
 ## LOGGING FORMAT
 
@@ -75,14 +74,23 @@ Injected into every agent session. These are non-negotiable.
 - All Discord notifications: emoji prefix + TF + step + key metric
 - All training logs: tee to disk + unbuffered output
 
+## CODEX RULEBOOK
+
+- `CODEX.md` is the Codex-specific operating rulebook for this repo.
+- `CONVENTIONS.md` remains the shared enforcement contract.
+- If a Codex behavior question comes up, read `CODEX.md` and follow the stricter rule.
+
 ## MANDATORY KB RESEARCH — NON-NEGOTIABLE
-Any non-trivial code task MUST query the Knowledge Base BEFORE writing code.
-There are no exceptions for ML, CUDA, training, feature engineering, deployment/runtime, GPU memory work, or cross-generation work. Those are exactly the kinds of tasks the KB is for.
+Any non-trivial technical task MUST query the Knowledge Base BEFORE planning or writing code.
+This includes bug diagnosis, runtime failures, dependency issues, calibration issues, sklearn compatibility issues, ML, CUDA, training, feature engineering, deployment/runtime, GPU memory work, and cross-generation work.
 Only truly simple tasks are exempt, such as typo fixes, pure formatting, path corrections, or documentation wording that does not change technical meaning.
 
-ML / CUDA / training / feature / deployment-runtime / daemon examples are NEVER "simple tasks" for the purpose of this rule.
+ML / CUDA / training / feature / deployment-runtime / daemon / calibration / compatibility examples are NEVER "simple tasks" for the purpose of this rule.
 
-At minimum, any code touching training, features, CUDA, GPU memory, cloud runtime, daemons, supervisors, validation gates, or model deployment MUST query the Knowledge Base first:
+Repo docs and code inspection are REQUIRED, but they do NOT replace KB/database research for non-trivial issues.
+If the vector database has books or technical docs on the issue, those MUST be consulted before Perplexity.
+
+At minimum, any issue touching training, features, calibration, CUDA, GPU memory, cloud runtime, daemons, supervisors, validation gates, dependencies, or model deployment MUST query the Knowledge Base first:
 ```bash
 cd "C:/Users/C/Desktop/MY GOOGLE DRIVE/Orgonite master"
 python kb.py smart "<what you're implementing>" --limit 10
@@ -105,6 +113,7 @@ python ops_kb.py add "KB_SOURCE: Task=[SAV-29 or file path]. Sources=[book/doc n
 Files that REQUIRE KB research before ANY edit:
 - feature_library.py (features/signals)
 - ml_multi_tf.py (training pipeline)
+- live_trader.py (inference/runtime decisions)
 - config.py (parameters)
 - v2_cross_generator.py (cross features)
 - cloud_run_tf.py (deployment)
@@ -112,6 +121,7 @@ Files that REQUIRE KB research before ANY edit:
 - cross_supervisor.py (daemon/supervisor runtime)
 - run_optuna_local.py (Optuna/training runtime)
 - validate.py (release gates)
+- test_pipeline_plumbing.py (deployment/runtime contract)
 - deploy_manifest.json / deploy_manifest.py (deployment runtime contract)
 
 If you edit these files without KB queries, your work will be REJECTED and REVERTED.
@@ -123,7 +133,7 @@ If KB returns <3 relevant results across your 3 queries, you MUST:
    ```bash
    python ops_kb.py add "KB_GAP: Task=[SAV-29 or file path]. Queried [your 3 queries]. <3 relevant results. Topic needed: [what's missing]. Suggested text: [paper/book if known]" --topic kb_gap
    ```
-2. THEN use Perplexity (with matrix thesis context as always)
+2. THEN use Perplexity (with matrix thesis context as always). Never use Perplexity first for a non-trivial issue.
 3. After Perplexity returns, log its sources to ops_kb:
    ```bash
    python ops_kb.py add "PERPLEXITY_SOURCE: Task=[SAV-29 or file path]. Query=[what you asked]. Sources=[list URLs/paper names Perplexity cited]. Key finding=[one-line summary]. Confidence=[high/medium/low based on source quality]" --topic perplexity_source

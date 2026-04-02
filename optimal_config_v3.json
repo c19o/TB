@@ -1,0 +1,272 @@
+{
+  "generated": "2026-03-17T19:43:04.176437",
+  "version": "v3_complete",
+  "total_features": 297,
+  "dataset_rows": 2167,
+  "date_range": "2020-04-10 to 2026-03-16",
+  "walk_forward_windows": [
+    {
+      "window": "W1: Train 2020-2023, Test 2024",
+      "test_size": 366,
+      "accuracies": {
+        "xgboost": 52.18579234972678,
+        "lightgbm": 53.825136612021865,
+        "random_forest": 51.36612021857923,
+        "lasso": 50.54644808743169,
+        "ensemble": 53.278688524590166
+      }
+    },
+    {
+      "window": "W2: Train 2020-2024, Test 2025",
+      "test_size": 365,
+      "accuracies": {
+        "xgboost": 56.986301369863014,
+        "lightgbm": 55.342465753424655,
+        "random_forest": 56.71232876712329,
+        "lasso": 49.589041095890416,
+        "ensemble": 57.534246575342465
+      }
+    },
+    {
+      "window": "W3: Train 2020-2025, Test 2026",
+      "test_size": 75,
+      "accuracies": {
+        "xgboost": 44.0,
+        "lightgbm": 42.66666666666667,
+        "random_forest": 44.0,
+        "lasso": 57.333333333333336,
+        "ensemble": 50.66666666666667
+      }
+    }
+  ],
+  "average_accuracy": {
+    "xgboost": 51.06,
+    "lightgbm": 50.61,
+    "random_forest": 50.69,
+    "lasso": 52.49,
+    "ensemble": 53.83
+  },
+  "optimal_strategy": {
+    "leverage": 40,
+    "risk_per_trade": 0.0537,
+    "stop_loss_atr_mult": 0.654,
+    "reward_risk_ratio": 3.351,
+    "trail_trigger_atr": 1.987,
+    "max_hold_days": 1,
+    "partial_tp_pct": 0.397,
+    "signal_threshold": 0.011,
+    "fitness": 454.51,
+    "roi_pct": 741.33,
+    "max_drawdown_pct": 34.89,
+    "win_rate_pct": 53.94,
+    "total_trades": 393,
+    "final_balance": 84133.5
+  },
+  "selected_features": [
+    "return_1d_lag1",
+    "nasdaq_roc_5d",
+    "news_count",
+    "btc_eth_corr_20d",
+    "mars_cycle_sin",
+    "rsi_21",
+    "return_1d",
+    "consec_green",
+    "gann_dist",
+    "rolling_20_wr",
+    "vol_price_div",
+    "rsi_slope",
+    "gann_near",
+    "return_1d_lag5",
+    "lunar_sin",
+    "price_vs_r1",
+    "tlt_roc_5d",
+    "return_1d_lag3",
+    "btc_ibit_corr_20d",
+    "bear_structure",
+    "sar_x_ichi",
+    "pivot_dist",
+    "btc_eth_divergence",
+    "return_1d_lag10",
+    "body_pct",
+    "hyg_roc_20d",
+    "silver_roc_5d",
+    "upper_wick",
+    "macro_coin",
+    "btc_sol_divergence"
+  ],
+  "top_30_features": [
+    {
+      "name": "upper_wick",
+      "importance": 55.892471
+    },
+    {
+      "name": "return_1d_lag1",
+      "importance": 52.114179
+    },
+    {
+      "name": "return_1d",
+      "importance": 50.672084
+    },
+    {
+      "name": "return_1d_lag3",
+      "importance": 48.669854
+    },
+    {
+      "name": "silver_roc_5d",
+      "importance": 48.114523
+    },
+    {
+      "name": "pivot_dist",
+      "importance": 46.003156
+    },
+    {
+      "name": "gann_dist",
+      "importance": 44.781309
+    },
+    {
+      "name": "return_1d_lag10",
+      "importance": 42.002716
+    },
+    {
+      "name": "rsi_slope",
+      "importance": 41.891793
+    },
+    {
+      "name": "btc_sol_divergence",
+      "importance": 40.67031
+    },
+    {
+      "name": "psi",
+      "importance": 38.891449
+    },
+    {
+      "name": "us10y_roc_5d",
+      "importance": 38.114534
+    },
+    {
+      "name": "return_1d_lag5",
+      "importance": 37.114012
+    },
+    {
+      "name": "body_pct",
+      "importance": 37.113968
+    },
+    {
+      "name": "tlt_roc_5d",
+      "importance": 36.558584
+    },
+    {
+      "name": "btc_eth_divergence",
+      "importance": 36.447931
+    },
+    {
+      "name": "google_interest_roc",
+      "importance": 36.004126
+    },
+    {
+      "name": "lunar_sin",
+      "importance": 35.559856
+    },
+    {
+      "name": "hyg_roc_20d",
+      "importance": 34.669985
+    },
+    {
+      "name": "price_vs_r1",
+      "importance": 34.669914
+    },
+    {
+      "name": "lower_wick",
+      "importance": 34.33637
+    },
+    {
+      "name": "oil_roc_5d",
+      "importance": 34.114008
+    },
+    {
+      "name": "taker_buy_ratio",
+      "importance": 33.780593
+    },
+    {
+      "name": "avg_tweet_likes",
+      "importance": 33.447358
+    },
+    {
+      "name": "stoch_k_lag10",
+      "importance": 33.003053
+    },
+    {
+      "name": "oil_roc_20d",
+      "importance": 32.780703
+    },
+    {
+      "name": "rsi_7",
+      "importance": 31.780801
+    },
+    {
+      "name": "bb_pctb_lag3",
+      "importance": 31.669411
+    },
+    {
+      "name": "btc_dom_proxy",
+      "importance": 31.561482
+    },
+    {
+      "name": "vol_trend_5d",
+      "importance": 31.448324
+    }
+  ],
+  "lasso_nonzero_weights": {
+    "vol_price_div": 0.135146,
+    "btc_dom_proxy": 0.107731,
+    "rsi_21": 0.100376,
+    "sar_x_ichi": 0.097481,
+    "btc_ibit_corr_20d": 0.09213,
+    "btc_hyg_corr_20d": -0.088353,
+    "bear_structure": 0.08814,
+    "bb_pctb_lag5": -0.086286,
+    "rolling_20_wr": -0.086182,
+    "mars_cycle_sin": -0.084906,
+    "gann_near": 0.080224,
+    "nasdaq_roc_5d": -0.079402,
+    "return_1d": -0.0774,
+    "news_count": -0.07215,
+    "macro_oil": -0.069323,
+    "btc_eth_corr_20d": 0.066745,
+    "bb_upper": 0.060976,
+    "btc_sol_divergence": 0.059007,
+    "consec_green": -0.058956,
+    "macro_coin": -0.058943,
+    "rsi_14": 0.056512,
+    "steveharvey_gold": -0.055611,
+    "lunar_cos": 0.055591,
+    "price_contains_93": 0.055173,
+    "lunar_sin": 0.054865,
+    "moon_lon": 0.053311,
+    "eph_digital_root": -0.053085,
+    "moon_sidereal_sign": 0.052651,
+    "month_cos": 0.052246,
+    "is_93_39": 0.05123,
+    "price_vs_sma10": -0.050012,
+    "tweets_today": -0.04826,
+    "fib_21_from_low": -0.044404,
+    "macd_above_zero": 0.042799,
+    "silver_roc_5d": -0.041728,
+    "hyg_roc_20d": 0.041562,
+    "tweet_hour_noon": -0.040939,
+    "btc_eth_divergence": 0.037078,
+    "dxy_roc_20d": -0.036779,
+    "macro_dxy": -0.036456,
+    "doy_sin": -0.036288,
+    "consec_red": 0.036263,
+    "bb_width_pctile": 0.035994,
+    "obv_slope": 0.035583,
+    "google_interest": -0.034769,
+    "vol_trend_5d": 0.034607,
+    "rsi_div_bull": 0.033954,
+    "yoga_idx": 0.03346,
+    "nakshatra_purva_ashadha": 0.03329,
+    "russell_roc_5d": 0.03298
+  },
+  "buy_and_hold_return_pct": 70.18
+}

@@ -1,0 +1,237 @@
+
+================================================================================
+FREE MATRIX DATA SOURCES GUIDE
+================================================================================
+Generated: 2026-03-17T20:31:47.876448+00:00
+
+All these sources are FREE and require NO API keys (unless noted).
+"Correlate crypto news, world news, financial news — it's all the same matrix."
+
+================================================================================
+1. RSS FEEDS (FREE, no auth, no rate limits)
+================================================================================
+
+CoinDesk:
+  URL: https://www.coindesk.com/arc/outboundfeeds/rss/
+  Data: Headlines, summaries, publish date
+  Update: Every few minutes
+  Library: feedparser (pip install feedparser)
+
+CoinTelegraph:
+  URL: https://cointelegraph.com/rss
+  Data: Headlines, summaries, categories
+  Update: Frequent
+
+Bitcoin Magazine:
+  URL: https://bitcoinmagazine.com/feed
+  Data: Headlines, full articles sometimes
+
+Reuters Business:
+  URL: http://feeds.reuters.com/reuters/businessNews
+  Data: World business/financial news
+
+CNBC Finance:
+  URL: https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664
+  Data: US financial news
+
+CNBC Economy:
+  URL: https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258
+  Data: Economic news, Fed coverage
+
+Decrypt:
+  URL: https://decrypt.co/feed
+  Data: Crypto/DeFi news
+
+The Block:
+  URL: https://www.theblock.co/rss.xml
+  Data: Crypto institutional/market news
+
+HOW TO USE:
+  import feedparser
+  feed = feedparser.parse("URL_HERE")
+  for entry in feed.entries:
+      print(entry.title, entry.published)
+
+================================================================================
+2. REDDIT (FREE, public JSON, rate-limited)
+================================================================================
+
+r/Bitcoin Hot:
+  URL: https://www.reddit.com/r/Bitcoin/hot.json?limit=100
+  Data: Post titles, scores, comments, timestamps
+
+r/CryptoCurrency:
+  URL: https://www.reddit.com/r/CryptoCurrency/hot.json?limit=100
+
+r/BitcoinMarkets:
+  URL: https://www.reddit.com/r/BitcoinMarkets/hot.json?limit=100
+
+Rate Limit: ~60 requests/minute without auth
+Headers: Must set User-Agent or get 429
+
+Historical Reddit:
+  Arctic Shift: https://arctic-shift.photon-reddit.com/
+  Pushshift replacement: https://api.pullpush.io/reddit/search/submission/
+  Example: https://api.pullpush.io/reddit/search/submission/?subreddit=bitcoin&size=500&before=1700000000
+
+================================================================================
+3. CRYPTOPANIC (FREE tier)
+================================================================================
+
+Public API:
+  URL: https://cryptopanic.com/api/free/v1/posts/?public=true&filter=hot
+  Data: Aggregated crypto news, votes, sentiment
+  Note: May need free auth token from https://cryptopanic.com/developers/api/
+
+================================================================================
+4. GOOGLE TRENDS (FREE via pytrends)
+================================================================================
+
+Library: pip install pytrends
+Data: Search interest (0-100) for any term, weekly or daily
+Terms to track: "bitcoin", "crypto crash", "buy bitcoin", "sell bitcoin"
+
+HOW TO USE:
+  from pytrends.request import TrendReq
+  pytrends = TrendReq(hl='en-US')
+  pytrends.build_payload(["bitcoin"], timeframe='today 12-m')
+  df = pytrends.interest_over_time()
+
+CORRELATION INSIGHT:
+  - Google Trends spike = retail FOMO = usually near a TOP
+  - Low search interest = accumulation phase = usually near a BOTTOM
+  - Compare "bitcoin" vs "bitcoin crash" ratio for sentiment
+
+================================================================================
+5. WIKIPEDIA PAGEVIEWS (FREE, no auth)
+================================================================================
+
+API: https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/
+     en.wikipedia/all-access/all-agents/Bitcoin/daily/YYYYMMDD/YYYYMMDD
+
+Data: Daily page views for any Wikipedia article
+Limit: 2 years of daily data per request
+
+CORRELATION INSIGHT:
+  - Wikipedia views spike = mainstream attention = usually near tops
+  - Similar signal to Google Trends but more "normie" indicator
+
+================================================================================
+6. GITHUB BITCOIN CORE COMMITS (FREE, unauthenticated)
+================================================================================
+
+Commit Activity:
+  URL: https://api.github.com/repos/bitcoin/bitcoin/stats/commit_activity
+  Data: Weekly commit counts for last year
+
+Contributors:
+  URL: https://api.github.com/repos/bitcoin/bitcoin/stats/contributors
+
+Recent Commits:
+  URL: https://api.github.com/repos/bitcoin/bitcoin/commits?per_page=100
+
+Rate Limit: 60 requests/hour unauthenticated
+
+CORRELATION INSIGHT:
+  - Dev activity = network health indicator
+  - Major version releases sometimes coincide with price moves
+  - Low dev activity during euphoria (devs selling?), high during bears (devs building)
+
+================================================================================
+7. FEDERAL RESERVE / ECONOMIC CALENDAR
+================================================================================
+
+FOMC Meeting Dates:
+  Source: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+  Hardcoded in script (public calendar, known months in advance)
+
+CPI Release Dates:
+  Source: https://www.bls.gov/schedule/news_release/cpi.htm
+  Hardcoded in script
+
+FRED API (Federal Reserve Economic Data):
+  URL: https://fred.stlouisfed.org/
+  Free API key: https://fred.stlouisfed.org/docs/api/api_key.html
+  Data: Interest rates, M2 money supply, unemployment, GDP
+  Library: pip install fredapi
+
+CORRELATION INSIGHT:
+  - FOMC days = high volatility (BTC moves 3-5% on rate decisions)
+  - CPI release = crypto reacts to inflation data
+  - Hawkish = bearish crypto, Dovish = bullish crypto
+  - M2 money supply expansion = bullish for all risk assets
+
+================================================================================
+8. FEAR & GREED INDEX (FREE)
+================================================================================
+
+URL: https://api.alternative.me/fng/?limit=365
+Data: Daily fear/greed score (0-100), classification
+No auth needed.
+
+CORRELATION INSIGHT:
+  - Extreme Fear (<20) = contrarian BUY (historically)
+  - Extreme Greed (>80) = contrarian SELL (historically)
+  - Aligns with Matrixology contrarian principles
+
+================================================================================
+9. BITCOIN ON-CHAIN DATA (FREE tier)
+================================================================================
+
+Blockchain.com Charts API:
+  URL: https://api.blockchain.info/charts/{metric}?timespan=1year&format=json
+  Metrics: market-price, hash-rate, difficulty, n-transactions, miners-revenue
+  No auth needed.
+
+Mempool.space:
+  URL: https://mempool.space/api/v1/mining/hashrate/1y
+  Data: Hashrate, difficulty, mempool stats
+
+================================================================================
+10. OTHER MATRIX-RELEVANT SOURCES
+================================================================================
+
+Alternative.me Crypto API:
+  URL: https://api.alternative.me/v2/ticker/?limit=10
+  Data: Top crypto prices, volumes
+
+CoinGecko (FREE tier):
+  URL: https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=365
+  Data: Price, market cap, volume
+  Rate: 10-30 calls/minute
+
+DeFi Llama (FREE, no auth):
+  URL: https://api.llama.fi/v2/historicalChainTvl
+  Data: Total Value Locked across DeFi
+
+Open Interest / Funding Rates:
+  CoinGlass (limited free): https://open-api.coinglass.com/
+  Useful for derivatives sentiment
+
+Lunar Phases (for Matrixology):
+  Free API: https://aa.usno.navy.mil/api/moon/phases/year?year=2026
+  Or calculate with ephem library: pip install ephem
+
+================================================================================
+RECOMMENDED COLLECTION SCHEDULE
+================================================================================
+
+Every 15 minutes:
+  - RSS feeds (real-time headline flow)
+  - Reddit hot posts
+
+Every hour:
+  - CryptoPanic
+  - Fear & Greed Index
+  - On-chain data
+
+Daily:
+  - Google Trends
+  - Wikipedia pageviews
+  - GitHub commits
+
+On event dates:
+  - FOMC days: collect every 5 minutes around 2:00 PM ET
+  - CPI days: collect every 5 minutes around 8:30 AM ET
+
+================================================================================

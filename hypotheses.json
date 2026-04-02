@@ -1,0 +1,271 @@
+{
+  "hypotheses": [
+    {
+      "id": "caution_93",
+      "category": "numerology",
+      "rule": "#93/39 = Destruction / Crash signal",
+      "detail": "Dates connected to 93 or 39 (day of year, date sum, days remaining, month/day) are bearish. Used for dumps/crashes. Stock market crashed on 3/9. Day 93, day 309, week 39 all caution.",
+      "source": "Matrix Crypto Numbers Guide + Discord numerology-chat",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "caution_43",
+      "category": "numerology",
+      "rule": "#43/34 is connected to #93 (bearish)",
+      "detail": "April 3rd (4/3) is the 93rd day of the year. So 43/34 carries the same destructive energy. Dates adding to 43 or 34 are bearish.",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "caution_48_223",
+      "category": "numerology",
+      "rule": "#48/84 and #223/322 = BTC caution numbers",
+      "detail": "48th prime number = 223. BTC = B(2) T(20) C(3) = 223. 322 = Skull & Bones. These numbers used for false flags, dumps, destruction. Feb 17 = 48th day.",
+      "source": "Matrix Crypto Numbers Guide + BTC Energy doc",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "caution_17",
+      "category": "numerology",
+      "rule": "#17 = Elite sell number",
+      "detail": "Freemasonry started in 1717. Elite like to sell/take money on #17 dates. The 17th of any month, or dates that reduce to 17. #19 is a hidden 17 (SEVENTEEN=109).",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "caution_11",
+      "category": "numerology",
+      "rule": "#11 = Emotional energy, don't FOMO",
+      "detail": "Never a good idea to buy/FOMO right before an #11 date. Usually get a dip on #11 days.",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "caution_113",
+      "category": "numerology",
+      "rule": "#113 = Dump/bottom/buy signal",
+      "detail": "113 has been used for dump signals, but also marks bottoms (buy signal). Dual meaning \u2014 dump happens, then it's a buy.",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "pump_27_72",
+      "category": "numerology",
+      "rule": "#27/72 and #127/721 = Pump signals",
+      "detail": "These numbers have been used for pumps. 127 specifically used for downtrend reversals. Watch dates connected to 127/721.",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "pump_37_73",
+      "category": "numerology",
+      "rule": "#37/73 = Pump signal (UP=37)",
+      "detail": "37/73 used for pump signals. The word 'UP' = 37 in gematria. Watch for dates/times connected to 37.",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "btc_213",
+      "category": "gematria",
+      "rule": "Bitcoin = 213 energy",
+      "detail": "The name 'Bitcoin' = 213 in gematria. BTC has stronger energy on dates matching 213 permutations (123, 132, 213, 231, 312, 321). Bitcoin took off in 2013 (213). Crashed on 3/12 (312). Key dates listed in BTC Energy doc.",
+      "source": "BTC Energy document by 22_Savage22",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "day_pump",
+      "category": "timing",
+      "rule": "Mon/Tue/Wed = Pump days",
+      "detail": "When elite decide to pump, it usually happens Monday through Wednesday.",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "day_dump",
+      "category": "timing",
+      "rule": "Thu/Fri = Dump days",
+      "detail": "When elite decide to dump, it usually happens Thursday or Friday. NOTE: 2025 update says market makers have switched some of these up.",
+      "source": "Matrix Crypto Numbers Guide (with 2025 caveat)",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "top_tuesday",
+      "category": "timing",
+      "rule": "Tuesday = Peak/Top day",
+      "detail": "The TOP of a pump usually happens around Tuesday. 'Top Tuesdays.'",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "pump_dates_month",
+      "category": "timing",
+      "rule": "14th/15th/16th of month = Pump zone",
+      "detail": "Look for pumps/peaks on the 14th, 15th, and 16th of the month (plus days that add up to those).",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "five_day_crash",
+      "category": "timing",
+      "rule": "Markets peak 5 days before a crash",
+      "detail": "After BTC gets a big pump, count 5 days forward. If the 5th day lands on a dump number date = confirmation of incoming crash.",
+      "source": "Matrix Crypto Numbers Guide",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "new_moon_bullish",
+      "category": "astrology",
+      "rule": "New moon = Bullish energy (+-5 days)",
+      "detail": "Market has bullish energy within 5 days before or after a new moon, getting stronger on the new moon day itself.",
+      "source": "User's personal notes (Word doc)",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "full_moon_bearish",
+      "category": "astrology",
+      "rule": "Full moon = Bearish energy (+-5 days)",
+      "detail": "Market has bearish energy within 5 days before or after a full moon, getting stronger on the full moon day itself.",
+      "source": "User's personal notes (Word doc)",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "six_am_bottom",
+      "category": "timing",
+      "rule": "6am UTC = Short term bottom / reversal",
+      "detail": "6am UTC (1am CST) is often a short term bottom. 12 is at top of clock = tops, 6 = bottoms. Works for both am/pm.",
+      "source": "User's personal notes (Word doc)",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "six_hour_cycles",
+      "category": "timing",
+      "rule": "Market moves in 6-hour intervals",
+      "detail": "Market often moves in 6-hour periods. Example: 6 hours up, 6 hours down. 1-2 hour delay possible before the shift.",
+      "source": "User's personal notes (Word doc)",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "clock_opposites",
+      "category": "numerology",
+      "rule": "Clock opposites encode hidden meaning",
+      "detail": "1=7, 2=8, 3=9, 4=10, 5=11, 6=12. When someone posts at 3 o'clock it can mean 9 (opposite). 3/9 = 39 = 93 = destruction. Elite communicate using inverted clock numbers.",
+      "source": "Discord decode channels + numerology-chat",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "chinese_zodiac",
+      "category": "astrology",
+      "rule": "Chinese zodiac friend/enemy years apply to assets",
+      "detail": "BTC founded 2009 = Ox. Enemy = Goat (bearish years). Friends = Snake, Rooster (bullish years). Applies to any asset with a founding date.",
+      "source": "Discord esoteric channel + xrp channel",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "signal_before_event",
+      "category": "matrix_signal",
+      "rule": "The signal always comes before the event",
+      "detail": "Patterns appear before events, not after. Culture moves first (movies, headlines, social media). Reality 'warms up' \u2014 ignition, vibration, motion. Look for theme repetition.",
+      "source": "Matrixology Substack - 'The Signal Always Comes First'",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "words_energy",
+      "category": "matrix_signal",
+      "rule": "Words are energy broadcasts",
+      "detail": "Language is vibration/frequency/electromagnetic. Words in tweets/posts carry energy that attracts matching outcomes. Hidden negative phonetics in everyday language (weekend=weakened, medicine=medi-sin).",
+      "source": "Matrixology Substack - 'Language & Ghosts in the Machine'",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "gold_color_peak",
+      "category": "matrix_signal",
+      "rule": "Gold color in celebrity posts = market peak signal",
+      "detail": "When gold color/imagery is used in tweets from key figures, the market is likely at or near its peak.",
+      "source": "User's personal observation",
+      "status": "hypothesis",
+      "backtest_result": null
+    },
+    {
+      "id": "mercury_retrograde",
+      "category": "astrology",
+      "rule": "Mercury retrograde = Market caution/reversal",
+      "detail": "Mercury retrograde periods associated with communication breakdowns, reversals, and market uncertainty.",
+      "source": "Discord astrology channel",
+      "status": "hypothesis",
+      "backtest_result": null
+    }
+  ],
+  "user_approved": [
+    {
+      "id": "caution_93",
+      "status": "approved"
+    },
+    {
+      "id": "caution_43",
+      "status": "approved"
+    },
+    {
+      "id": "caution_48_223",
+      "status": "approved"
+    },
+    {
+      "id": "caution_17",
+      "status": "approved",
+      "note": "weight lower - could be event not just sell"
+    },
+    {
+      "id": "caution_11",
+      "status": "approved",
+      "note": "volatile not strictly bearish"
+    },
+    {
+      "id": "caution_113",
+      "status": "approved"
+    },
+    {
+      "id": "pump_27_72",
+      "status": "approved"
+    },
+    {
+      "id": "pump_37_73",
+      "status": "approved"
+    },
+    {
+      "id": "btc_213",
+      "status": "approved",
+      "note": "high volatility not directional"
+    },
+    {
+      "id": "day_pump",
+      "status": "rejected",
+      "note": "patterns shift - test with data"
+    },
+    {
+      "id": "day_dump",
+      "status": "test_with_data",
+      "note": "patterns shift - needs backtesting"
+    }
+  ]
+}

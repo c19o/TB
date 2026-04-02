@@ -1,0 +1,23 @@
+{
+  "account1": {
+    "auth_token": "e2bc3e408900712dd67f24b9ca891a73b90d4528",
+    "ct0": "ea1139f64a08220ab4f4a35105e21cc0b2f2350b635681d8b6aa7d8c8aece75cce374a644d0c12d6ad3cbfc76661383a3dbb45ed6230bb0a321f18228c5e8805819f2ad86d46892726b6944fd547bbb4",
+    "twid": "u%3A1975391583835938817",
+    "guest_id": "v1%3A175980493553275703",
+    "kdt": "cP8wOf9TEjl7NhLRI64X0JbSuafQBXPvj50dySpv"
+  },
+  "account2": {
+    "auth_token": "97acb24149f40b5e8362d48af8d67a634cac3100",
+    "ct0": "db806d9cf6a8988f66225db77e1d5ccb59b1c3a4682558d647d6548817a8480f1ddbb349c2abf7c13ac7d1ea3edd4e3a3da41bf93e0e019715902d844234a6ef0870812ab9d764c3f0c7a7d6d406dcb4",
+    "twid": "u%3A2017363355791421441",
+    "guest_id": "v1%3A176981187190080354",
+    "kdt": "IHG0l9Z5M2B0bGRQuE8tHEaOUFU3YPtl72haVbV1"
+  },
+  "account3": {
+    "auth_token": "9ec6dfbae1aaab51e5db90a5262bcce05e61fe56",
+    "ct0": "949cc3d81c043b46203fe625da24d5a0f0474846fd7859c0d46f83f447e408467f32eff53cb3c7ffe3b888d9f59973ed35b2ed88afbd0d23f47a29cf457868e26923f048a56aad0eef543741d4624c09",
+    "twid": "u%3A1977936594213486592",
+    "guest_id": "v1%3A176210429883588593",
+    "kdt": "0i4FYc9XJk93wWRNhwJ3Dv1hGYTWyYTsP7Tt5Bn0"
+  }
+}

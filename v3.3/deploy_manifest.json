@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-31 23:02:42 UTC",
+  "generated_at": "2026-04-02 14:40:24 UTC",
   "generated_on": "DESKTOP-GG75I1X",
   "python_version": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
   "files": {
@@ -14,6 +14,10 @@
     "atomic_io.py": {
       "sha256": "bdbd7aaf05b2d5b70fa497555444b9e1b1bfb7e50ac1861fcf2e98a75ed73c89",
       "size": 7335
+    },
+    "audit_dbs.py": {
+      "sha256": "76eb757c0efb5adff580f6a503f955f72dd0851b1b9f22b0da75774a74683d5b",
+      "size": 2106
     },
     "backfill_15m.py": {
       "sha256": "6318cada67da74c2e3b0771f494060066c08293f21ca46752c8650463202b606",
@@ -40,8 +44,8 @@
       "size": 101523
     },
     "bench_trial.py": {
-      "sha256": "0e64a1c2d1ed45399d5b6fcaf23a3f07e9ba7c0265446da957e1f4a5b4579324",
-      "size": 3933
+      "sha256": "9644e810ef12b30bf25f917da2ed4fe6a0fd1339b48e610efc61176687359956",
+      "size": 3934
     },
     "bitget_api.py": {
       "sha256": "ffea51cf150da5f0af777faa3bbfeac01d23fd5e2f958c8a8b9f9ac6a0654aff",
@@ -76,8 +80,8 @@
       "size": 17256
     },
     "build_features_v2.py": {
-      "sha256": "bed9e77b663f4e6a4631cf05d4d06db35366f3155130701726257f26bb5d6b51",
-      "size": 16967
+      "sha256": "263c3755247ac34777160da53d794641d63717464c3604af92323f6e483b14e9",
+      "size": 17103
     },
     "build_sports_features.py": {
       "sha256": "6b8553a89d96ac5d305aaa502b2ca832574289f81619c4707afaa83fbca84491",
@@ -88,28 +92,32 @@
       "size": 48678
     },
     "cloud_run_optuna.py": {
-      "sha256": "d18295b833443360354d4769139204f2e8ec0c7ecd8c3a20eeed514018d85104",
-      "size": 3931
+      "sha256": "bc0c14bdd8b44be766eaebf6b7f3eaa07546e9e22cfff00d350c91d495a8c557",
+      "size": 4481
     },
     "cloud_run_tf.py": {
-      "sha256": "3addc6a90288e0a1fdc6ef218cf242faa4ae531850a115276cb344cd739559de",
-      "size": 46329
+      "sha256": "8481cb2e51f2a756a8bd6bf46dd9ed3f3bcabd4ca2347efb83249d5c62b43ca8",
+      "size": 56789
     },
     "cloud_runner.py": {
       "sha256": "d00e858d7410fd696674f77d23602bbfc3e36eea8ac78a4286866ef2e9de5dad",
       "size": 16429
     },
     "config.py": {
-      "sha256": "45101e79ded00acf3de19c39b1449d46027be94047dbf7646e9de60bb2b47b9f",
-      "size": 41164
+      "sha256": "83c439198684b83dd38ae8db8cbeb49dbe1ad51f2373d498d4f0ceb34e30b8eb",
+      "size": 42052
+    },
+    "convention_gate.py": {
+      "sha256": "f93c94df5a0388bf9c1535d3b4d7f03ec7ca7d0f8adf2b00efe3ee099f817c72",
+      "size": 31421
     },
     "cost_sensitive_obj.py": {
       "sha256": "a69f95d359c2fd2c1a7e0edd67b5730346e5998f53b6b60ca072be05db480052",
       "size": 12994
     },
     "cross_supervisor.py": {
-      "sha256": "56a2996fc3add8af0d4f2132b24e65aab7f31961a5dad43cba679611d79c7772",
-      "size": 37945
+      "sha256": "659e296a4622380bc89a47d784792100c37cbd9876c51c3afab9fa33b1102afd",
+      "size": 42015
     },
     "crypto_streamer.py": {
       "sha256": "cff317b016c24ea7b7b377372654dba0e2e81ee6879157f545427ea49a91de89",
@@ -127,9 +135,21 @@
       "sha256": "2243ccbf894961d377d0151d7cae62fa369044a13bba3b6402dfeec486a68295",
       "size": 3806
     },
+    "deploy_model.py": {
+      "sha256": "d837365995a4b4dd781f4841c319bebe2ddcaa2510c69d683b1ba13c1af8565f",
+      "size": 15936
+    },
     "deploy_verify.py": {
       "sha256": "13e57958124a31dc5880364634cdb7c28e6375fe93e771887aab5e4cc8dfb431",
       "size": 25744
+    },
+    "discord_ceo_bot.py": {
+      "sha256": "f4f978204928cbb21ed3bf50da60957e2102af8ab28700335775fe4a82c4d296",
+      "size": 30337
+    },
+    "discord_gate.py": {
+      "sha256": "213bad01ab7eee07a10b0620a2e923b7d89f4436243184178ec8089cba1f3eb8",
+      "size": 33881
     },
     "download_all_free_data.py": {
       "sha256": "e3ccdd079e8f91f1bcf6abe392f40adae617daeb238570a5e06b4c57f2d02dec",
@@ -164,7 +184,7 @@
       "size": 86380
     },
     "feature_classifier.py": {
-      "sha256": "e9b6316fcd53659d16d11c289d58ec90f2292126ad82ebaf28e43e18d532bbeb",
+      "sha256": "e751478c6cd6b8c9a60b7e386c578a587eafa69ba07f3571b72635dc0bb14f01",
       "size": 20323
     },
     "feature_importance_pipeline.py": {
@@ -172,8 +192,8 @@
       "size": 50132
     },
     "feature_library.py": {
-      "sha256": "a5081f3ff05a4a04fbb4b0efe0f1c2c9b8a94e667d204e1f56b90494aa39dd06",
-      "size": 349023
+      "sha256": "0c975722a4d6f8e3d19fc14533c1cb45c1717298ccde2cc6759487918c239890",
+      "size": 366241
     },
     "gcp_feature_builder.py": {
       "sha256": "e11b1dd8b05effbd7c1c4d64a946b7f0d2f622c939ae79ba01b08614bd5e9e99",
@@ -192,8 +212,8 @@
       "size": 14910
     },
     "gpu_daemon.py": {
-      "sha256": "9d0aa474142e7fd0c52b9530ccabb7441c262674611eac41e5d952f5690e4668",
-      "size": 14842
+      "sha256": "d3608060a5927188eba0f43698544e96ad85a3ddf81d6377c97ba5694ad612f4",
+      "size": 19416
     },
     "gpu_worker_estimator.py": {
       "sha256": "750bfc2de4c7b8a37a5431ed29a9c2f999bd2ea28a471f05a12a27cc17624656",
@@ -216,16 +236,16 @@
       "size": 9876
     },
     "knn_feature_engine.py": {
-      "sha256": "0086b5e94247409625d56786be3f5fe5a343f5651a34fad538522f75d9934d02",
-      "size": 21277
+      "sha256": "262ae431bded9167c10e1f88d1f90078f9d4f61b1f117b5df12ebadc7eabeced",
+      "size": 20827
     },
     "leakage_check.py": {
       "sha256": "17a0e0c6ac7df2317e8e641bd4ece4c6b610c079804ecf9a320464cd83f1a73d",
       "size": 14196
     },
     "live_trader.py": {
-      "sha256": "3b56156cd00d2599d270cd74500b762a965d85eb3fcf1aa712341fd4ec4fb0a7",
-      "size": 96544
+      "sha256": "04569852912b130b7d81ef0da95aaa0d3faa9ecf71674d10adb678e54ce89b9c",
+      "size": 97654
     },
     "lleaves_compiler.py": {
       "sha256": "b80d868f0d29faf3bcb6a899e4094551a8ad7b86f2a6b9040ebb4b386d2e9569",
@@ -260,12 +280,20 @@
       "size": 15007
     },
     "ml_multi_tf.py": {
-      "sha256": "8510064d98baf3453e6d2a65ce30a3d049d3acc7ad49957baf912be66098fd31",
-      "size": 182740
+      "sha256": "3a667378fd3eaa8e91eeb9e7ed7e6361bc133085a005003da74ea9489a243a25",
+      "size": 203991
+    },
+    "model_diagnosis.py": {
+      "sha256": "dc948b5129171d23b35b8a772165ff2338a9a79cc7efb785e097201f1e615e6b",
+      "size": 20095
+    },
+    "model_server.py": {
+      "sha256": "eb81a5dedf63a1bc56e05fc6cd207c9462b6a0ba0e079bc1238e094e9a371965",
+      "size": 14515
     },
     "multi_gpu_optuna.py": {
-      "sha256": "e87c16e53a7163156090d51977976cf1fd92901dba15865db90001fef34debae",
-      "size": 11600
+      "sha256": "a73b2e16b45a55f5a56263b9966ae4e9421f00bb5ead8c55d3c4aed2b72eef79",
+      "size": 14036
     },
     "news_streamer.py": {
       "sha256": "e1bd33bfdb5131ff4ee5d6607d49f30c17dca1d43b9548261e7649c6dd6a2917",
@@ -274,6 +302,10 @@
     "numba_cross_kernels.py": {
       "sha256": "80741823ecbb22172732e121ca495432866f6436961461e0ce99a1a2f8dc58db",
       "size": 11557
+    },
+    "ops_kb.py": {
+      "sha256": "02baf4f42fd0829e2d94db78f71dfbaeb585ef331b1ce6349e5e56f683771e09",
+      "size": 12447
     },
     "patch_flush.py": {
       "sha256": "00d772ce6049b35fb2f98415f5c384ce2c3e7076f844c2e8ad6f6a774996e297",
@@ -312,8 +344,8 @@
       "size": 8511
     },
     "run_optuna_local.py": {
-      "sha256": "24514756e48114d1569f2405ba4d2f7b2bbd934c633fc6942c15def9960d819c",
-      "size": 100810
+      "sha256": "5609a786ba7e099fd24673fcef4dbad7b7ddc00e72aca164e2e78e247b298d1c",
+      "size": 114742
     },
     "runpod_optimize.py": {
       "sha256": "038b82b73955379b29847f89844aca89ba6fd970674ced51a64f38ed7b4eeb8c",
@@ -336,8 +368,8 @@
       "size": 27643
     },
     "smoke_test_v3.py": {
-      "sha256": "d8267430f03be07a0b82fc5b568f85d1aa710e6d181a84ad4ab4cc875d8fae45",
-      "size": 25304
+      "sha256": "c64871190cf17b375f9df9784b93e5f92de7cab81fbeb13c7aa02d053a2e9d40",
+      "size": 25305
     },
     "space_weather_streamer.py": {
       "sha256": "04e99df3666cb774eb7403b999405aabf0a249150da79af42ae4e6eee324f584",
@@ -395,13 +427,17 @@
       "sha256": "7f0ec3eabf9f4ff8c53a79078c851e82c593dabc11549b5c6619c803a2a9baf4",
       "size": 13118
     },
+    "usage_monitor.py": {
+      "sha256": "561834e7fd289dc8aba62a29023334801d5842d7303b88e24fdc4a876ddeece4",
+      "size": 6651
+    },
     "v2_cloud_runner.py": {
       "sha256": "e17c74de5e11c5ab94d76b411d0aeddcedcd53c076c257d8a510002a1e78a95b",
       "size": 53957
     },
     "v2_cross_generator.py": {
-      "sha256": "3449b51aae8a96bdef23b9a2a8884b7076cf20cac8a890f344d2e5e743b6071b",
-      "size": 155223
+      "sha256": "6d79e59f5329d359113ce1c6c7a739f02b2f3d9d74d9d9fc58caf98199e25f7a",
+      "size": 162554
     },
     "v2_easy_streamers.py": {
       "sha256": "0046f4a4899fbdf21e49688da3072b7472774d8708a25b0c24e8c5555bf714c7",
@@ -420,12 +456,16 @@
       "size": 40915
     },
     "validate.py": {
-      "sha256": "eadcea990a0a9887a4f72485c6a63fbc8ba803f56747e228b623a8848dd61d56",
-      "size": 69503
+      "sha256": "833e6da6a747464b9d3d3ff79ae3f63e91d41102b3e0186ab57d1375aab4767f",
+      "size": 75039
     },
     "vast_launch.py": {
       "sha256": "7e7186bcb0eed058847886e11ccf88ce09eb349e376806cfb46d487f65254d64",
       "size": 14285
+    },
+    "vast_selector.py": {
+      "sha256": "756be9d8255938befdc45e5a7e475478c5ec6d4cb86d331e88aaa81fe2aa8cc1",
+      "size": 16811
     },
     "verify_gpu_features.py": {
       "sha256": "69796598aa6a1fb0be17a02b91e4f1e34c8185a18a86b0163bfada2969f961d6",
@@ -461,5 +501,5 @@
     "hardware_detect.py",
     "bitpack_utils.py"
   ],
-  "total_files": 108
+  "total_files": 118
 }

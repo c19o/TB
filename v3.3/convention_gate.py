@@ -511,6 +511,42 @@ def _entry_kind(entry: dict) -> str:
     return "other"
 
 
+def _extract_task_token(value: str):
+    """Extract a task token from a research log entry."""
+    if not value:
+        return None
+    match = re.search(r"\b(?:Task|TASK|task)\b\s*[:=]\s*\[?([^\]\n\r;,{}()<>\s]+)\]?", value)
+    if match:
+        return match.group(1)
+    legacy = re.search(r"\[(SAV-[A-Za-z0-9-]+)\]|\b(SAV-[A-Za-z0-9-]+)\b", value, re.IGNORECASE)
+    if legacy:
+        return legacy.group(1) or legacy.group(2)
+    return None
+
+
+def _primary_source_hint(entry: dict) -> str:
+    """Infer the primary provider used for a research entry."""
+    text = " ".join([
+        (entry.get("topic") or ""),
+        (entry.get("content") or ""),
+        (entry.get("source") or ""),
+    ]).lower()
+
+    if "orgonite" in text:
+        return "orgonite"
+    if "socraticode" in text or "socrati" in text:
+        return "socraticode"
+    if entry.get("topic") == "kb_source":
+        return "ops_kb_source"
+    if entry.get("topic") == "kb_query":
+        return "ops_kb_query"
+    if entry.get("topic") == "kb_gap":
+        return "kb_gap"
+    if entry.get("topic") == "perplexity_source":
+        return "perplexity"
+    return "unknown"
+
+
 def _load_research_entries(project_dir: str, hours: int = 72, task_token: str = None) -> list:
     """Load recent research evidence from ops_kb, optionally scoped to one task token."""
     db_path = _ops_kb_db_path(project_dir)
@@ -520,26 +556,30 @@ def _load_research_entries(project_dir: str, hours: int = 72, task_token: str = 
     cutoff = datetime.now() - timedelta(hours=hours)
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
-        "SELECT id, topic, content, added_at FROM entries ORDER BY id ASC"
+        "SELECT id, topic, content, source, added_at FROM entries ORDER BY id ASC"
     ).fetchall()
     conn.close()
 
     task_needle = task_token.lower() if task_token else None
     entries = []
-    for row_id, topic, content, added_at in rows:
+    for row_id, topic, content, source, added_at in rows:
         parsed = _parse_iso_timestamp(added_at)
         if parsed and parsed < cutoff:
             continue
-        haystack = f"{topic}\n{content}".lower()
-        if task_needle and task_needle not in haystack:
+        entry_kind = _entry_kind({"topic": topic, "content": content})
+        if entry_kind == "other":
             continue
-        if _entry_kind({"topic": topic, "content": content}) == "other":
-            continue
+        if task_needle:
+            token = _extract_task_token(f"{topic}\n{content}")
+            if not token or task_needle not in token.lower():
+                continue
         entries.append({
             "id": row_id,
             "topic": topic,
             "content": content,
+            "source": source,
             "added_at": added_at,
+            "kind": entry_kind,
         })
     return entries
 
@@ -549,24 +589,41 @@ def _entry_dt(entry: dict):
     return _parse_iso_timestamp(entry.get("added_at"))
 
 
-def run_research_audit(project_dir: str, task_token: str = None, hours: int = 72, require_perplexity: bool = False):
+def run_research_audit(
+    project_dir: str,
+    task_token: str = None,
+    hours: int = 72,
+    require_perplexity: bool = False,
+    require_kb_first_sources: bool = False,
+):
     """Audit KB-first and Perplexity-fallback evidence in ops_kb."""
     entries = _load_research_entries(project_dir, hours=hours, task_token=task_token)
     scope = task_token or "recent research activity"
+    ordered = sorted(entries, key=lambda entry: (_entry_dt(entry) or datetime.min, entry["id"]))
 
     if not entries:
         print(f"RESEARCH AUDIT: FAIL - no research evidence found for {scope} in last {hours}h.")
         print("Expected at minimum: KB_QUERY plus KB_SOURCE or KB_GAP/PERPLEXITY_SOURCE.")
         return 1
 
-    counts = Counter(_entry_kind(entry) for entry in entries)
+    counts = Counter(entry["kind"] for entry in entries)
     failures = []
+    warnings = []
+    source_evidence = Counter(_primary_source_hint(entry) for entry in entries if entry["kind"] == "kb_query")
 
     if counts["kb_query"] == 0:
         failures.append("Missing KB_QUERY log. KB-first cannot be proven.")
 
     if counts["kb_source"] == 0 and counts["kb_gap"] == 0:
         failures.append("Missing KB_SOURCE or KB_GAP log. KB sufficiency verdict was never recorded.")
+
+    if any(entry["kind"] == "perplexity_source" for entry in ordered):
+        first_query_index = next((i for i, entry in enumerate(ordered) if entry["kind"] == "kb_query"), None)
+        first_perplexity_index = next((i for i, entry in enumerate(ordered) if entry["kind"] == "perplexity_source"), None)
+        if first_query_index is None:
+            failures.append("PERPLEXITY_SOURCE exists without any KB_QUERY in sequence.")
+        elif first_perplexity_index < first_query_index:
+            failures.append("Perplexity appears before the first KB_QUERY. KB-first ordering violated.")
 
     if counts["perplexity_source"] > 0 and counts["kb_gap"] == 0:
         failures.append("PERPLEXITY_SOURCE exists without a prior KB_GAP. Fallback was not justified.")
@@ -577,8 +634,14 @@ def run_research_audit(project_dir: str, task_token: str = None, hours: int = 72
     if require_perplexity and counts["perplexity_source"] == 0:
         failures.append("--require-perplexity set, but no PERPLEXITY_SOURCE was found.")
 
-    gap_entries = [entry for entry in entries if _entry_kind(entry) == "kb_gap"]
-    perplexity_entries = [entry for entry in entries if _entry_kind(entry) == "perplexity_source"]
+    if require_kb_first_sources and not any(src in {"socraticode", "orgonite"} for src in source_evidence):
+        failures.append("KB_QUERY logs must include explicit SocratiCode/Orgonite source evidence before Perplexity fallback.")
+
+    if any(src == "unknown" for src in source_evidence):
+        warnings.append("Some KB_QUERY entries do not include an explicit SocratiCode/Orgonite marker.")
+
+    gap_entries = [entry for entry in ordered if entry["kind"] == "kb_gap"]
+    perplexity_entries = [entry for entry in ordered if entry["kind"] == "perplexity_source"]
     if gap_entries and perplexity_entries:
         latest_gap = max(gap_entries, key=lambda entry: (_entry_dt(entry) or datetime.min, entry["id"]))
         latest_perplexity = max(perplexity_entries, key=lambda entry: (_entry_dt(entry) or datetime.min, entry["id"]))
@@ -590,6 +653,17 @@ def run_research_audit(project_dir: str, task_token: str = None, hours: int = 72
         elif latest_perplexity["id"] < latest_gap["id"]:
             failures.append("Latest KB_GAP is newer than latest PERPLEXITY_SOURCE. Fallback log sequence is incomplete.")
 
+        for gap_pos, gap in enumerate(ordered):
+            if gap["kind"] != "kb_gap":
+                continue
+            gap_dt = _entry_dt(gap)
+            if not any(
+                p > gap_pos and (_entry_dt(perplexity) is None or _entry_dt(perplexity) >= (gap_dt or datetime.min))
+                for p, perplexity in ((i, e) for i, e in enumerate(ordered) if e["kind"] == "perplexity_source")
+            ):
+                failures.append(f"KB_GAP at {gap['added_at']} has no later PERPLEXITY_SOURCE. Fallback action is incomplete.")
+                break
+
     print(f"\n{'='*60}")
     print(f"  RESEARCH AUDIT: {scope}")
     print(f"{'='*60}\n")
@@ -599,10 +673,15 @@ def run_research_audit(project_dir: str, task_token: str = None, hours: int = 72
     print(f"  KB_GAP: {counts['kb_gap']}")
     print(f"  PERPLEXITY_SOURCE: {counts['perplexity_source']}\n")
 
-    for entry in entries[-5:]:
-        kind = _entry_kind(entry).upper()
+    for entry in ordered[-5:]:
+        kind = entry["kind"].upper()
         preview = entry["content"][:140].replace("\n", " ")
         print(f"  [{entry['id']}] {entry['added_at']} [{kind}] {preview}")
+
+    if warnings:
+        print(f"\nRESEARCH AUDIT: WARNINGS ({len(warnings)} issue(s))")
+        for warning in warnings:
+            print(f"  - {warning}")
 
     if failures:
         print(f"\nRESEARCH AUDIT: FAIL ({len(failures)} issue(s))")
@@ -618,7 +697,7 @@ if __name__ == "__main__":
     project_dir = os.path.dirname(os.path.abspath(__file__))
 
     if len(sys.argv) < 2:
-        print("Usage: python convention_gate.py [check|meta-audit|research-audit|full] [file|task]")
+        print("Usage: python convention_gate.py [check|meta-audit|research-audit|full] [file|task] [--hours N] [--require-perplexity] [--require-kb-first-sources]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -633,6 +712,7 @@ if __name__ == "__main__":
         task_token = None
         hours = 72
         require_perplexity = False
+        require_kb_first_sources = False
 
         args = sys.argv[2:]
         i = 0
@@ -643,6 +723,9 @@ if __name__ == "__main__":
                 i += 2
             elif arg == "--require-perplexity":
                 require_perplexity = True
+                i += 1
+            elif arg == "--require-kb-first-sources":
+                require_kb_first_sources = True
                 i += 1
             elif not task_token:
                 task_token = arg
@@ -656,6 +739,7 @@ if __name__ == "__main__":
             task_token=task_token,
             hours=hours,
             require_perplexity=require_perplexity,
+            require_kb_first_sources=require_kb_first_sources,
         )
         sys.exit(exit_code)
     elif cmd == "full":

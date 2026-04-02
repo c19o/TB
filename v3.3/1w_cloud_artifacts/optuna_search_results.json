@@ -1,0 +1,23 @@
+{
+  "1w": {
+    "tf": "1w",
+    "best_params": {
+      "num_leaves": 5,
+      "min_data_in_leaf": 8,
+      "feature_fraction": 0.8430821796909969,
+      "feature_fraction_bynode": 0.7221274324621054,
+      "bagging_fraction": 0.7811445102454865,
+      "lambda_l1": 0.0008293575780392396,
+      "lambda_l2": 0.0001245648439906911,
+      "min_gain_to_split": 1.832885154142741,
+      "max_depth": 7,
+      "extra_trees": true,
+      "learning_rate": 0.2344112136028501
+    },
+    "phase1_best_value": 0.9015350400413781,
+    "validation_best_value": 0.8883191581396248,
+    "final_mean_accuracy": 0.4901348651348652,
+    "final_mean_sortino": -3132083220.39115,
+    "total_time": 117.02044939994812
+  }
+}
