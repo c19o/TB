@@ -139,7 +139,72 @@ import lightgbm as lgb
 from sklearn.metrics import accuracy_score, precision_score, log_loss
 from scipy import stats
 from scipy import sparse as sp_sparse
-from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
+
+_FEATURE_LIBRARY_CACHE = None
+
+
+def _get_feature_library_contract():
+    """Import feature_library only when the main training flow actually needs it.
+
+    Spawned CPCV CPU workers do not use triple-barrier helpers directly, so keeping
+    this import lazy avoids pulling extra runtime/GPU-adjacent modules into every
+    worker during process bootstrap.
+    """
+    global _FEATURE_LIBRARY_CACHE
+    if _FEATURE_LIBRARY_CACHE is None:
+        from feature_library import compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG
+        _FEATURE_LIBRARY_CACHE = (compute_triple_barrier_labels, TRIPLE_BARRIER_CONFIG)
+    return _FEATURE_LIBRARY_CACHE
+
+
+def _runtime_failure_metadata(stage, tf_name, extra=None):
+    """Collect minimal, CUDA-agnostic failure context for checkpoint/resume audit."""
+    import platform
+    payload = {
+        'stage': stage,
+        'tf': tf_name,
+        'timestamp_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'pid': os.getpid(),
+        'hostname': platform.node(),
+        'platform': platform.platform(),
+        'python': sys.version.split()[0],
+        'cwd': os.getcwd(),
+        'allow_cpu': os.environ.get('ALLOW_CPU', ''),
+        'gpu_sparse_available': bool(_GPU_SPARSE_AVAILABLE),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _save_cpcv_checkpoint(path, oos_predictions, window_results, completed_folds, best_acc, meta=None):
+    _payload = {
+        'oos_predictions': oos_predictions,
+        'window_results': window_results,
+        'completed_folds': sorted(completed_folds),
+        'best_acc': best_acc,
+    }
+    if meta:
+        _payload['meta'] = meta
+    _shm_handles = []
+    try:
+        from atomic_io import atomic_save_pickle
+        atomic_save_pickle(_payload, path)
+    except ImportError:
+        with open(path, 'wb') as _ckf:
+            pickle.dump(_payload, _ckf)
+
+
+def _write_resume_metadata(path, payload):
+    try:
+        from atomic_io import atomic_write_text
+        atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + '\n')
+    except ImportError:
+        _tmp = path + '.tmp'
+        with open(_tmp, 'w', encoding='utf-8') as _fh:
+            _fh.write(json.dumps(payload, indent=2, sort_keys=True))
+            _fh.write('\n')
+        os.replace(_tmp, path)
 
 # Wave 3: Lift MKL/OpenBLAS thread caps — lets LightGBM's OpenMP use all cores
 # Guard: skip in spawn'd CPCV workers (they set their own per-worker caps)
@@ -558,6 +623,52 @@ def _cpcv_worker_initializer(_nth_str):
         pass
 
 
+def _csr_take_rows_safe(csr_matrix_obj, rows, sparse_module):
+    """Take CSR rows without SciPy fancy indexing.
+
+    SciPy's compressed sparse fancy row indexing can segfault on very large CSR
+    matrices with huge NNZ / int64 indptr combinations. Build the row subset
+    manually from the CSR buffers instead.
+    """
+    rows = np.asarray(rows, dtype=np.int64)
+    if rows.size == 0:
+        empty_indptr = np.zeros(1, dtype=csr_matrix_obj.indptr.dtype)
+        empty_indices = np.empty(0, dtype=csr_matrix_obj.indices.dtype)
+        empty_data = np.empty(0, dtype=csr_matrix_obj.data.dtype)
+        return sparse_module.csr_matrix(
+            (empty_data, empty_indices, empty_indptr),
+            shape=(0, csr_matrix_obj.shape[1]),
+        )
+
+    src_indptr = np.asarray(csr_matrix_obj.indptr)
+    counts = src_indptr[rows + 1] - src_indptr[rows]
+    out_indptr = np.empty(rows.size + 1, dtype=src_indptr.dtype)
+    out_indptr[0] = 0
+    np.cumsum(counts, out=out_indptr[1:])
+    out_nnz = int(out_indptr[-1])
+    out_indices = np.empty(out_nnz, dtype=csr_matrix_obj.indices.dtype)
+    out_data = np.empty(out_nnz, dtype=csr_matrix_obj.data.dtype)
+
+    cursor = 0
+    src_indices = csr_matrix_obj.indices
+    src_data = csr_matrix_obj.data
+    for row in rows:
+        start = int(src_indptr[row])
+        end = int(src_indptr[row + 1])
+        width = end - start
+        if width <= 0:
+            continue
+        out_indices[cursor:cursor + width] = src_indices[start:end]
+        out_data[cursor:cursor + width] = src_data[start:end]
+        cursor += width
+
+    return sparse_module.csr_matrix(
+        (out_data, out_indices, out_indptr),
+        shape=(rows.size, csr_matrix_obj.shape[1]),
+        copy=False,
+    )
+
+
 def _cpcv_split_worker(args_tuple):
     """Train a single LightGBM CPCV split.
     Runs in a subprocess for parallel CPU training.
@@ -572,6 +683,7 @@ def _cpcv_split_worker(args_tuple):
      hmm_overlay, hmm_overlay_names) = args_tuple
 
     import os, sys, traceback
+    _shm_handles = []
 
     # Cap ALL thread env vars BEFORE importing numerical libraries.
     # With spawn context, module-level code re-runs during import — setting these
@@ -606,39 +718,56 @@ def _cpcv_split_worker(args_tuple):
             _shm_d = _SHM(name=_shm_info['data_name'], create=False)
             _shm_i = _SHM(name=_shm_info['indices_name'], create=False)
             _shm_p = _SHM(name=_shm_info['indptr_name'], create=False)
-            _data = np.ndarray(_shm_info['data_shape'], dtype=np.dtype(_shm_info['data_dtype']), buffer=_shm_d.buf)
-            _indices = np.ndarray(_shm_info['indices_shape'], dtype=np.dtype(_shm_info['indices_dtype']), buffer=_shm_i.buf)
-            _indptr = np.ndarray(_shm_info['indptr_shape'], dtype=np.dtype(_shm_info['indptr_dtype']), buffer=_shm_p.buf)
+            _shm_handles = [_shm_d, _shm_i, _shm_p]
+            _copy_shm_arrays = os.environ.get(
+                'V3_COPY_SHM_ARRAYS',
+                '1' if os.environ.get('ALLOW_CPU', '0') == '1' else '0',
+            ) == '1'
+            _data_view = np.ndarray(_shm_info['data_shape'], dtype=np.dtype(_shm_info['data_dtype']), buffer=_shm_d.buf)
+            _indices_view = np.ndarray(_shm_info['indices_shape'], dtype=np.dtype(_shm_info['indices_dtype']), buffer=_shm_i.buf)
+            _indptr_view = np.ndarray(_shm_info['indptr_shape'], dtype=np.dtype(_shm_info['indptr_dtype']), buffer=_shm_p.buf)
+            if _copy_shm_arrays:
+                _data = np.array(_data_view, copy=True)
+                _indices = np.array(_indices_view, copy=True)
+                _indptr = np.array(_indptr_view, copy=True)
+            else:
+                _data = _data_view
+                _indices = _indices_view
+                _indptr = _indptr_view
             X_all = sparse.csr_matrix((_data, _indices, _indptr), shape=_shm_info['matrix_shape'], copy=False)
-            _shm_d.close()
-            _shm_i.close()
-            _shm_p.close()
         else:
             # Reconstruct matrix in worker from pickle'd arrays
             X_all = sparse.csr_matrix((X_data, X_indices, X_indptr), shape=X_shape)
 
+        train_idx = np.asarray(train_idx, dtype=np.int64)
+        test_idx = np.asarray(test_idx, dtype=np.int64)
         y_train_raw = y_3class[train_idx]
         y_test_raw = y_3class[test_idx]
         train_valid = ~np.isnan(y_train_raw)
         test_valid = ~np.isnan(y_test_raw)
 
-        X_train = X_all[train_idx][train_valid]
-        y_train = _labels_to_int(y_train_raw[train_valid])
-        X_test = X_all[test_idx][test_valid]
-        y_test = _labels_to_int(y_test_raw[test_valid])
+        # Avoid chained sparse fancy indexing (`X_all[idx][mask]`), which can segfault in
+        # SciPy's compressed sparse path on very large matrices. Resolve final row ids first.
+        train_rows = train_idx[train_valid]
+        test_rows = test_idx[test_valid]
+
+        X_train = _csr_take_rows_safe(X_all, train_rows, sparse)
+        y_train = _labels_to_int(y_3class[train_rows])
+        X_test = _csr_take_rows_safe(X_all, test_rows, sparse)
+        y_test = _labels_to_int(y_3class[test_rows])
 
         # T-2 FIX: Apply per-fold HMM overlay (fitted on train-end-date only, no lookahead)
         # hmm_overlay is (N, n_hmm_cols) float32 pre-computed by the parent process per fold.
         # hstack only on the subset rows — cheap since overlay is small (4 cols).
         if hmm_overlay is not None and len(hmm_overlay_names) > 0:
-            _Xtr_hmm = sparse.csr_matrix(hmm_overlay[train_idx][train_valid])
+            _Xtr_hmm = sparse.csr_matrix(hmm_overlay[train_rows])
             X_train = sparse.hstack([X_train, _Xtr_hmm], format='csr')
             del _Xtr_hmm
-            _Xte_hmm = sparse.csr_matrix(hmm_overlay[test_idx][test_valid])
+            _Xte_hmm = sparse.csr_matrix(hmm_overlay[test_rows])
             X_test = sparse.hstack([X_test, _Xte_hmm], format='csr')
             del _Xte_hmm
             feature_cols = list(feature_cols) + list(hmm_overlay_names)
-        test_idx_valid = test_idx[test_valid]
+        test_idx_valid = test_rows
 
         min_train = 50 if tf_name in ('1w', '1d') else 300
         min_test = 20 if tf_name in ('1w', '1d') else 50
@@ -647,7 +776,7 @@ def _cpcv_split_worker(args_tuple):
         if n_train < min_train or n_test < min_test:
             return (wi, None, None, None, None, None, None, None, None, None, None, None, None, None)
 
-        w_train = sample_weights[train_idx][train_valid]
+        w_train = sample_weights[train_rows]
 
         params = lgb_params.copy()
 
@@ -760,6 +889,12 @@ def _cpcv_split_worker(args_tuple):
         print(f"[CPCV WORKER {wi}] CRASH: {type(_worker_err).__name__}: {_worker_err}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return (wi, None, None, None, None, None, None, None, None, None, None, None, None, None)
+    finally:
+        for _shm in _shm_handles:
+            try:
+                _shm.close()
+            except Exception:
+                pass
 
 
 def _isolated_fold_worker(shared_dir, wi, train_idx, test_idx,
@@ -1659,6 +1794,8 @@ if __name__ == '__main__':
   # LightGBM CPU mode: parallel splits use ProcessPoolExecutor across CPU cores
   # Auto-detect: env V3_FORCE_SEQUENTIAL=1 or dense data → sequential
   _force_sequential = os.environ.get('V3_FORCE_SEQUENTIAL', '0') == '1'
+  _fail_on_sequential = os.environ.get('V3_FAIL_ON_SEQUENTIAL', '0') == '1'
+  _min_parallelism_required = int(os.environ.get('V3_MIN_PARALLELISM', '0') or '0')
   _use_parallel_splits = not _force_sequential
   try:
       from hardware_detect import get_cpu_count
@@ -1667,6 +1804,11 @@ if __name__ == '__main__':
       import multiprocessing as _mp
       _total_cores = _mp.cpu_count() or 24
   if _force_sequential:
+      if _fail_on_sequential:
+          raise RuntimeError(
+              f"Parallel CPCV is required by contract (min_parallelism={max(1, _min_parallelism_required)}) "
+              "but V3_FORCE_SEQUENTIAL=1 disabled it"
+          )
       log("PARALLEL SPLITS: disabled (V3_FORCE_SEQUENTIAL=1)")
   else:
       log(f"PARALLEL SPLITS: enabled (dynamic workers per TF, {_total_cores} cores detected)")
@@ -1742,6 +1884,12 @@ if __name__ == '__main__':
               tb_labels = pd.to_numeric(df['triple_barrier_label'], errors='coerce').values
               log(f"  Using pre-computed triple_barrier_label column")
           else:
+              if _fail_on_sequential:
+                  raise RuntimeError(
+                      f"Parallel CPCV is required by contract (min_parallelism={max(1, _min_parallelism_required)}) "
+                      "but execution fell through to sequential CPCV"
+                  )
+              compute_triple_barrier_labels, _tb_contract = _get_feature_library_contract()
               log(f"  Computing triple-barrier labels on-the-fly for {tf_name}...")
               tb_labels = compute_triple_barrier_labels(df, tf_name)
 
@@ -1753,7 +1901,8 @@ if __name__ == '__main__':
           n_short = (y_3class == 0).sum()
           n_flat = (y_3class == 1).sum()
           n_nan = (~valid_mask).sum()
-          tb_cfg = TRIPLE_BARRIER_CONFIG.get(tf_name, TRIPLE_BARRIER_CONFIG['1h'])
+          _, _tb_contract = _get_feature_library_contract()
+          tb_cfg = _tb_contract.get(tf_name, _tb_contract['1h'])
           log(f"  Triple-barrier labels (tp={tb_cfg['tp_atr_mult']}xATR, sl={tb_cfg['sl_atr_mult']}xATR, hold={tb_cfg['max_hold_bars']}): "
               f"{int(n_long)} LONG, {int(n_short)} SHORT, {int(n_flat)} FLAT, {int(n_nan)} NaN")
 
@@ -2014,7 +2163,8 @@ if __name__ == '__main__':
           # COMBINATORIAL PURGED CROSS-VALIDATION (CPCV)
           # ============================================================
           n = X_all.shape[0]  # Use subsampled row count, not original df length
-          tb_cfg = TRIPLE_BARRIER_CONFIG.get(tf_name, TRIPLE_BARRIER_CONFIG['1h'])
+          _, _tb_contract = _get_feature_library_contract()
+          tb_cfg = _tb_contract.get(tf_name, _tb_contract['1h'])
           max_hold = tb_cfg.get('max_hold_bars', 24)
 
           # Build event start/end arrays for purging
@@ -2082,6 +2232,7 @@ if __name__ == '__main__':
 
           # ── CPCV fold checkpoint: resume from last completed fold on crash ──
           _cpcv_ckpt_path = _artifact_output_path(f'cpcv_checkpoint_{tf_name}.pkl')
+          _cpcv_meta_path = _artifact_output_path(f'cpcv_checkpoint_{tf_name}.meta.json')
           _completed_folds = set()
           if os.path.exists(_cpcv_ckpt_path):
               try:
@@ -2091,7 +2242,15 @@ if __name__ == '__main__':
                   window_results = _ckpt.get('window_results', [])
                   _completed_folds = set(_ckpt.get('completed_folds', []))
                   best_acc = _ckpt.get('best_acc', 0)
+                  _ckpt_meta = _ckpt.get('meta')
                   log(f"  CHECKPOINT LOADED: {len(_completed_folds)}/{len(splits)} folds done, resuming")
+                  if _ckpt_meta:
+                      log(f"  CHECKPOINT META: stage={_ckpt_meta.get('stage', 'unknown')} "
+                          f"status={_ckpt_meta.get('status', 'unknown')}")
+                      try:
+                          _write_resume_metadata(_cpcv_meta_path, _ckpt_meta)
+                      except Exception:
+                          pass
               except Exception as _cke:
                   log(f"  WARNING: checkpoint corrupt ({_cke}), starting fresh")
                   _completed_folds = set()
@@ -2319,6 +2478,11 @@ if __name__ == '__main__':
               _use_gpu_parallel_cpcv = True
               _multi_gpu_mode = True
           elif _use_gpu_sparse():
+              if _fail_on_sequential:
+                  raise RuntimeError(
+                      f"Parallel CPCV is required by contract (min_parallelism={max(1, _min_parallelism_required)}) "
+                      f"but only {_num_gpus} GPU was detected for GPU-parallel mode"
+                  )
               _use_parallel_splits = False
               _multi_gpu_mode = False
               log(f"  Single GPU — sequential CPCV")
@@ -2329,6 +2493,11 @@ if __name__ == '__main__':
               # is ~1s — sequential is both faster and avoids spawn/thread crashes.
               _MIN_ROWS_PARALLEL = int(os.environ.get('V3_MIN_ROWS_PARALLEL', 2000))
               if _use_parallel_splits and X_all.shape[0] < _MIN_ROWS_PARALLEL:
+                  if _fail_on_sequential:
+                      raise RuntimeError(
+                          f"Parallel CPCV is required by contract (min_parallelism={max(1, _min_parallelism_required)}) "
+                          f"but dataset has only {X_all.shape[0]} rows (< {_MIN_ROWS_PARALLEL})"
+                      )
                   log(f"  Tiny dataset ({X_all.shape[0]} rows < {_MIN_ROWS_PARALLEL}) "
                       f"— forcing sequential CPCV (subprocess overhead >> training time)")
                   _use_parallel_splits = False
@@ -2559,7 +2728,8 @@ if __name__ == '__main__':
               if _n_rows < 2000:
                   _row_workers = max(1, min(2, _pending_splits))  # 1w/1d: 1-2 workers max
               elif _n_rows < 10000:
-                  _row_workers = max(1, min(4, _pending_splits))  # 4h: up to 4 workers
+                  # <10k rows scales poorly above ~64 total threads; keep 1d-style lanes at 2 workers max.
+                  _row_workers = max(1, min(2, _pending_splits))
               else:
                   _row_workers = _pending_splits  # 1h/15m: full parallelism
               _n_workers = int(os.environ.get('V3_CPCV_WORKERS', min(_pending_splits, _total_cores, _ram_workers, _row_workers)))
@@ -2730,26 +2900,68 @@ if __name__ == '__main__':
 
                           # Checkpoint after each fold (crash-safe resume)
                           _completed_folds.add(wi)
-                          try:
-                              from atomic_io import atomic_save_pickle
-                              atomic_save_pickle({
-                                  'oos_predictions': oos_predictions,
-                                  'window_results': window_results,
-                                  'completed_folds': list(_completed_folds),
-                                  'best_acc': best_acc,
-                              }, _cpcv_ckpt_path)
-                          except ImportError:
-                              with open(_cpcv_ckpt_path, 'wb') as _ckf:
-                                  pickle.dump({
-                                      'oos_predictions': oos_predictions,
-                                      'window_results': window_results,
-                                      'completed_folds': list(_completed_folds),
-                                      'best_acc': best_acc,
-                                  }, _ckf)
+                          _save_cpcv_checkpoint(
+                              _cpcv_ckpt_path,
+                              oos_predictions,
+                              window_results,
+                              _completed_folds,
+                              best_acc,
+                              meta=_runtime_failure_metadata(
+                                  'cpcv_parallel',
+                                  tf_name,
+                                  {
+                                      'status': 'running',
+                                      'completed_fold_count': len(_completed_folds),
+                                      'total_folds': len(splits),
+                                      'worker_count': _n_workers,
+                                      'threads_per_worker': _threads_per_worker,
+                                  },
+                              ),
+                          )
+                          _write_resume_metadata(
+                              _cpcv_meta_path,
+                              _runtime_failure_metadata(
+                                  'cpcv_parallel',
+                                  tf_name,
+                                  {
+                                      'status': 'running',
+                                      'completed_fold_count': len(_completed_folds),
+                                      'total_folds': len(splits),
+                                      'worker_count': _n_workers,
+                                      'threads_per_worker': _threads_per_worker,
+                                      'checkpoint_path': _cpcv_ckpt_path,
+                                  },
+                              ),
+                          )
 
               except (BrokenProcessPool, Exception) as _pool_err:
                   log(f"\n  PARALLEL CPCV POOL ERROR: {type(_pool_err).__name__}: {_pool_err}")
-                  log(f"  Completed {len(_completed_folds)} folds before crash — checkpoint saved")
+                  _failure_meta = _runtime_failure_metadata(
+                      'cpcv_parallel',
+                      tf_name,
+                      {
+                          'status': 'failed',
+                          'error_type': type(_pool_err).__name__,
+                          'error': str(_pool_err),
+                          'completed_fold_count': len(_completed_folds),
+                          'total_folds': len(splits),
+                          'worker_count': _n_workers,
+                          'threads_per_worker': _threads_per_worker,
+                      },
+                  )
+                  _save_cpcv_checkpoint(
+                      _cpcv_ckpt_path,
+                      oos_predictions,
+                      window_results,
+                      _completed_folds,
+                      best_acc,
+                      meta=_failure_meta,
+                  )
+                  _write_resume_metadata(_cpcv_meta_path, _failure_meta)
+                  if _completed_folds:
+                      log(f"  Checkpoint updated with {len(_completed_folds)}/{len(splits)} completed folds before crash")
+                  else:
+                      log("  No CPCV folds completed before crash; resume point is the validated upstream artifacts")
                   # Cleanup SharedMemory before fallback
                   for _sb in _shm_blocks:
                       try:
@@ -2758,77 +2970,10 @@ if __name__ == '__main__':
                       except Exception:
                           pass
                   _shm_blocks = []
-
-                  # Fallback: run remaining folds SEQUENTIALLY in main process
-                  _remaining = [a for a in worker_args if a[0] not in _completed_folds]
-                  if _remaining:
-                      log(f"  FALLBACK: running {len(_remaining)} remaining folds sequentially in main process")
-                      for _fb_args in _remaining:
-                          _fb_wi = _fb_args[0]
-                          # Rebuild args with raw arrays (SharedMemory is cleaned up)
-                          if isinstance(_fb_args[3], dict):
-                              _fb_args = (
-                                  _fb_args[0], _fb_args[1], _fb_args[2],
-                                  X_csr.data, X_csr.indices, X_csr.indptr, X_csr.shape,
-                              ) + _fb_args[7:]
-                          try:
-                              result = _cpcv_split_worker(_fb_args)
-                              (wi, acc, prec_long, prec_short, mlogloss_val, best_iter,
-                               model_bytes, preds_3c, y_test, test_idx_valid,
-                               importance, is_acc, is_mlogloss, is_sharpe) = result
-                              if acc is None:
-                                  log(f"  Fallback fold {_fb_wi+1}: SKIP (not enough samples)")
-                                  _n_failed_folds += 1
-                                  continue
-                              oos_predictions.append({
-                                  'path': wi, 'test_indices': test_idx_valid,
-                                  'y_true': y_test, 'y_pred_probs': preds_3c,
-                                  'y_pred_labels': np.argmax(preds_3c, axis=1),
-                                  'is_accuracy': is_acc, 'is_mlogloss': is_mlogloss, 'is_sharpe': is_sharpe,
-                              })
-                              window_results.append({
-                                  'window': wi + 1, 'accuracy': acc,
-                                  'prec_long': prec_long, 'prec_short': prec_short,
-                                  'mlogloss': mlogloss_val,
-                                  'train_size': 0, 'test_size': len(y_test),
-                                  'n_trees': best_iter, 'importance': importance,
-                              })
-                              log(f"  Fallback fold {_fb_wi+1}: Acc={acc:.3f} PrecL={prec_long:.3f} "
-                                  f"PrecS={prec_short:.3f} mlogloss={mlogloss_val:.4f}")
-                              if acc > best_acc:
-                                  best_acc = acc
-                                  import tempfile as _tmpmod
-                                  _tmp = _tmpmod.NamedTemporaryFile(suffix='.txt', delete=False)
-                                  _tmp.write(model_bytes)
-                                  _tmp.close()
-                                  best_model_obj = lgb.Booster(model_file=_tmp.name)
-                                  os.unlink(_tmp.name)
-                              _completed_folds.add(wi)
-                              try:
-                                  from atomic_io import atomic_save_pickle
-                                  atomic_save_pickle({
-                                      'oos_predictions': oos_predictions,
-                                      'window_results': window_results,
-                                      'completed_folds': list(_completed_folds),
-                                      'best_acc': best_acc,
-                                  }, _cpcv_ckpt_path)
-                              except ImportError:
-                                  with open(_cpcv_ckpt_path, 'wb') as _ckf:
-                                      pickle.dump({
-                                          'oos_predictions': oos_predictions,
-                                          'window_results': window_results,
-                                          'completed_folds': list(_completed_folds),
-                                          'best_acc': best_acc,
-                                      }, _ckf)
-                          except Exception as _fb_err:
-                              log(f"  Fallback fold {_fb_wi+1} FAILED: {type(_fb_err).__name__}: {_fb_err}")
-                              _n_failed_folds += 1
-                      log(f"  FALLBACK complete: {len(window_results)} folds succeeded")
-
-                  if not window_results:
-                      raise RuntimeError(
-                          f"Parallel CPCV failed AND sequential fallback failed: {_pool_err}"
-                      ) from _pool_err
+                  raise RuntimeError(
+                      f"Parallel CPCV pool failed after {len(_completed_folds)}/{len(splits)} completed folds: "
+                      f"{type(_pool_err).__name__}: {_pool_err}"
+                  ) from _pool_err
 
               if _n_failed_folds > 0:
                   log(f"  WARNING: {_n_failed_folds} folds returned None (skipped or worker error)")
@@ -2848,7 +2993,28 @@ if __name__ == '__main__':
                   else:
                       os.environ[_ek] = _ev
 
+              _write_resume_metadata(
+                  _cpcv_meta_path,
+                  _runtime_failure_metadata(
+                      'cpcv_parallel',
+                      tf_name,
+                      {
+                          'status': 'completed',
+                          'completed_fold_count': len(_completed_folds),
+                          'total_folds': len(splits),
+                          'worker_count': _n_workers,
+                          'threads_per_worker': _threads_per_worker,
+                          'checkpoint_path': _cpcv_ckpt_path,
+                      },
+                  ),
+              )
+
           else:
+              if _fail_on_sequential:
+                  raise RuntimeError(
+                      f"Parallel CPCV is required by contract (min_parallelism={max(1, _min_parallelism_required)}) "
+                      "but execution fell through to sequential CPCV"
+                  )
               # ── Sequential CPCV path (dense matrix or V3_FORCE_SEQUENTIAL=1) ──
 
               # ── FIX: Separate HMM columns from the big sparse matrix ──
@@ -3600,32 +3766,66 @@ if __name__ == '__main__':
           dtrain = lgb.Dataset(X_tr_f, label=y_tr_f, weight=w_tr_f, **_final_ds_kwargs)
           dval = lgb.Dataset(X_val_f, label=y_val_f, weight=w_val_f, **_final_ds_kwargs)
           _final_ckpt_path = _artifact_output_path(f'lgbm_ckpt_{tf_name}_final.txt')
+          _final_resume_meta_path = _artifact_output_path(f'lgbm_ckpt_{tf_name}_final.meta.json')
           _final_es_rounds = max(50, int(100 * (0.1 / final_params.get('learning_rate', 0.03))))
           if tf_name in _CFG_TF_ES:
               _final_es_rounds = _CFG_TF_ES[tf_name]
-          if _use_gpu_sparse() and hasattr(X_tr_f, 'tocsr'):
-              # GPU sparse histogram path for final model
-              _X_csr_final = X_tr_f.tocsr() if not isinstance(X_tr_f, sp_sparse.csr_matrix) else X_tr_f
-              final_model = _train_gpu(
-                  final_params, dtrain, dval, _X_csr_final,
-                  num_boost_round=_tf_boost_rounds,
-                  early_stopping_rounds=_final_es_rounds,
-                  checkpoint_cb=CheckpointCallback(_final_ckpt_path, period=_CHECKPOINT_PERIOD),
-                  log_period=100,
-              )
-              del _X_csr_final
+          _final_resume_meta = _runtime_failure_metadata(
+              'final_retrain',
+              tf_name,
+              {
+                  'status': 'running',
+                  'checkpoint_path': _final_ckpt_path,
+                  'resume_hint': 'resume from final LightGBM checkpoint if present',
+                  'rows_train': int(X_tr_f.shape[0]),
+                  'rows_val': int(X_val_f.shape[0]),
+                  'feature_count': len(_final_feature_cols),
+                  'num_threads': final_params.get('num_threads'),
+              },
+          )
+          _write_resume_metadata(_final_resume_meta_path, _final_resume_meta)
+          try:
+              if _use_gpu_sparse() and hasattr(X_tr_f, 'tocsr'):
+                  # GPU sparse histogram path for final model
+                  _X_csr_final = X_tr_f.tocsr() if not isinstance(X_tr_f, sp_sparse.csr_matrix) else X_tr_f
+                  try:
+                      final_model = _train_gpu(
+                          final_params, dtrain, dval, _X_csr_final,
+                          num_boost_round=_tf_boost_rounds,
+                          early_stopping_rounds=_final_es_rounds,
+                          checkpoint_cb=CheckpointCallback(_final_ckpt_path, period=_CHECKPOINT_PERIOD),
+                          log_period=100,
+                      )
+                  finally:
+                      del _X_csr_final
+              else:
+                  if _GPU_SPARSE_AVAILABLE and not hasattr(X_tr_f, 'tocsr'):
+                      log(f"  WARNING: GPU fork available but final data is dense — using CPU training")
+                  final_model = lgb.train(
+                      final_params, dtrain, num_boost_round=_tf_boost_rounds,
+                      valid_sets=[dtrain, dval], valid_names=['train', 'val'],
+                      callbacks=[
+                          lgb.early_stopping(_final_es_rounds),
+                          lgb.log_evaluation(100),
+                          CheckpointCallback(_final_ckpt_path, period=_CHECKPOINT_PERIOD),
+                      ],
+                  )
+          except Exception as _final_train_err:
+              _failed_meta = dict(_final_resume_meta)
+              _failed_meta.update({
+                  'status': 'failed',
+                  'error_type': type(_final_train_err).__name__,
+                  'error': str(_final_train_err),
+              })
+              _write_resume_metadata(_final_resume_meta_path, _failed_meta)
+              raise
           else:
-              if _GPU_SPARSE_AVAILABLE and not hasattr(X_tr_f, 'tocsr'):
-                  log(f"  WARNING: GPU fork available but final data is dense — using CPU training")
-              final_model = lgb.train(
-                  final_params, dtrain, num_boost_round=_tf_boost_rounds,
-                  valid_sets=[dtrain, dval], valid_names=['train', 'val'],
-                  callbacks=[
-                      lgb.early_stopping(_final_es_rounds),
-                      lgb.log_evaluation(100),
-                      CheckpointCallback(_final_ckpt_path, period=_CHECKPOINT_PERIOD),
-                  ],
-              )
+              _done_meta = dict(_final_resume_meta)
+              _done_meta.update({
+                  'status': 'completed',
+                  'best_iteration': int(getattr(final_model, 'best_iteration', 0) or 0),
+              })
+              _write_resume_metadata(_final_resume_meta_path, _done_meta)
 
           # Evaluate on val set (held-out 15% from end, used for early stopping)
           final_preds_3c = _fix_binary_preds(final_model.predict(X_val_f, num_iteration=final_model.best_iteration))

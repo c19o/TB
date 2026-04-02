@@ -3,6 +3,8 @@
 # Read EVERY section. Another Claude session will use this as its sole reference.
 # Last in warm-start cascade: 1w -> 1d -> 4h -> 1h -> **15m**
 
+Status: reference/caveat doc only. Maintained deployment authority is `CLOUD_DEPLOYMENT_FRAMEWORK.md`, `CLOUD_15M_PROFILE.md`, `deploy_15m.sh`, and `contracts/deploy_profiles.json`.
+
 ---
 
 ## Machine Requirements

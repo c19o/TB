@@ -35,6 +35,22 @@ import pandas as pd
 import sqlite3
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+ARTIFACT_ROOT = os.environ.get('SAVAGE22_ARTIFACT_DIR', os.environ.get('V30_DATA_DIR', PROJECT_DIR))
+
+
+def _artifact_candidates(*names):
+    candidates = []
+    for name in names:
+        candidates.append(os.path.join(ARTIFACT_ROOT, name))
+        candidates.append(os.path.join(PROJECT_DIR, name))
+    return candidates
+
+
+def _first_existing(*names):
+    for candidate in _artifact_candidates(*names):
+        if os.path.exists(candidate):
+            return candidate
+    return _artifact_candidates(*names)[0]
 
 # PyTorch imports
 try:
@@ -256,8 +272,8 @@ def prepare_data(tf_name):
     window = cfg['window']
 
     # Load features — parquet-first (pipeline now outputs parquet)
-    parquet_path = os.path.join(PROJECT_DIR, f'features_{tf_name}.parquet')
-    db_path = os.path.join(PROJECT_DIR, f'features_{tf_name}.db')
+    parquet_path = _first_existing(f'features_BTC_{tf_name}.parquet', f'features_{tf_name}.parquet')
+    db_path = _first_existing(f'features_{tf_name}.db')
     table = f'features_{tf_name}'
     data_source = None
 
@@ -496,7 +512,8 @@ def train_lstm(tf_name, device=None):
     if best_state:
         model.load_state_dict(best_state)
 
-    save_path = os.path.join(PROJECT_DIR, f'lstm_{tf_name}.pt')
+    save_path = os.path.join(ARTIFACT_ROOT, f'lstm_{tf_name}.pt')
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save({
         'model_state': model.state_dict(),
         'config': cfg,
@@ -533,7 +550,7 @@ class LSTMFeatureExtractor:
 
     def _load(self):
         """Load trained LSTM model."""
-        path = os.path.join(PROJECT_DIR, f'lstm_{self.tf_name}.pt')
+        path = os.path.join(ARTIFACT_ROOT, f'lstm_{self.tf_name}.pt')
         if not os.path.exists(path):
             log.warning(f"No LSTM model found at {path}")
             return
@@ -765,8 +782,8 @@ def main():
         extractor = LSTMFeatureExtractor(args.tf)
 
         # Load features — parquet-first (pipeline now outputs parquet)
-        _pq_p = os.path.join(PROJECT_DIR, f'features_{args.tf}.parquet')
-        _db_p = os.path.join(PROJECT_DIR, f'features_{args.tf}.db')
+        _pq_p = _first_existing(f'features_BTC_{args.tf}.parquet', f'features_{args.tf}.parquet')
+        _db_p = _first_existing(f'features_{args.tf}.db')
         _table = f'features_{args.tf}'
         if os.path.exists(_pq_p):
             df = pd.read_parquet(_pq_p)

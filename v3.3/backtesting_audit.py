@@ -63,10 +63,20 @@ print(f"[LightGBM] Loaded LightGBM {lgb.__version__}")
 # ---------------------------------------------------------------------------
 # Paths & constants
 # ---------------------------------------------------------------------------
-DB_DIR = os.environ.get('SAVAGE22_DB_DIR', os.path.dirname(os.path.abspath(__file__)))
+SHARED_DB_ROOT = os.environ.get('SAVAGE22_DB_DIR', os.path.dirname(os.path.abspath(__file__)))
+ARTIFACT_ROOT = os.environ.get('SAVAGE22_ARTIFACT_DIR', os.environ.get('V30_DATA_DIR', SHARED_DB_ROOT))
 START_TIME = time.time()
 STARTING_BALANCE = CONFIG_STARTING_BALANCE if _HAS_CONFIG else 10000.0
 FEE_RATE = CONFIG_FEE_RATE if _HAS_CONFIG else 0.0018
+os.makedirs(ARTIFACT_ROOT, exist_ok=True)
+
+
+def shared_file(name):
+    return os.path.join(SHARED_DB_ROOT, name)
+
+
+def artifact_file(name):
+    return os.path.join(ARTIFACT_ROOT, name)
 
 # Use config.py as single source of truth, fall back to local definition
 if _HAS_CONFIG:
@@ -147,14 +157,14 @@ def load_full_history(tf_name):
     or None on failure.
     """
     cfg = TF_DB_MAP[tf_name]
-    db_path = os.path.join(DB_DIR, cfg['db'])
-    model_path = os.path.join(DB_DIR, f'model_{tf_name}.json')
-    features_all_path = os.path.join(DB_DIR, f'features_{tf_name}_all.json')
-    features_pruned_path = os.path.join(DB_DIR, f'features_{tf_name}_pruned.json')
+    db_path = shared_file(cfg['db'])
+    model_path = artifact_file(f'model_{tf_name}.json')
+    features_all_path = artifact_file(f'features_{tf_name}_all.json')
+    features_pruned_path = artifact_file(f'features_{tf_name}_pruned.json')
 
     # Check for data sources: parquet first (cloud training output), then .db
     parquet_path = db_path.replace('.db', '.parquet')
-    v2_parquet = os.path.join(DB_DIR, f'features_BTC_{tf_name}.parquet')
+    v2_parquet = artifact_file(f'features_BTC_{tf_name}.parquet')
     if not os.path.exists(parquet_path) and os.path.exists(v2_parquet):
         parquet_path = v2_parquet
     has_parquet = os.path.exists(parquet_path)
@@ -278,14 +288,14 @@ def load_full_history(tf_name):
     # --- Load sparse cross features from .npz (matches ml_multi_tf.py lines 602-654) ---
     cross_matrix = None
     cross_cols = None
-    npz_path = os.path.join(DB_DIR, f'v2_crosses_BTC_{tf_name}.npz')
+    npz_path = artifact_file(f'v2_crosses_BTC_{tf_name}.npz')
     if os.path.exists(npz_path):
         try:
             print(f"  Loading sparse cross matrix: {npz_path}", flush=True)
             cross_matrix = sp_sparse.load_npz(npz_path).tocsr()
             # Load column names — try both naming conventions
             cols_path_v1 = npz_path.replace('.npz', '_columns.json')
-            cols_path_v2 = os.path.join(DB_DIR, f'v2_cross_names_BTC_{tf_name}.json')
+            cols_path_v2 = artifact_file(f'v2_cross_names_BTC_{tf_name}.json')
             if os.path.exists(cols_path_v1):
                 with open(cols_path_v1) as f:
                     cross_cols = json.load(f)
@@ -386,7 +396,7 @@ def load_full_history(tf_name):
     # -----------------------------------------------------------------------
     # OOS filtering: only evaluate on out-of-sample bars
     # -----------------------------------------------------------------------
-    oos_path = os.path.join(DB_DIR, f'cpcv_oos_predictions_{tf_name}.pkl')
+    oos_path = artifact_file(f'cpcv_oos_predictions_{tf_name}.pkl')
     if os.path.exists(oos_path):
         import pickle
         with open(oos_path, 'rb') as f:
@@ -470,7 +480,7 @@ def load_full_history(tf_name):
 def load_tf_config(tf_name):
     """Load optimized parameters from optuna_configs.json or per-TF file."""
     # Try combined file
-    combined_path = os.path.join(DB_DIR, 'optuna_configs.json')
+    combined_path = artifact_file('optuna_configs.json')
     if os.path.exists(combined_path):
         with open(combined_path, 'r') as f:
             all_cfg = json.load(f)
@@ -481,7 +491,7 @@ def load_tf_config(tf_name):
                 return profile
 
     # Try per-TF file
-    per_tf_path = os.path.join(DB_DIR, f'optuna_configs_{tf_name}.json')
+    per_tf_path = artifact_file(f'optuna_configs_{tf_name}.json')
     if os.path.exists(per_tf_path):
         with open(per_tf_path, 'r') as f:
             tf_cfg = json.load(f)
@@ -492,7 +502,7 @@ def load_tf_config(tf_name):
                 return profile
 
     # Fall back to GA configs
-    ga_path = os.path.join(DB_DIR, 'ml_multi_tf_configs.json')
+    ga_path = artifact_file('ml_multi_tf_configs.json')
     if os.path.exists(ga_path):
         with open(ga_path, 'r') as f:
             ml_configs = json.load(f)
@@ -1179,7 +1189,7 @@ def main():
     tf_summary = per_tf_summary(all_trades_df, tf_configs)
 
     # --- Output 1: JSON ---
-    json_path = os.path.join(DB_DIR, 'audit_report.json')
+    json_path = artifact_file('audit_report.json')
     report_json = {
         'generated': datetime.now().isoformat(),
         'starting_balance': STARTING_BALANCE,
@@ -1205,12 +1215,12 @@ def main():
     print(f"  Saved: {json_path}", flush=True)
 
     # --- Output 2: Text report ---
-    txt_path = os.path.join(DB_DIR, 'audit_report.txt')
+    txt_path = artifact_file('audit_report.txt')
     write_text_report(txt_path, tf_summary, regime_df, type_df, periods_df, weekly_df, monthly_data, all_trades_df)
     print(f"  Saved: {txt_path}", flush=True)
 
     # --- Output 3: HTML heatmap ---
-    html_path = os.path.join(DB_DIR, 'audit_heatmap.html')
+    html_path = artifact_file('audit_heatmap.html')
     generate_heatmap_html(monthly_data['pnl'], html_path)
     print(f"  Saved: {html_path}", flush=True)
 
@@ -1248,7 +1258,7 @@ TF_BAR_MULTIPLES = {
 def _load_allocation():
     """Load capital allocation from optimal_allocation.json or config defaults."""
     alloc = load_tf_allocation()
-    alloc_path = os.path.join(DB_DIR, 'optimal_allocation.json')
+    alloc_path = artifact_file('optimal_allocation.json')
     if os.path.exists(alloc_path):
         print(f"  Loaded allocation from {alloc_path}", flush=True)
     else:
@@ -2201,7 +2211,7 @@ def unified_main():
     tf_summary_df = per_tf_summary(trades_df, portfolio_stats.get('configs', {}))
 
     # JSON report
-    json_path = os.path.join(DB_DIR, 'unified_audit_report.json')
+    json_path = artifact_file('unified_audit_report.json')
     report_json = {
         'generated': datetime.now().isoformat(),
         'mode': 'unified_multi_tf',
@@ -2236,12 +2246,12 @@ def unified_main():
     print(f"  Saved: {json_path}", flush=True)
 
     # Text report
-    txt_path = os.path.join(DB_DIR, 'unified_audit_report.txt')
+    txt_path = artifact_file('unified_audit_report.txt')
     write_text_report(txt_path, tf_summary_df, regime_df, type_df, periods_df, weekly_df, monthly_data, trades_df, confluence_stats=portfolio_stats)
     print(f"  Saved: {txt_path}", flush=True)
 
     # HTML heatmap
-    html_path = os.path.join(DB_DIR, 'unified_audit_heatmap.html')
+    html_path = artifact_file('unified_audit_heatmap.html')
     generate_heatmap_html(monthly_data['pnl'], html_path)
     print(f"  Saved: {html_path}", flush=True)
 

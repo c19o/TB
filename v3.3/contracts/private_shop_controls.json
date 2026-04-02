@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "contract_name": "Savage22 private-shop controls",
+  "lane_base_branch": "private-shop-core",
+  "lane_branch_prefix": "lane/",
+  "lane_worktree_root": "lanes",
+  "governance_states": [
+    "research",
+    "candidate",
+    "shadow",
+    "live",
+    "retired"
+  ],
+  "timeframes": {
+    "1w": {
+      "backend_certification": {
+        "step5_retrain": {
+          "execution_tier": "cpu_parallel",
+          "degradation_policy": "fail_fast",
+          "transport": "in_process_sparse",
+          "machine_class": "cpu_first_trimmed",
+          "status": "maintained"
+        }
+      },
+      "rare_feature_health": {
+        "required": true,
+        "artifact": "rare_feature_health_1w.json",
+        "checks": [
+          "protected_prefix_coverage",
+          "split_fire_counts",
+          "active_bar_coverage",
+          "rare_feature_drift"
+        ]
+      },
+      "training_inference_parity": {
+        "required": true,
+        "artifact": "training_inference_parity_1w.json",
+        "bundle": [
+          "model_1w.json",
+          "features_1w_all.json",
+          "platt_1w.pkl",
+          "optuna_configs_1w.json"
+        ]
+      },
+      "model_governance": {
+        "required": true,
+        "artifact": "model_governance_1w.json",
+        "default_state": "candidate"
+      }
+    },
+    "1d": {
+      "backend_certification": {
+        "step5_retrain": {
+          "execution_tier": "cpu_parallel_memmap",
+          "degradation_policy": "fail_fast",
+          "transport": "memmap_csr",
+          "machine_class": "cpu_first_high_ram",
+          "status": "target"
+        }
+      },
+      "rare_feature_health": {
+        "required": true,
+        "artifact": "rare_feature_health_1d.json",
+        "checks": [
+          "protected_prefix_coverage",
+          "split_fire_counts",
+          "event_overlap",
+          "rare_feature_drift"
+        ]
+      },
+      "training_inference_parity": {
+        "required": true,
+        "artifact": "training_inference_parity_1d.json",
+        "bundle": [
+          "model_1d.json",
+          "features_1d_all.json",
+          "platt_1d.pkl",
+          "optuna_configs_1d.json",
+          "optimizer_configs_1d.json"
+        ]
+      },
+      "model_governance": {
+        "required": true,
+        "artifact": "model_governance_1d.json",
+        "default_state": "candidate"
+      }
+    },
+    "4h": {
+      "backend_certification": {
+        "step5_retrain": {
+          "execution_tier": "hybrid_parallel",
+          "degradation_policy": "fail_fast",
+          "transport": "memmap_csr_or_gpu_fold",
+          "machine_class": "hybrid_high_ram",
+          "status": "target"
+        }
+      },
+      "rare_feature_health": {
+        "required": true,
+        "artifact": "rare_feature_health_4h.json",
+        "checks": [
+          "protected_prefix_coverage",
+          "split_fire_counts",
+          "event_overlap",
+          "rare_feature_drift"
+        ]
+      },
+      "training_inference_parity": {
+        "required": true,
+        "artifact": "training_inference_parity_4h.json",
+        "bundle": [
+          "model_4h.json",
+          "features_4h_all.json",
+          "platt_4h.pkl",
+          "optuna_configs_4h.json",
+          "optimizer_configs_4h.json"
+        ]
+      },
+      "model_governance": {
+        "required": true,
+        "artifact": "model_governance_4h.json",
+        "default_state": "candidate"
+      }
+    },
+    "1h": {
+      "backend_certification": {
+        "step5_retrain": {
+          "execution_tier": "gpu_parallel",
+          "degradation_policy": "fail_fast",
+          "transport": "gpu_fold_transport",
+          "machine_class": "multi_gpu_high_ram",
+          "status": "target"
+        }
+      },
+      "rare_feature_health": {
+        "required": true,
+        "artifact": "rare_feature_health_1h.json",
+        "checks": [
+          "protected_prefix_coverage",
+          "split_fire_counts",
+          "event_overlap",
+          "rare_feature_drift"
+        ]
+      },
+      "training_inference_parity": {
+        "required": true,
+        "artifact": "training_inference_parity_1h.json",
+        "bundle": [
+          "model_1h.json",
+          "features_1h_all.json",
+          "platt_1h.pkl",
+          "optuna_configs_1h.json",
+          "optimizer_configs_1h.json"
+        ]
+      },
+      "model_governance": {
+        "required": true,
+        "artifact": "model_governance_1h.json",
+        "default_state": "candidate"
+      }
+    },
+    "15m": {
+      "backend_certification": {
+        "step5_retrain": {
+          "execution_tier": "gpu_parallel_same_machine",
+          "degradation_policy": "fail_fast",
+          "transport": "gpu_fold_transport",
+          "machine_class": "same_machine_multi_gpu",
+          "status": "target"
+        }
+      },
+      "rare_feature_health": {
+        "required": true,
+        "artifact": "rare_feature_health_15m.json",
+        "checks": [
+          "protected_prefix_coverage",
+          "split_fire_counts",
+          "event_overlap",
+          "rare_feature_drift"
+        ]
+      },
+      "training_inference_parity": {
+        "required": true,
+        "artifact": "training_inference_parity_15m.json",
+        "bundle": [
+          "model_15m.json",
+          "features_15m_all.json",
+          "platt_15m.pkl",
+          "optuna_configs_15m.json",
+          "optimizer_configs_15m.json"
+        ]
+      },
+      "model_governance": {
+        "required": true,
+        "artifact": "model_governance_15m.json",
+        "default_state": "candidate"
+      }
+    }
+  }
+}

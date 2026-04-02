@@ -29,8 +29,10 @@ _failures = []
 PROJECT_DIR = os.path.dirname(os.path.realpath(__file__))
 VALID_TFS = {'1w', '1d', '4h', '1h', '15m'}
 TF_CONTRACT_FILES = {
-    '1w': os.path.join(PROJECT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json'),
+    tf: os.path.join(PROJECT_DIR, 'contracts', 'pipeline_contract.json')
+    for tf in VALID_TFS
 }
+DEPLOY_PROFILE_PATH = os.path.join(PROJECT_DIR, 'contracts', 'deploy_profiles.json')
 
 try:
     import pipeline_contract as _pipeline_contract  # pragma: no cover
@@ -761,17 +763,17 @@ def check_data_integrity(tf):
 
     sys.path.insert(0, PROJECT_DIR)
     import config as cfg
-    tf_contract, tf_contract_path = _load_tf_contract(tf) if tf == '1w' else (None, None)
-    if tf == '1w':
-        check("1w contract is loadable",
-              tf_contract is not None,
-              f"Missing or unreadable 1w contract at {tf_contract_path}. "
-              f"FIX: restore WEEKLY_1W_ARTIFACT_CONTRACT.json or the contract helper.")
-        if tf_contract:
-            expected_statuses = ['running', 'validated', 'failed', 'complete']
-            check("1w contract heartbeat statuses are canonical",
-                  tf_contract.get('heartbeat_statuses') == expected_statuses,
-                  f"1w heartbeat statuses={tf_contract.get('heartbeat_statuses')} -- must be {expected_statuses}.")
+    tf_contract, tf_contract_path = _load_tf_contract(tf)
+    check(f"{tf} contract is loadable",
+          tf_contract is not None,
+          f"Missing or unreadable pipeline contract entry for {tf} at {tf_contract_path}. "
+          f"FIX: restore contracts/pipeline_contract.json or the contract helper.")
+    if tf_contract:
+        expected_statuses = ['running', 'validated', 'failed', 'complete']
+        heartbeat_statuses = tf_contract.get('heartbeat_statuses', expected_statuses)
+        check(f"{tf} contract heartbeat statuses are canonical",
+              heartbeat_statuses == expected_statuses,
+              f"{tf} heartbeat statuses={heartbeat_statuses} -- must be {expected_statuses}.")
 
     # -- Parquet existence and column count --
     managed_root_contract = any(os.environ.get(name) for name in ('SAVAGE22_RUN_DIR', 'SAVAGE22_ARTIFACT_DIR'))
@@ -821,11 +823,13 @@ def check_data_integrity(tf):
         os.path.join(cfg.V30_DATA_DIR, f'v2_cross_names_BTC_{tf}.json'),
         os.path.join(PROJECT_DIR, f'v2_cross_names_BTC_{tf}.json'),
     ]
-    if tf == '1w':
+    cross_policy = (tf_contract or {}).get('cross_policy', 'required')
+    cross_required = cross_policy == 'required'
+    if not cross_required:
         stale_cross_paths = [p for p in (npz_candidates + json_candidates) if os.path.exists(p)]
-        check("1w: no cross artifacts present (base features only)",
+        check(f"{tf}: no forbidden cross artifacts present",
               len(stale_cross_paths) == 0,
-              f"1w maintained runs are base-features-only. Remove stale cross artifacts: "
+              f"{tf} maintained contract forbids cross artifacts. Remove stale outputs: "
               f"{', '.join(stale_cross_paths[:6])}. FIX: clear cross outputs before validation.")
         npz_path = npz_candidates[0]
         json_path = json_candidates[0]
@@ -845,12 +849,12 @@ def check_data_integrity(tf):
         json_exists = os.path.exists(json_path)
 
     # NPZ and JSON must exist together or not at all
-    if tf != '1w' and npz_exists != json_exists:
+    if cross_required and npz_exists != json_exists:
         check("NPZ/JSON cross files paired",
               False,
               f"NPZ exists={npz_exists}, JSON exists={json_exists}. Must be both or neither. "
               f"FIX: regenerate crosses or delete both.")
-    elif tf != '1w':
+    elif cross_required:
         check("NPZ/JSON cross files paired", True, "")
 
     # -- Sparse matrix dtypes --
@@ -980,6 +984,13 @@ def check_training_consistency():
             contract_doc = contract_doc_path.read_text(encoding='utf-8', errors='ignore')
         except Exception:
             contract_doc = ''
+    framework_doc_path = Path(PROJECT_DIR) / 'CLOUD_DEPLOYMENT_FRAMEWORK.md'
+    framework_doc = ''
+    if framework_doc_path.exists():
+        try:
+            framework_doc = framework_doc_path.read_text(encoding='utf-8', errors='ignore')
+        except Exception:
+            framework_doc = ''
 
     # -- No XGBoost in core training code --
     # Only check files that are in the actual training pipeline
@@ -1019,6 +1030,19 @@ def check_training_consistency():
     check("CLOUD_1W_LAUNCH_CONTRACT.md forbids root fallback artifact validation",
           'not a shared root-level file' in contract_doc and 'Do not accept run-produced artifacts from `/workspace`' in contract_doc,
           "CLOUD_1W_LAUNCH_CONTRACT.md must state that maintained runs do not validate artifacts from /workspace or release-root fallbacks.")
+    check("deploy_tf.py exists",
+          (Path(PROJECT_DIR) / 'deploy_tf.py').exists(),
+          "Missing deploy_tf.py generic maintained deploy engine.")
+    check("deploy_profiles.json exists",
+          Path(DEPLOY_PROFILE_PATH).exists(),
+          "Missing contracts/deploy_profiles.json.")
+    check("CLOUD_DEPLOYMENT_FRAMEWORK.md exists",
+          framework_doc_path.exists(),
+          "Missing CLOUD_DEPLOYMENT_FRAMEWORK.md maintained framework doc.")
+    if framework_doc:
+        check("CLOUD_DEPLOYMENT_FRAMEWORK.md documents SAVAGE22_RUNTIME_HOME",
+              'SAVAGE22_RUNTIME_HOME' in framework_doc,
+              "Framework doc must document the sibling runtime-home contract.")
 
     # -- feature_pre_filter=False in Dataset calls --
     for fname, content in file_contents.items():

@@ -1,0 +1,288 @@
+{
+  "schema_version": 2,
+  "contract_name": "Savage22 maintained deployment profiles",
+  "private_shop_controls_path": "contracts/private_shop_controls.json",
+  "runtime_home_default_windows": "C:\\Users\\C\\Documents\\Savage22 Runtime",
+  "runtime_home_default_posix": "/workspace/runtime",
+  "timeframes": {
+    "1w": {
+      "warm_start_parent": null,
+      "execution_mode": "cpu_first_trimmed",
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": false
+      },
+      "machine_policy": {
+        "hard_floor": {
+          "cpu_cores": 16,
+          "ram_gb": 64,
+          "gpu_count": 1
+        },
+        "preferred_profile": {
+          "cpu_cores": 32,
+          "ram_gb": 128,
+          "gpu_count": 1,
+          "gpu_role": "optional",
+          "notes": "Maintained weekly path is base-features-only and CPU-first."
+        }
+      },
+      "env_defaults": {
+        "ALLOW_CPU": "1",
+        "OPTUNA_MULTI_GPU_SEARCH": "0"
+      },
+      "download_policy": {
+        "shared_seed_source": "gcs-manifest",
+        "restore_parent_artifacts": false,
+        "download_prior_checkpoints": false
+      },
+      "resume_policy": {
+        "prefer_resume_boundaries": [
+          "features_validated",
+          "optuna_validated",
+          "train_validated",
+          "optimizer_validated"
+        ],
+        "allow_cross_resume": false
+      },
+      "same_machine_required": false,
+      "forbidden_behaviors": [
+        "force_cross_generation",
+        "artifact_root_equals_code_root",
+        "accept_shared_root_run_artifacts"
+      ],
+      "post_train_required": [
+        "step6_optimizer"
+      ]
+    },
+    "1d": {
+      "warm_start_parent": "1w",
+      "execution_mode": "cpu_first",
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
+      "machine_policy": {
+        "hard_floor": {
+          "cpu_cores": 32,
+          "ram_gb": 128,
+          "gpu_count": 1
+        },
+        "preferred_profile": {
+          "cpu_cores": 128,
+          "ram_gb": 256,
+          "gpu_count": 1,
+          "gpu_role": "optional",
+          "notes": "Current maintained 1d path is CPU-heavy. GPU is not the primary bottleneck."
+        }
+      },
+      "env_defaults": {
+        "ALLOW_CPU": "1",
+        "OPTUNA_MULTI_GPU_SEARCH": "0",
+        "V2_RIGHT_CHUNK": "500"
+      },
+      "download_policy": {
+        "shared_seed_source": "gcs-manifest",
+        "restore_parent_artifacts": true,
+        "download_prior_checkpoints": true
+      },
+      "resume_policy": {
+        "prefer_resume_boundaries": [
+          "features_validated",
+          "crosses_validated",
+          "optuna_validated",
+          "train_validated",
+          "optimizer_validated"
+        ],
+        "allow_cross_resume": true
+      },
+      "same_machine_required": false,
+      "forbidden_behaviors": [
+        "skip_cross_generation",
+        "artifact_root_equals_code_root",
+        "accept_shared_root_run_artifacts"
+      ],
+      "post_train_required": [
+        "step6_optimizer",
+        "step7_meta",
+        "step8_lstm",
+        "step9_pbo",
+        "step10_audit"
+      ]
+    },
+    "4h": {
+      "warm_start_parent": "1d",
+      "execution_mode": "hybrid_transition",
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
+      "machine_policy": {
+        "hard_floor": {
+          "cpu_cores": 48,
+          "ram_gb": 256,
+          "gpu_count": 1
+        },
+        "preferred_profile": {
+          "cpu_cores": 128,
+          "ram_gb": 512,
+          "gpu_count": 1,
+          "gpu_role": "preferred",
+          "cuda_major": 12,
+          "notes": "4h is the transition lane: CPU-supported, but GPU improves cross-gen and retrain."
+        }
+      },
+      "env_defaults": {
+        "ALLOW_CPU": "1",
+        "OPTUNA_MULTI_GPU_SEARCH": "0",
+        "V2_RIGHT_CHUNK": "500"
+      },
+      "download_policy": {
+        "shared_seed_source": "gcs-manifest",
+        "restore_parent_artifacts": true,
+        "download_prior_checkpoints": true
+      },
+      "resume_policy": {
+        "prefer_resume_boundaries": [
+          "features_validated",
+          "crosses_validated",
+          "optuna_validated",
+          "train_validated",
+          "optimizer_validated"
+        ],
+        "allow_cross_resume": true
+      },
+      "same_machine_required": false,
+      "forbidden_behaviors": [
+        "skip_cross_generation",
+        "artifact_root_equals_code_root",
+        "accept_shared_root_run_artifacts"
+      ],
+      "post_train_required": [
+        "step6_optimizer",
+        "step7_meta",
+        "step8_lstm",
+        "step9_pbo",
+        "step10_audit"
+      ]
+    },
+    "1h": {
+      "warm_start_parent": "4h",
+      "execution_mode": "gpu_required",
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
+      "machine_policy": {
+        "hard_floor": {
+          "cpu_cores": 64,
+          "ram_gb": 512,
+          "gpu_count": 1
+        },
+        "preferred_profile": {
+          "cpu_cores": 128,
+          "ram_gb": 768,
+          "gpu_count": 2,
+          "gpu_role": "required",
+          "cuda_major": 12,
+          "notes": "Maintained 1h path is practically GPU-required for production SLA."
+        }
+      },
+      "env_defaults": {
+        "OPTUNA_MULTI_GPU_SEARCH": "0",
+        "V2_RIGHT_CHUNK": "500"
+      },
+      "download_policy": {
+        "shared_seed_source": "gcs-manifest",
+        "restore_parent_artifacts": true,
+        "download_prior_checkpoints": true
+      },
+      "resume_policy": {
+        "prefer_resume_boundaries": [
+          "features_validated",
+          "crosses_validated",
+          "optuna_validated",
+          "train_validated",
+          "optimizer_validated"
+        ],
+        "allow_cross_resume": true
+      },
+      "same_machine_required": false,
+      "forbidden_behaviors": [
+        "skip_cross_generation",
+        "force_cpu_only",
+        "artifact_root_equals_code_root",
+        "accept_shared_root_run_artifacts"
+      ],
+      "post_train_required": [
+        "step6_optimizer",
+        "step7_meta",
+        "step8_lstm",
+        "step9_pbo",
+        "step10_audit"
+      ]
+    },
+    "15m": {
+      "warm_start_parent": "1h",
+      "execution_mode": "gpu_required_same_machine",
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
+      "machine_policy": {
+        "hard_floor": {
+          "cpu_cores": 96,
+          "ram_gb": 768,
+          "gpu_count": 1
+        },
+        "preferred_profile": {
+          "cpu_cores": 128,
+          "ram_gb": 1024,
+          "gpu_count": 2,
+          "gpu_role": "required",
+          "cuda_major": 12,
+          "notes": "15m is the heaviest lane. Same-machine resume and checkpoint continuity are mandatory."
+        }
+      },
+      "env_defaults": {
+        "OPTUNA_MULTI_GPU_SEARCH": "0",
+        "V2_RIGHT_CHUNK": "500",
+        "V2_BATCH_MAX": "500"
+      },
+      "download_policy": {
+        "shared_seed_source": "gcs-manifest",
+        "restore_parent_artifacts": true,
+        "download_prior_checkpoints": true
+      },
+      "resume_policy": {
+        "prefer_resume_boundaries": [
+          "features_validated",
+          "crosses_validated",
+          "optuna_validated",
+          "train_validated",
+          "optimizer_validated"
+        ],
+        "allow_cross_resume": true
+      },
+      "same_machine_required": true,
+      "forbidden_behaviors": [
+        "skip_cross_generation",
+        "force_cpu_only",
+        "artifact_root_equals_code_root",
+        "accept_shared_root_run_artifacts",
+        "cross_machine_partial_resume"
+      ],
+      "post_train_required": [
+        "step6_optimizer",
+        "step7_meta",
+        "step8_lstm",
+        "step9_pbo",
+        "step10_audit"
+      ]
+    }
+  }
+}

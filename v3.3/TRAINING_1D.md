@@ -1,6 +1,8 @@
 # 1D Training Guide — V3.3
 # Copy-paste ready for a fresh Claude session. Read TRAINING_PLAN.md first.
 
+Status: reference/caveat doc only. Maintained deployment authority is `CLOUD_DEPLOYMENT_FRAMEWORK.md`, `CLOUD_1D_PROFILE.md`, `deploy_1d.sh`, and `contracts/deploy_profiles.json`.
+
 ---
 
 ## Prerequisites

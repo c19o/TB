@@ -38,6 +38,7 @@ os.environ.setdefault("ALLOW_CPU", "1")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 from path_contract import ARTIFACT_ROOT, CODE_ROOT, RUN_ROOT, SHARED_DB_ROOT, ensure_runtime_dirs, is_under
+from deploy_profiles import requires_cupy
 try:
     from gcs_shared_seed import REQUIRED_FILES as SHARED_DB_FILES
 except Exception:
@@ -622,10 +623,9 @@ def check_python_version():
 # ====================================================================
 # CHECK L: Required pip packages
 # ====================================================================
-def check_pip_packages():
+def check_pip_packages(tf):
     print("\n== CHECK L: Required Pip Packages ==")
     required = [
-        ("cupy", "cupy-cuda12x"),
         ("lightgbm", "lightgbm"),
         ("sklearn", "scikit-learn"),
         ("scipy", "scipy"),
@@ -643,6 +643,11 @@ def check_pip_packages():
         ("yaml", "pyyaml"),
         ("torch", "pytorch"),
     ]
+    optional = []
+    if requires_cupy(tf):
+        required.insert(0, ("cupy", "cupy-cuda12x"))
+    else:
+        optional.append(("cupy", "cupy-cuda12x"))
 
     missing = []
     for import_name, pip_name in required:
@@ -662,6 +667,17 @@ def check_pip_packages():
               f"Run: pip install {' '.join(missing)}")
     else:
         check(f"All {len(required)} required packages present", True)
+
+    for import_name, pip_name in optional:
+        try:
+            mod = importlib.import_module(import_name)
+            ver = getattr(mod, "__version__", "?")
+            print(f"    {pip_name:20s} {ver} (optional)")
+        except ImportError:
+            warn(f"Optional package missing: {pip_name}", False,
+                 f"{tf} profile does not require it; install only for GPU-required lanes.")
+        except Exception as e:
+            warn(f"{pip_name} import error", False, str(e)[:100])
 
     # Check for known bad version combos
     try:
@@ -781,7 +797,7 @@ def main():
 
     # Run all checks
     check_python_version()      # K
-    check_pip_packages()         # L
+    check_pip_packages(tf)       # L
     check_root_contract(tf, allow_staged_release=allow_staged_release)
     check_manifest()             # A
     check_pycache()              # B

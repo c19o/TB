@@ -91,6 +91,7 @@ ml_multi_tf_configs.json
 cloud_results_*/
 old_run_holddominated/
 v2_run_balanced_labels/
+lanes/
 
 # Socraticode index
 .socraticodecontextartifacts.json

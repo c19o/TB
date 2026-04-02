@@ -24,13 +24,30 @@ Steps:
   1. Fix btc_prices.db symbol format if needed
   2. Rebuild features if parquet missing or < 2000 cols
   3. Build crosses (v2_cross_generator.py --symbol BTC --save-sparse)
-  5. Optuna hyperparameter search (saves optuna_configs_{tf}.json  params only, no model)
-  4. Train (ml_multi_tf.py --tf TF)  reads Optuna params, VERIFY crosses loaded (SPARSE or DENSE)
-  6-10. Optimizer, meta, LSTM, PBO, audit, SHAP
-  11. Verify all artifacts exist
+  4. Baseline train (ml_multi_tf.py --tf TF)
+  5. Optuna hyperparameter search (saves optuna_configs_{tf}.json params only, no model)
+  6. Retrain with winning params
+  7-10. Optimizer, meta, LSTM, PBO, audit
+  11. SHAP analysis + final artifact verification
 """
-import os, sys, subprocess, time, json, glob, sqlite3, threading, importlib.util
+import os, sys, subprocess, time, json, glob, sqlite3, threading, importlib.util, shlex, shutil
 from path_contract import CODE_ROOT, ARTIFACT_ROOT, RUN_ROOT, SHARED_DB_ROOT, V1_ROOT, artifact_path, db_path, run_path, ensure_runtime_dirs
+try:
+    from pipeline_contract import heartbeat_statuses as _contract_heartbeat_statuses
+    from pipeline_contract import load_timeframe_contract as _load_timeframe_contract
+    from pipeline_contract import phase_degradation_policy as _contract_phase_degradation_policy
+    from pipeline_contract import phase_min_parallelism as _contract_phase_min_parallelism
+except Exception:
+    _contract_heartbeat_statuses = None
+    _load_timeframe_contract = None
+    _contract_phase_degradation_policy = None
+    _contract_phase_min_parallelism = None
+try:
+    from deploy_profiles import env_defaults as _deploy_env_defaults
+    from deploy_profiles import execution_mode as _deploy_execution_mode
+except Exception:
+    _deploy_env_defaults = None
+    _deploy_execution_mode = None
 try:
     import psutil
     _HAS_PSUTIL = True
@@ -124,6 +141,14 @@ def _script(name):
 TF = sys.argv[sys.argv.index('--tf') + 1] if '--tf' in sys.argv else '1d'
 ASSEMBLY_LINE = ('--assembly-line' in sys.argv) or (os.environ.get('SAVAGE22_AUTO_ASSEMBLY', '0') == '1')
 
+def _parse_resume_from(argv):
+    for i, token in enumerate(argv):
+        if token == '--resume-from' and i + 1 < len(argv):
+            return argv[i + 1]
+        if token.startswith('--resume-from='):
+            return token.split('=', 1)[1]
+    return os.environ.get('SAVAGE22_RESUME_FROM', '').strip()
+
 _MANAGED_RUN = any(os.environ.get(name) for name in ('SAVAGE22_RUN_DIR', 'SAVAGE22_ARTIFACT_DIR'))
 if _MANAGED_RUN:
     if ARTIFACT_ROOT == CODE_ROOT or RUN_ROOT == CODE_ROOT or RUN_ROOT == ARTIFACT_ROOT:
@@ -142,6 +167,9 @@ def _load_first_json(paths):
         except Exception:
             continue
     return None, None
+
+
+_PIPELINE_CONTRACT_SOURCE = os.path.join(_SCRIPT_DIR, 'contracts', 'pipeline_contract.json')
 
 def _default_tf_contract(tf_name):
     cross_required = tf_name != '1w'
@@ -220,34 +248,43 @@ def _default_tf_contract(tf_name):
         'phases': phases,
     }
 
-_TF_CONTRACT_PATHS = []
-if TF == '1w':
-    _TF_CONTRACT_PATHS = [
-        artifact_path('WEEKLY_1W_ARTIFACT_CONTRACT.json'),
-        os.path.join(_SCRIPT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json'),
-    ]
+def _build_tf_contract(tf_name):
+    if _load_timeframe_contract is not None:
+        try:
+            loaded = _load_timeframe_contract(tf_name)
+            phases = {name: dict(cfg) for name, cfg in loaded.get('phases', {}).items()}
+            return {
+                'tf': tf_name,
+                'source': _PIPELINE_CONTRACT_SOURCE,
+                'heartbeat_statuses': _contract_heartbeat_statuses() if callable(_contract_heartbeat_statuses) else ['running', 'validated', 'failed', 'complete'],
+                'skip_crosses': str(loaded.get('cross_policy', 'required')) != 'required',
+                'phases': phases,
+            }
+        except Exception:
+            pass
+    return _default_tf_contract(tf_name)
 
-_LOADED_TF_CONTRACT, _TF_CONTRACT_SOURCE = _load_first_json(_TF_CONTRACT_PATHS)
-if TF == '1w' and _LOADED_TF_CONTRACT is not None:
-    _TF_CONTRACT = dict(_LOADED_TF_CONTRACT)
-    _TF_CONTRACT['source'] = _TF_CONTRACT_SOURCE
-else:
-    _TF_CONTRACT = _default_tf_contract(TF)
 
-if TF == '1w':
-    _phases = dict(_TF_CONTRACT.get('phases', {}))
-    if 'step2_crosses' in _phases:
-        _phases['step2_crosses'] = dict(_phases['step2_crosses'])
-        _phases['step2_crosses']['required_artifacts'] = []
-        _phases['step2_crosses']['policy'] = 'skip'
-        _phases['step2_crosses']['notes'] = 'Maintained 1w run skips crosses by contract.'
-    if 'complete' in _phases:
-        _phases['complete'] = dict(_phases['complete'])
-        _phases['complete']['required_artifacts'] = [
-            a for a in _phases['complete'].get('required_artifacts', [])
-            if 'v2_cross' not in a and 'inference_1w_cross' not in a
-        ]
-    _TF_CONTRACT['phases'] = _phases
+def _tf_profile_env_defaults():
+    if _deploy_env_defaults is None:
+        return {}
+    try:
+        payload = _deploy_env_defaults(TF)
+    except Exception:
+        return {}
+    return {str(k): str(v) for k, v in payload.items()}
+
+
+def _tf_execution_mode():
+    if _deploy_execution_mode is None:
+        return ''
+    try:
+        return str(_deploy_execution_mode(TF)).strip()
+    except Exception:
+        return ''
+
+
+_TF_CONTRACT = _build_tf_contract(TF)
 
 _PHASE_ALIASES = {
     'Deployment verification': 'step0_preflight',
@@ -306,6 +343,10 @@ _PHASE_ALIASES = {
     'Audit 15m': 'step10_audit',
     'SHAP cross feature analysis': 'step11_shap',
     'final-summary': 'complete',
+    '5': 'step5_retrain',
+    'step5': 'step5_retrain',
+    'retrain': 'step5_retrain',
+    'train': 'step5_retrain',
 }
 
 def _canonical_phase(name):
@@ -314,14 +355,35 @@ def _canonical_phase(name):
 def _phase_def(phase):
     return _TF_CONTRACT.get('phases', {}).get(phase, {})
 
+def _phase_policy(phase):
+    return str(_phase_def(phase).get('policy', 'required')).strip().lower()
+
+def _phase_should_run(phase):
+    return _phase_policy(phase) not in ('skip', 'skipped')
+
+def _phase_skip_reason(phase):
+    return str(_phase_def(phase).get('skip_reason', '')).strip()
+
+def _phase_seq(phase):
+    try:
+        return int(_phase_def(phase).get('phase_seq'))
+    except Exception:
+        return None
+
 def _phase_required_artifacts(phase):
     return list(_phase_def(phase).get('required_artifacts', []))
 
 def _phase_artifact_paths(phase):
     return [artifact_path(name) for name in _phase_required_artifacts(phase)]
 
+def _missing_phase_artifacts(phase):
+    return [path for path in _phase_artifact_paths(phase) if not os.path.exists(path)]
+
 def _phase_sentinel_path(phase):
     return run_path(f'{phase}.validated.json')
+
+def _phase_failure_path(phase):
+    return run_path(f'{phase}.failed.json')
 
 def _write_phase_sentinel(phase, status='validated', note=None):
     try:
@@ -335,7 +397,7 @@ def _write_phase_sentinel(phase, status='validated', note=None):
             'run_root': RUN_ROOT,
             'code_root': CODE_ROOT,
             'shared_db_root': SHARED_DB_ROOT,
-            'artifact_contract': os.path.join(_SCRIPT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json') if TF == '1w' else None,
+            'artifact_contract': _TF_CONTRACT.get('source'),
             'release_manifest': run_path('release_manifest.json'),
             'required_artifacts': _phase_required_artifacts(phase),
             'required_artifact_paths': _phase_artifact_paths(phase),
@@ -347,6 +409,214 @@ def _write_phase_sentinel(phase, status='validated', note=None):
             json.dump(payload, f, indent=2)
     except Exception as e:
         log(f"  WARNING: failed to write phase sentinel for {phase}: {e}")
+
+def _write_phase_failure(phase, reason, detail=None, extra=None, status='failed'):
+    try:
+        payload = {
+            'run_id': RUN_ID,
+            'tf': TF,
+            'phase': phase,
+            'phase_seq': _phase_seq(phase),
+            'status': status,
+            'reason': reason,
+            'artifact_root': ARTIFACT_ROOT,
+            'run_root': RUN_ROOT,
+            'code_root': CODE_ROOT,
+            'shared_db_root': SHARED_DB_ROOT,
+            'artifact_contract': _TF_CONTRACT.get('source'),
+            'release_manifest': run_path('release_manifest.json'),
+            'required_artifacts': _phase_required_artifacts(phase),
+            'required_artifact_paths': _phase_artifact_paths(phase),
+            'updated_at': time.time(),
+        }
+        if detail:
+            payload['detail'] = detail
+        if extra:
+            payload.update(extra)
+        with open(_phase_failure_path(phase), 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2)
+    except Exception as e:
+        log(f"  WARNING: failed to write phase failure for {phase}: {e}")
+
+def _clear_phase_failure(phase):
+    try:
+        os.remove(_phase_failure_path(phase))
+    except OSError:
+        pass
+
+def _normalize_resume_phase(raw_phase):
+    if not raw_phase:
+        return ''
+    return _canonical_phase(str(raw_phase).strip())
+
+RESUME_FROM_PHASE = _normalize_resume_phase(_parse_resume_from(sys.argv))
+
+if RESUME_FROM_PHASE and RESUME_FROM_PHASE not in _TF_CONTRACT.get('phases', {}):
+    raise SystemExit(
+        f"Unknown resume phase {RESUME_FROM_PHASE!r} for tf={TF}. "
+        f"Known phases: {', '.join(sorted(_TF_CONTRACT.get('phases', {}).keys()))}"
+    )
+
+def _phase_is_before_resume(phase):
+    if not RESUME_FROM_PHASE:
+        return False
+    resume_seq = _phase_seq(RESUME_FROM_PHASE)
+    phase_seq = _phase_seq(phase)
+    if resume_seq is None or phase_seq is None:
+        return False
+    return phase_seq < resume_seq
+
+def _resume_tolerated_missing_artifacts(phase, missing):
+    tolerated = []
+    if phase == 'step4_optuna' and missing:
+        _dataset_bin = artifact_path(f'lgbm_dataset_{TF}.bin')
+        _optuna_cfg = artifact_path(f'optuna_configs_{TF}.json')
+        for path in missing:
+            if path == _dataset_bin and os.path.exists(_optuna_cfg):
+                tolerated.append(path)
+    return tolerated
+
+def _resume_validate_phase(phase, note):
+    missing = _missing_phase_artifacts(phase)
+    tolerated = _resume_tolerated_missing_artifacts(phase, missing)
+    missing = [path for path in missing if path not in tolerated]
+    if tolerated:
+        log(
+            f"  Resume tolerance: allowing cached artifact miss for {phase}: "
+            + ', '.join(os.path.basename(p) for p in tolerated)
+        )
+    if missing:
+        _detail = f"Cannot resume from {RESUME_FROM_PHASE}: {phase} missing required artifacts"
+        log(f"*** CRITICAL: {_detail}: {', '.join(os.path.basename(p) for p in missing)} ***")
+        _write_phase_failure(
+            phase,
+            reason='resume-boundary-missing-artifacts',
+            detail=_detail,
+            extra={'missing_artifacts': missing, 'resume_from': RESUME_FROM_PHASE},
+        )
+        sys.exit(1)
+    _set_step(phase)
+    log(f"Resume boundary: reusing {phase} artifacts")
+    _write_phase_sentinel(phase, status='validated', note=note)
+    _mark_progress(f"{phase}:validated")
+
+def _artifact_state(paths):
+    state = {}
+    for path in paths:
+        if os.path.exists(path):
+            try:
+                st = os.stat(path)
+                state[path] = {'size': st.st_size, 'mtime_ns': st.st_mtime_ns}
+            except OSError:
+                state[path] = {'size': None, 'mtime_ns': None}
+        else:
+            state[path] = None
+    return state
+
+def _artifact_changed_since(path, before_state, started_ns):
+    now = _artifact_state([path]).get(path)
+    prev = before_state.get(path)
+    if now is None:
+        return False
+    if prev is None:
+        return True
+    if now.get('mtime_ns') is not None and now['mtime_ns'] >= started_ns:
+        return True
+    return now != prev
+
+def _backup_existing_artifacts(paths, dest_dir):
+    os.makedirs(dest_dir, exist_ok=True)
+    copied = []
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        dest = os.path.join(dest_dir, os.path.basename(path))
+        shutil.copy2(path, dest)
+        copied.append(dest)
+    return copied
+
+
+def _load_json_file(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _load_pickle_file(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        import pickle
+        with open(path, 'rb') as f:
+            payload = pickle.load(f)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _step5_runtime_failure_context():
+    json_paths = [
+        artifact_path(f'lgbm_ckpt_{TF}_final.meta.json'),
+        artifact_path(f'cpcv_checkpoint_{TF}.meta.json'),
+    ]
+    for path in json_paths:
+        payload = _load_json_file(path)
+        if payload:
+            payload = dict(payload)
+            payload.setdefault('metadata_path', path)
+            return payload
+    ckpt_payload = _load_pickle_file(artifact_path(f'cpcv_checkpoint_{TF}.pkl'))
+    if ckpt_payload and isinstance(ckpt_payload.get('meta'), dict):
+        payload = dict(ckpt_payload['meta'])
+        payload.setdefault('metadata_path', artifact_path(f'cpcv_checkpoint_{TF}.pkl'))
+        return payload
+    return {}
+
+
+def _step5_failure_reason(context):
+    err_type = str(context.get('error_type', '')).strip()
+    stage = str(context.get('stage', '')).strip()
+    if err_type == 'BrokenProcessPool':
+        return 'parallel_pool_broken'
+    if context.get('status') == 'failed' and stage == 'cpcv_parallel':
+        return 'worker_native_crash'
+    if context.get('status') == 'failed' and stage:
+        return f'{stage}-failed'
+    return 'command-failed'
+
+
+def _step5_failure_detail(context):
+    if not context:
+        return ''
+    stage = str(context.get('stage', 'step5')).strip() or 'step5'
+    err_type = str(context.get('error_type', '')).strip()
+    err = str(context.get('error', '')).strip()
+    completed = context.get('completed_fold_count')
+    total = context.get('total_folds')
+    if completed is not None and total is not None:
+        prefix = f"{stage} failed after {completed}/{total} completed folds"
+    else:
+        prefix = f"{stage} failed"
+    if err_type and err:
+        return f"{prefix}: {err_type}: {err}"
+    if err_type:
+        return f"{prefix}: {err_type}"
+    if err:
+        return f"{prefix}: {err}"
+    return prefix
+
+
+def _train_phase_env_map():
+    env_map = _tf_profile_env_defaults()
+    mode = _tf_execution_mode()
+    if mode.startswith('cpu_first'):
+        env_map['ALLOW_CPU'] = '1'
+    return env_map
 
 def _emit_runtime_contract():
     cudf_available = importlib.util.find_spec('cudf') is not None
@@ -391,6 +661,7 @@ _PROGRESS_WARN_SEC = int(os.environ.get('SAVAGE22_PROGRESS_WARN_SEC', '1800'))
 _RESOURCE_SAMPLE_SEC = int(os.environ.get('SAVAGE22_RESOURCE_SAMPLE_SEC', '300'))
 _LAST_RESOURCE_SNAPSHOT_TS = 0.0
 _LAST_RESOURCE_SNAPSHOT = {}
+FINAL_HEARTBEAT_REASON = None
 
 def _gb(v):
     try:
@@ -519,7 +790,7 @@ def _write_heartbeat(reason=None):
             'code_root': CODE_ROOT,
             'shared_db_root': SHARED_DB_ROOT,
             'heartbeat_path': HEARTBEAT_FILE,
-            'artifact_contract': os.path.join(_SCRIPT_DIR, 'WEEKLY_1W_ARTIFACT_CONTRACT.json') if TF == '1w' else None,
+            'artifact_contract': _TF_CONTRACT.get('source'),
             'release_manifest': run_path('release_manifest.json'),
             'expected_artifacts': _phase_required_artifacts(CURRENT_STEP),
         }
@@ -567,11 +838,18 @@ def run(cmd, name, critical=True):
     r = subprocess.run(cmd, shell=True)
     dt = time.time() - t0
     ok = r.returncode == 0
+    missing = []
+    if ok:
+        missing = _missing_phase_artifacts(CURRENT_STEP)
+        if missing:
+            ok = False
     _mark_progress(f"{name}:{'validated' if ok else 'fail'}")
     if ok:
         _write_phase_sentinel(CURRENT_STEP, status='validated')
     log(f"{name}: {'OK' if ok else 'FAIL'} ({dt:.0f}s)")
     if not ok:
+        if missing:
+            log(f"  Missing required artifacts for {CURRENT_STEP}: {', '.join(os.path.basename(p) for p in missing)}")
         FAILURES.append(name)
         _write_heartbeat(reason=f"{name}:critical-fail" if critical else f"{name}:fail")
         if critical:
@@ -580,7 +858,8 @@ def run(cmd, name, critical=True):
             sys.exit(1)
     return ok
 
-def run_tee(cmd, name, logfile, critical=True):
+def run_tee(cmd, name, logfile, critical=True, verify_phase_artifacts=True,
+            write_phase_sentinel=True, record_failure=True):
     """Run command with output tee'd to logfile  Python Popen drain, no shell pipe.
     Replaces bash 'tee' pipeline which breaks on long runs (SIGPIPE, buffer saturation)."""
     from pathlib import Path
@@ -611,13 +890,21 @@ def run_tee(cmd, name, logfile, critical=True):
         rc = proc.wait()
     dt = time.time() - t0
     ok = rc == 0
+    missing = []
+    if ok and verify_phase_artifacts:
+        missing = _missing_phase_artifacts(CURRENT_STEP)
+        if missing:
+            ok = False
     _mark_progress(f"{name}:{'validated' if ok else 'fail'}")
-    if ok:
+    if ok and write_phase_sentinel:
         _write_phase_sentinel(CURRENT_STEP, status='validated')
     log(f"{name}: {'OK' if ok else 'FAIL'} ({dt:.0f}s)")
     if not ok:
-        FAILURES.append(name)
-        _write_heartbeat(reason=f"{name}:critical-fail" if critical else f"{name}:fail")
+        if missing:
+            log(f"  Missing required artifacts for {CURRENT_STEP}: {', '.join(os.path.basename(p) for p in missing)}")
+        if record_failure:
+            FAILURES.append(name)
+            _write_heartbeat(reason=f"{name}:critical-fail" if critical else f"{name}:fail")
         if critical:
             log(f"*** CRITICAL FAILURE: {name}  aborting ***")
             _print_summary()
@@ -756,7 +1043,7 @@ for _pat in _stale_patterns:
         _keep_current = (
             _basename.startswith(f'features_{TF}_')
             or _basename.startswith(f'features_BTC_{TF}')
-            or (not _skip_crosses and (
+            or ((not _TF_CONTRACT.get('skip_crosses')) and (
                 _basename.startswith(f'v2_crosses_BTC_{TF}')
                 or _basename.startswith(f'v2_cross_names_BTC_{TF}')
             ))
@@ -797,6 +1084,8 @@ def _cleanup_lock():
     except: pass
 def _stop_watchdog(reason=None):
     WATCHDOG_STOP.set()
+    if reason == 'atexit' and FINAL_HEARTBEAT_REASON in ('complete', 'failed'):
+        reason = FINAL_HEARTBEAT_REASON
     _write_heartbeat(reason=reason)
 def _handle_exit_signal(signum, _frame):
     _stop_watchdog(reason=f"signal:{signum}")
@@ -935,7 +1224,9 @@ if not need_rebuild and os.path.exists(parquet_path):
         else:
             log(f"  Parquet OK: {n_cols} base features (v3.3 fingerprint verified)")
 
-if need_rebuild:
+if need_rebuild and _phase_is_before_resume('step1_features'):
+    _resume_validate_phase('step1_features', note=f'resume_boundary_for_{RESUME_FROM_PHASE}')
+elif need_rebuild:
     # Prefer build_features_v2.py (includes V2 layers: 4-tier binarization, entropy,
     # hurst, fib levels, moon signs, aspects, extra lags, etc.)
     # The old build_{TF}_features.py scripts only call build_all_features() without
@@ -1000,6 +1291,8 @@ if need_rebuild:
     _set_step('step1_features')
     _write_phase_sentinel('step1_features', status='validated', note='rebuilt_features')
     _mark_progress('step1_features:validated')
+elif _phase_is_before_resume('step1_features'):
+    _resume_validate_phase('step1_features', note=f'resume_boundary_for_{RESUME_FROM_PHASE}')
 elif os.path.exists(parquet_path):
     _set_step('step1_features')
     _write_phase_sentinel('step1_features', status='validated', note='reused_cached_features')
@@ -1024,7 +1317,7 @@ if _free_gb < 20:
 # Per-TF cross feature toggle: 1w has too few rows (1158) for 2.8M crosses to be meaningful.
 # Base features alone (TA + esoteric + astro + gematria + numerology) give better signal on 1w.
 # The matrix thesis scales with DATA  more rows = more crosses add value.
-SKIP_CROSSES_TFS = {'1w'}  # Base features only  no cross gen
+SKIP_CROSSES_TFS = {TF} if _TF_CONTRACT.get('skip_crosses') else set()
 if TF in SKIP_CROSSES_TFS:
     log(f"  SKIP CROSSES for {TF}  base features only (too few rows for cross features to add signal)")
     log(f"  Matrix signal comes from base feature diversity on {TF}")
@@ -1047,7 +1340,10 @@ cn_path = artifact_path(f'v2_cross_names_BTC_{TF}.json')
 
 _npz_valid = False
 _skip_crosses = TF in SKIP_CROSSES_TFS
-if _skip_crosses:
+if _phase_is_before_resume(cross_phase):
+    _resume_validate_phase(cross_phase, note=f'resume_boundary_for_{RESUME_FROM_PHASE}')
+    _npz_valid = True
+elif _skip_crosses:
     _set_step(cross_phase)
     _npz_valid = True  # maintained 1w run uses base features only
     log(f"  Crosses DISABLED for {TF}  training on base features only")
@@ -1257,7 +1553,10 @@ if ASSEMBLY_LINE:
 
 optuna_config_path = artifact_path(f'optuna_configs_{TF}.json')
 _optuna_cached_ok = False
-if os.path.exists(optuna_config_path):
+if _phase_is_before_resume('step4_optuna'):
+    _resume_validate_phase('step4_optuna', note=f'resume_boundary_for_{RESUME_FROM_PHASE}')
+    _optuna_cached_ok = True
+elif os.path.exists(optuna_config_path):
     try:
         with open(optuna_config_path, 'r', encoding='utf-8') as _f_optuna:
             _optuna_cached = json.load(_f_optuna)
@@ -1285,7 +1584,8 @@ if not _optuna_cached_ok:
         log(f"WARNING: Optuna search did not produce {optuna_config_path}  Step 4 will use config.py defaults")
 
 # ============================================================
-# STEP 4: Train  MUST produce SPARSE output
+# STEP 5: Retrain with winning params. Must produce fresh train artifacts.
+# Resume target: --resume-from step5_retrain
 # ============================================================
 
 # Clean stale CPCV checkpoint  prevents resuming from a previous run's completed folds
@@ -1295,13 +1595,101 @@ if os.path.exists(_cpcv_ckpt):
     log(f"  Preserving CPCV checkpoint candidate: {_cpcv_ckpt}")
 
 train_log = run_path(f'logs/train_{TF}.log')
-run_tee(f'env V3_HOT_PATH_TRAINING=1 V3_RUN_FI_STABILITY=1 {_NUMA_PREFIX}python -X utf8 -u {_script("ml_multi_tf.py")} --tf {TF}',
-        f'Train {TF}', train_log)
+_train_phase = 'step5_retrain'
+_train_required_paths = _phase_artifact_paths(_train_phase)
+_train_pre_state = _artifact_state(_train_required_paths)
+_train_backup_dir = run_path(f'resume/{TF}/step5_preexisting')
+_train_backups = _backup_existing_artifacts(_train_required_paths, _train_backup_dir)
+if _train_backups:
+    log(f"Step 5 resume safety: backed up {len(_train_backups)} pre-existing train artifact(s) to {_train_backup_dir}")
+_resume_cmd = f'python -X utf8 -u {_script("cloud_run_tf.py")} --tf {TF} --resume-from step5_retrain'
+_train_env_map = _train_phase_env_map()
+_train_degradation_policy = ''
+_train_min_parallelism = 0
+if _contract_phase_degradation_policy:
+    try:
+        _train_degradation_policy = _contract_phase_degradation_policy(TF, _train_phase, _PIPELINE_CONTRACT_SOURCE)
+        _train_min_parallelism = int(_contract_phase_min_parallelism(TF, _train_phase, _PIPELINE_CONTRACT_SOURCE) or 0)
+    except Exception:
+        _train_degradation_policy = ''
+        _train_min_parallelism = 0
+_train_cmd_env = dict(_train_env_map)
+_train_cmd_env.update({
+    'V3_HOT_PATH_TRAINING': '1',
+    'V3_RUN_FI_STABILITY': '1',
+    'PYTHONFAULTHANDLER': '1',
+    'V3_FAIL_ON_SEQUENTIAL': '1' if _train_degradation_policy == 'fail_fast' and _train_min_parallelism > 1 else '0',
+    'V3_MIN_PARALLELISM': str(_train_min_parallelism),
+    'V3_COPY_SHM_ARRAYS': '1' if _tf_execution_mode() == 'cpu_first' else '0',
+})
+_train_env_prefix = 'env ' + ' '.join(
+    f'{key}={shlex.quote(str(value))}' for key, value in sorted(_train_cmd_env.items())
+) + ' '
+_clear_phase_failure(_train_phase)
+_write_phase_failure(
+    _train_phase,
+    reason='pending',
+    detail='step5_retrain starting',
+    status='pending',
+    extra={
+        'resume_hint': _resume_cmd,
+        'train_log': train_log,
+        'preexisting_artifacts': [p for p in _train_required_paths if _train_pre_state.get(p)],
+        'execution_mode': _tf_execution_mode(),
+        'train_env': _train_env_map,
+        'preserved_prereq_artifacts': {
+            'step1_features': _phase_artifact_paths('step1_features'),
+            'step2_crosses': _phase_artifact_paths('step2_crosses'),
+            'step4_optuna': _phase_artifact_paths('step4_optuna'),
+        },
+        'cpcv_checkpoint': _cpcv_ckpt if os.path.exists(_cpcv_ckpt) else '',
+    },
+)
+_train_started_ns = time.time_ns()
+_train_ok = run_tee(
+    f'{_train_env_prefix}{_NUMA_PREFIX}python -X utf8 -u {_script("ml_multi_tf.py")} --tf {TF}',
+    f'Train {TF}',
+    train_log,
+    critical=False,
+    verify_phase_artifacts=False,
+    write_phase_sentinel=False,
+    record_failure=False,
+)
+if not _train_ok:
+    _train_runtime_failure = _step5_runtime_failure_context()
+    _train_reason = _step5_failure_reason(_train_runtime_failure)
+    _train_missing = _missing_phase_artifacts(_train_phase)
+    _detail = 'Training command failed before fresh step5 artifacts were validated'
+    _runtime_detail = _step5_failure_detail(_train_runtime_failure)
+    if _runtime_detail:
+        _detail = _runtime_detail
+    if _train_missing:
+        _detail += f"; missing: {', '.join(os.path.basename(p) for p in _train_missing)}"
+    _write_phase_failure(
+        _train_phase,
+        reason=_train_reason,
+        detail=_detail,
+        extra={
+            'resume_hint': _resume_cmd,
+            'train_log': train_log,
+            'missing_artifacts': _train_missing,
+            'execution_mode': _tf_execution_mode(),
+            'train_env': _train_env_map,
+            'runtime_failure': _train_runtime_failure,
+        },
+    )
+    FAILURES.append(f'{_train_phase}:{_train_reason}')
+    _write_heartbeat(reason=f'{_train_phase}:{_train_reason}')
+    log(f"*** CRITICAL FAILURE: {_train_phase} failed. Resume with: {_resume_cmd} ***")
+    _print_summary()
+    sys.exit(1)
 
 # CRITICAL VERIFICATION: Check that cross features were loaded (SPARSE or DENSE both valid)
 log("=== CROSS FEATURE VERIFICATION ===")
 crosses_loaded = False
 combined_line = ""
+_accuracy_floor_hit = False
+_model_saved_line = ""
 if os.path.exists(train_log):
     with open(train_log, 'r', errors='replace') as f:
         for line in f:
@@ -1310,6 +1698,10 @@ if os.path.exists(train_log):
                 log(f"  VERIFIED: {line.strip()}")
             if 'Combined sparse' in line or 'Combined' in line:
                 combined_line = line.strip()
+            if 'ACCURACY BELOW FLOOR' in line:
+                _accuracy_floor_hit = True
+            if 'Model saved:' in line:
+                _model_saved_line = line.strip()
 
 if crosses_loaded:
     log("  PASS: Training loaded cross features")
@@ -1318,6 +1710,15 @@ if crosses_loaded:
 else:
     log("*** CRITICAL: Training did NOT load cross features! ***")
     log("  Check cross_{TF}.log and train_{TF}.log")
+    _write_phase_failure(
+        _train_phase,
+        reason='cross-features-not-loaded',
+        detail='Training completed without logging sparse/dense feature load confirmation',
+        extra={'resume_hint': _resume_cmd, 'train_log': train_log},
+    )
+    FAILURES.append(f'{_train_phase}:cross-features-not-loaded')
+    _write_heartbeat(reason=f'{_train_phase}:cross-features-not-loaded')
+    _print_summary()
     sys.exit(1)
 
 # CRITICAL: Verify model was actually saved (accuracy floor can silently skip save)
@@ -1327,9 +1728,49 @@ if not os.path.exists(_model_path):
     log(f"  Training exited OK but model was not saved.")
     log(f"  Most likely cause: final accuracy < 0.40 (accuracy floor).")
     log(f"  Check {train_log} for 'ACCURACY BELOW FLOOR' message.")
-    FAILURES.append(f'Model {TF} missing')
+    _write_phase_failure(
+        _train_phase,
+        reason='model-missing-after-train',
+        detail='Training exited without producing model artifact',
+        extra={
+            'resume_hint': _resume_cmd,
+            'train_log': train_log,
+            'accuracy_floor_detected': _accuracy_floor_hit,
+        },
+    )
+    FAILURES.append(f'{_train_phase}:model-missing')
     _print_summary()
     sys.exit(1)
+
+_stale_train_artifacts = [
+    path for path in _train_required_paths
+    if not _artifact_changed_since(path, _train_pre_state, _train_started_ns)
+]
+if _stale_train_artifacts:
+    log("*** CRITICAL: Step 5 did not refresh all train artifacts. ***")
+    log(f"  Stale artifacts: {', '.join(os.path.basename(p) for p in _stale_train_artifacts)}")
+    if _model_saved_line:
+        log(f"  Last save evidence: {_model_saved_line}")
+    _write_phase_failure(
+        _train_phase,
+        reason='stale-train-artifacts',
+        detail='Retrain reused pre-existing baseline artifacts instead of producing fresh outputs',
+        extra={
+            'resume_hint': _resume_cmd,
+            'train_log': train_log,
+            'stale_artifacts': _stale_train_artifacts,
+            'accuracy_floor_detected': _accuracy_floor_hit,
+            'model_saved_line': _model_saved_line,
+        },
+    )
+    FAILURES.append(f'{_train_phase}:stale-artifacts')
+    _write_heartbeat(reason=f'{_train_phase}:stale-artifacts')
+    _print_summary()
+    sys.exit(1)
+
+_clear_phase_failure(_train_phase)
+_write_phase_sentinel(_train_phase, status='validated', note='fresh_retrain_artifacts')
+_mark_progress(f'{_train_phase}:validated')
 
 # PROTECT Step 4 model from any downstream overwrite
 import shutil
@@ -1396,30 +1837,53 @@ from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 def _run_step(name, cmd, logfile):
     """Wrapper for parallel step execution."""
     try:
-        run_tee(cmd, name, logfile, critical=False)
-        return (name, True)
+        ok = run_tee(cmd, name, logfile, critical=False)
+        return (name, ok)
     except Exception as e:
         log(f"  {name} failed: {e}")
         return (name, False)
 
-_parallel_steps = [
-    (f'Meta {TF}',  f'python -X utf8 -u {_script("meta_labeling.py")} --tf {TF}',  run_path(f'logs/meta_{TF}.log')),
-    (f'LSTM {TF}',  f'python -X utf8 -u {_script("lstm_sequence_model.py")} --tf {TF} --train',  run_path(f'logs/lstm_{TF}.log')),
-    (f'PBO {TF}',   f'python -X utf8 -u {_script("backtest_validation.py")} --tf {TF}',  run_path(f'logs/pbo_{TF}.log')),
+_parallel_phase_specs = [
+    ('step7_meta', f'Meta {TF}',  f'python -X utf8 -u {_script("meta_labeling.py")} --tf {TF} --db-dir {shlex.quote(ARTIFACT_ROOT)}',  run_path(f'logs/meta_{TF}.log')),
+    ('step8_lstm', f'LSTM {TF}',  f'python -X utf8 -u {_script("lstm_sequence_model.py")} --tf {TF} --train',  run_path(f'logs/lstm_{TF}.log')),
+    ('step9_pbo',  f'PBO {TF}',   f'python -X utf8 -u {_script("backtest_validation.py")} --tf {TF} --db-dir {shlex.quote(ARTIFACT_ROOT)}',  run_path(f'logs/pbo_{TF}.log')),
 ]
+_parallel_steps = []
+for _phase_name, _step_name, _cmd, _logfile in _parallel_phase_specs:
+    if _phase_should_run(_phase_name):
+        _parallel_steps.append((_step_name, _cmd, _logfile))
+    else:
+        _set_step(_phase_name)
+        _skip_note = _phase_skip_reason(_phase_name) or 'skipped_by_contract'
+        log(f"=== {_step_name} skipped by contract: {_skip_note} ===")
+        _write_phase_sentinel(_phase_name, status='validated', note=_skip_note)
+        _mark_progress(f"{_phase_name}:validated")
 
-log(f"=== Steps 7,8,9 launching in parallel ({len(_parallel_steps)} tasks) ===")
-with ThreadPoolExecutor(max_workers=len(_parallel_steps)) as _step_pool:
-    _step_futures = {_step_pool.submit(_run_step, n, c, l): n for n, c, l in _parallel_steps}
-    for _sf in _as_completed(_step_futures):
-        _sname, _sok = _sf.result()
-        log(f"  {_sname}: {'OK' if _sok else 'FAIL'}")
+if _parallel_steps:
+    log(f"=== Steps 7,8,9 launching in parallel ({len(_parallel_steps)} tasks) ===")
+    with ThreadPoolExecutor(max_workers=len(_parallel_steps)) as _step_pool:
+        _step_futures = {_step_pool.submit(_run_step, n, c, l): n for n, c, l in _parallel_steps}
+        for _sf in _as_completed(_step_futures):
+            _sname, _sok = _sf.result()
+            log(f"  {_sname}: {'OK' if _sok else 'FAIL'}")
+else:
+    log("=== Steps 7,8,9 skipped by contract ===")
 
 # ============================================================
 # STEP 10: Audit (sequential  depends on Step 6 optimizer output)
 # ============================================================
-run_tee(f'python -X utf8 -u {_script("backtesting_audit.py")} --tf {TF}',
-        f'Audit {TF}', run_path(f'logs/audit_{TF}.log'), critical=False)
+if _phase_should_run('step10_audit'):
+    _audit_ok = run_tee(
+        f'python -X utf8 -u {_script("backtesting_audit.py")} --tf {TF}',
+        f'Audit {TF}', run_path(f'logs/audit_{TF}.log'), critical=False
+    )
+    log(f"  Audit {TF}: {'OK' if _audit_ok else 'FAIL'}")
+else:
+    _set_step('step10_audit')
+    _audit_skip_note = _phase_skip_reason('step10_audit') or 'skipped_by_contract'
+    log(f"=== Audit {TF} skipped by contract: {_audit_skip_note} ===")
+    _write_phase_sentinel('step10_audit', status='validated', note=_audit_skip_note)
+    _mark_progress('step10_audit:validated')
 
 # ============================================================
 # STEP 11: SHAP Cross Feature Validation (non-fatal)
@@ -1432,7 +1896,7 @@ try:
     import lightgbm as lgb
 
     # Load model
-    model = lgb.Booster(model_file=f'model_{TF}.json')
+    model = lgb.Booster(model_file=artifact_path(f'model_{TF}.json'))
 
     # Get features with non-zero split count (reduces 3.34M -> likely ~50K-200K active)
     all_features = model.feature_name()
@@ -1493,9 +1957,9 @@ try:
         'top_20_families': family_imp.head(20).to_dict(),
         'top_50_features': imp_df.nlargest(50, 'gain')[['feature', 'gain', 'splits', 'is_cross']].to_dict('records'),
     }
-    with open(f'shap_analysis_{TF}.json', 'w') as f:
+    with open(artifact_path(f'shap_analysis_{TF}.json'), 'w') as f:
         json.dump(shap_report, f, indent=2, default=str)
-    log(f"  Saved: shap_analysis_{TF}.json")
+    log(f"  Saved: {artifact_path(f'shap_analysis_{TF}.json')}")
 
 except Exception as e:
     log(f"  SHAP analysis error (non-fatal): {e}")
@@ -1534,6 +1998,7 @@ if len(FAILURES) == 0:
 _print_summary()
 
 if len(FAILURES) == 0:
+    FINAL_HEARTBEAT_REASON = 'complete'
     _write_phase_sentinel('complete', status='complete', note='run_complete')
     with open(run_path(f'DONE_{TF}'), 'w') as f:
         f.write(f"Completed at {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n")
@@ -1542,6 +2007,7 @@ if len(FAILURES) == 0:
     log(f"Wrote {run_path(f'DONE_{TF}')} marker file")
     _write_heartbeat(reason='complete')
 else:
+    FINAL_HEARTBEAT_REASON = 'failed'
     log(f"*** NOT writing DONE_{TF}  {len(FAILURES)} failures: {', '.join(FAILURES)} ***")
     _write_heartbeat(reason='failed')
 

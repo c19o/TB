@@ -16,26 +16,45 @@ def _real_dir(path: str) -> str:
     return os.path.realpath(os.path.abspath(path))
 
 
+def _prefer_existing_runtime_root(runtime_path: str, fallback_path: str) -> str:
+    if os.environ.get("SAVAGE22_RUNTIME_HOME"):
+        return runtime_path
+    return runtime_path if os.path.exists(runtime_path) else fallback_path
+
+
+def _default_runtime_home() -> str:
+    code_root = Path(__file__).resolve().parent
+    project_root = code_root.parent
+    return str((project_root.parent / "Savage22 Runtime").resolve())
+
+
+RUNTIME_HOME = _real_dir(os.environ.get("SAVAGE22_RUNTIME_HOME", _default_runtime_home()))
+_runtime_db_root = os.path.join(RUNTIME_HOME, "shared_db")
+_runtime_artifact_root = os.path.join(RUNTIME_HOME, "artifacts")
+_runtime_run_root = os.path.join(RUNTIME_HOME, "runs")
+
+
 CODE_ROOT = _real_dir(os.path.dirname(__file__))
-SHARED_DB_ROOT = _real_dir(os.environ.get("SAVAGE22_DB_DIR", os.path.dirname(CODE_ROOT)))
+_legacy_db_root = os.path.dirname(CODE_ROOT)
+SHARED_DB_ROOT = _real_dir(os.environ.get("SAVAGE22_DB_DIR", _prefer_existing_runtime_root(_runtime_db_root, _legacy_db_root)))
 V1_ROOT = _real_dir(os.environ.get("SAVAGE22_V1_DIR", SHARED_DB_ROOT))
 ARTIFACT_ROOT = _real_dir(
     os.environ.get(
         "SAVAGE22_ARTIFACT_DIR",
-        os.environ.get("V30_DATA_DIR", CODE_ROOT),
+        os.environ.get("V30_DATA_DIR", _runtime_artifact_root),
     )
 )
 RUN_ROOT = _real_dir(
     os.environ.get(
         "SAVAGE22_RUN_DIR",
-        os.path.dirname(ARTIFACT_ROOT) if os.path.basename(os.path.dirname(ARTIFACT_ROOT)) == "runs" else ARTIFACT_ROOT,
+        _runtime_run_root,
     )
 )
 QUARANTINE_ROOT = os.path.join(RUN_ROOT, "quarantine")
 
 
 def ensure_runtime_dirs() -> None:
-    for path in (ARTIFACT_ROOT, RUN_ROOT, QUARANTINE_ROOT):
+    for path in (RUNTIME_HOME, SHARED_DB_ROOT, ARTIFACT_ROOT, RUN_ROOT, QUARANTINE_ROOT):
         os.makedirs(path, exist_ok=True)
 
 

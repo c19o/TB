@@ -1,8 +1,9 @@
 #!/bin/bash
 # ============================================================================
-# deploy_washington_1w.sh - Deploy 1w training on approved Washington machine.
+# deploy_washington_1w.sh - Compatibility launcher for the proven weekly machine.
 # ============================================================================
 # This script does NOT rent the machine. Set INSTANCE_ID to a pre-rented instance.
+# Maintained machine-agnostic deploy authority now lives in deploy_tf.py / deploy_1w.sh.
 # Usage:
 #   INSTANCE_ID=<instance_id> ./v3.3/deploy_washington_1w.sh [--dry-run]
 #

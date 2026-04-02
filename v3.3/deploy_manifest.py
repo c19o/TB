@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
-"""
-deploy_manifest.py - Generate SHA256 manifest for release-eligible files.
-
-Run locally before SCP:
-    python deploy_manifest.py
-
-Generates deploy_manifest.json with:
-  - SHA256 hash of every shipped source/control file in v3.3/
-  - Timestamp of generation
-  - Python version used to generate
-  - Total file count
-
-The manifest is SCP'd alongside code. deploy_verify.py reads it on the cloud
-to detect stale/corrupt/missing files.
-"""
+"""Generate a recursive SHA256 manifest for maintained release files."""
 
 import hashlib
+import fnmatch
 import json
 import os
 import sys
@@ -27,6 +14,11 @@ MANIFEST_PATH = os.path.join(SCRIPT_DIR, "deploy_manifest.json")
 # Files that are deployment-critical (pipeline will fail without them)
 CRITICAL_FILES = [
     "config.py",
+    "path_contract.py",
+    "pipeline_contract.py",
+    "deploy_profiles.py",
+    "deploy_tf.py",
+    "runtime_home.py",
     "feature_library.py",
     "ml_multi_tf.py",
     "run_optuna_local.py",
@@ -48,10 +40,18 @@ CRITICAL_FILES = [
     "live_trader.py",
     "hardware_detect.py",
     "bitpack_utils.py",
+    "contracts/pipeline_contract.json",
+    "contracts/deploy_profiles.json",
 ]
 
 ALLOWED_TOP_LEVEL_JSON = {
     "WEEKLY_1W_ARTIFACT_CONTRACT.json",
+}
+
+RECURSIVE_INCLUDE_DIRS = {
+    "contracts",
+    "docs",
+    "gpu_histogram_fork/src",
 }
 
 EXCLUDED_PREFIXES = (
@@ -74,6 +74,32 @@ EXCLUDED_PREFIXES = (
     "v2_crosses_",
 )
 
+EXCLUDED_DIR_NAMES = {
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+    ".worktrees",
+    "_build",
+    "node_modules",
+}
+
+EXCLUDED_GLOBS = (
+    "cloud_results_*",
+    "old_run_holddominated*",
+    "v2_run_balanced_labels*",
+    "*.db",
+    "*.parquet",
+    "*.pkl",
+    "*.npz",
+    "*.npy",
+    "*.bin",
+    "*.zip",
+    "*.tgz",
+    "*.tar.gz",
+    "*.pyc",
+    "*.pyo",
+)
+
 
 def sha256_file(filepath):
     """Compute SHA256 hash of a file."""
@@ -84,24 +110,57 @@ def sha256_file(filepath):
     return h.hexdigest()
 
 
-def should_include_release_file(fname):
+def _relpath(path):
+    return os.path.relpath(path, SCRIPT_DIR).replace("\\", "/")
+
+
+def should_include_release_file(relpath):
     """Return True for files that may ship in a maintained release bundle."""
-    if fname in ALLOWED_TOP_LEVEL_JSON:
+    base = os.path.basename(relpath)
+
+    if base in ALLOWED_TOP_LEVEL_JSON and "/" not in relpath:
         return True
 
-    ext = os.path.splitext(fname)[1].lower()
-    if ext not in {".py", ".md", ".sh"}:
+    if any(part in EXCLUDED_DIR_NAMES for part in relpath.split("/")):
         return False
 
-    if any(fname.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
+    for pattern in EXCLUDED_GLOBS:
+        if os.path.basename(relpath) and fnmatch.fnmatch(base, pattern):
+            return False
+
+    if any(base.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
         return False
 
-    return True
+    ext = os.path.splitext(base)[1].lower()
+    top_level = "/" not in relpath
+    if top_level:
+        return ext in {".py", ".md", ".sh", ".json"}
+
+    if relpath.startswith("contracts/"):
+        return ext == ".json"
+    if relpath.startswith("docs/"):
+        return ext == ".md"
+    if relpath.startswith("gpu_histogram_fork/src/"):
+        return ext in {".py", ".cu", ".h"}
+    return False
 
 
-def main():
-    print(f"Generating deployment manifest from: {SCRIPT_DIR}")
+def iter_release_files():
+    release_files = []
+    for root, dirnames, filenames in os.walk(SCRIPT_DIR):
+        rel_root = _relpath(root)
+        if rel_root == ".":
+            rel_root = ""
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIR_NAMES]
+        for fname in filenames:
+            full = os.path.join(root, fname)
+            rel = _relpath(full)
+            if should_include_release_file(rel):
+                release_files.append(rel)
+    return sorted(set(release_files))
 
+
+def build_manifest():
     manifest = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
         "generated_on": os.uname().nodename if hasattr(os, "uname") else os.environ.get("COMPUTERNAME", "unknown"),
@@ -110,19 +169,21 @@ def main():
         "critical_files": CRITICAL_FILES,
     }
 
-    release_files = sorted(
-        f for f in os.listdir(SCRIPT_DIR)
-        if os.path.isfile(os.path.join(SCRIPT_DIR, f))
-        and should_include_release_file(f)
-    )
-    for fname in release_files:
-        fpath = os.path.join(SCRIPT_DIR, fname)
-        manifest["files"][fname] = {
+    for relpath in iter_release_files():
+        fpath = os.path.join(SCRIPT_DIR, relpath.replace("/", os.sep))
+        manifest["files"][relpath] = {
             "sha256": sha256_file(fpath),
             "size": os.path.getsize(fpath),
         }
 
     manifest["total_files"] = len(manifest["files"])
+    return manifest
+
+
+def main():
+    print(f"Generating deployment manifest from: {SCRIPT_DIR}")
+
+    manifest = build_manifest()
 
     missing_critical = []
     for cf in CRITICAL_FILES:

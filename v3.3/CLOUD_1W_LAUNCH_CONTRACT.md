@@ -1,10 +1,16 @@
 # Unified 1W Launch Contract
 
-Last updated: 2026-04-01
+Last updated: 2026-04-02
 
-This is the maintained launch authority for `1w`.
+This is the maintained `1w` profile view.
 
-The current approved cloud target is listed below for reference.
+Machine-agnostic deployment authority now lives in:
+- `CLOUD_DEPLOYMENT_FRAMEWORK.md`
+- `CLOUD_1W_PROFILE.md`
+- `deploy_tf.py`
+- `deploy_1w.sh`
+
+The current approved cloud target below is reference only, not the architecture definition.
 
 ## Current Approved Cloud Target
 
@@ -174,10 +180,10 @@ After each major phase, download at minimum:
 - `model_1w_cpcv_backup.json`
 - `optuna_configs_1w.json`
 - `lgbm_dataset_1w.bin`
-- `meta_model_1w.pkl`
 - `shap_analysis_1w.json`
 - `cpcv_oos_predictions_1w.pkl`
 - `platt_1w.pkl`
+- `optimizer_configs_1w.json`
 
 The machine-side source of truth for required phase outputs is:
 

@@ -141,6 +141,24 @@ def required_artifacts(tf: str, phase: str, contract_path: str | Path | None = N
     return list(phase_contract(tf, phase, contract_path).get("required_artifacts", []))
 
 
+def phase_execution_policy(tf: str, phase: str, contract_path: str | Path | None = None) -> dict[str, Any]:
+    payload = phase_contract(tf, phase, contract_path).get("execution_policy", {})
+    if not isinstance(payload, dict):
+        raise ValueError(f"execution_policy for {tf!r}/{phase!r} must be an object")
+    return dict(payload)
+
+
+def phase_degradation_policy(tf: str, phase: str, contract_path: str | Path | None = None) -> str:
+    return str(phase_execution_policy(tf, phase, contract_path).get("degradation_policy", "")).strip()
+
+
+def phase_min_parallelism(tf: str, phase: str, contract_path: str | Path | None = None) -> int | None:
+    value = phase_execution_policy(tf, phase, contract_path).get("min_parallelism")
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
 def cross_policy(tf: str, contract_path: str | Path | None = None) -> str:
     return str(load_timeframe_contract(tf, contract_path).get("cross_policy", "required"))
 
@@ -189,3 +207,17 @@ def summary(tf: str, contract_path: str | Path | None = None) -> dict[str, Any]:
         "phases": ordered_phase_names(tf, contract_path),
         "complete_artifacts": complete_artifacts(tf, contract_path),
     }
+
+
+def load_tf_contract(tf: str, contract_path: str | Path | None = None) -> dict[str, Any]:
+    return load_timeframe_contract(tf, contract_path)
+
+
+def get_contract(tf: str | None = None, contract_path: str | Path | None = None) -> dict[str, Any]:
+    if tf is None:
+        return load_pipeline_contract(contract_path)
+    return load_timeframe_contract(tf, contract_path)
+
+
+def load_contract(tf: str | None = None, contract_path: str | Path | None = None) -> dict[str, Any]:
+    return get_contract(tf=tf, contract_path=contract_path)

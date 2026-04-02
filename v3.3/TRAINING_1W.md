@@ -1,7 +1,7 @@
 # 1W Training Guide - V3.3 (LOCAL / LEGACY)
 
 Historical local-only runbook for 1W.
-Maintained cloud launches use [CLOUD_1W_LAUNCH_CONTRACT.md](/C:/Users/C/Documents/Savage22%20Server/v3.3/CLOUD_1W_LAUNCH_CONTRACT.md).
+Maintained cloud launches use [CLOUD_DEPLOYMENT_FRAMEWORK.md](/C:/Users/C/Documents/Savage22%20Server/v3.3/CLOUD_DEPLOYMENT_FRAMEWORK.md), [CLOUD_1W_PROFILE.md](/C:/Users/C/Documents/Savage22%20Server/v3.3/CLOUD_1W_PROFILE.md), and [CLOUD_1W_LAUNCH_CONTRACT.md](/C:/Users/C/Documents/Savage22%20Server/v3.3/CLOUD_1W_LAUNCH_CONTRACT.md).
 Do not use this file as launch authority for maintained runs.
 
 ---

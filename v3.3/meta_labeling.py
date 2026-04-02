@@ -27,11 +27,12 @@ except ImportError:
 
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.linear_model import LogisticRegression
+from path_contract import ARTIFACT_ROOT as _ARTIFACT_ROOT
 
 try:
     from config import V30_DATA_DIR as _DEFAULT_DB_DIR, TF_MIN_DATA_IN_LEAF
 except ImportError:
-    _DEFAULT_DB_DIR = os.path.dirname(os.path.abspath(__file__))
+    _DEFAULT_DB_DIR = _ARTIFACT_ROOT
     TF_MIN_DATA_IN_LEAF = {'1w': 3, '1d': 3, '4h': 5, '1h': 8, '15m': 15}
 
 
@@ -265,7 +266,7 @@ if __name__ == "__main__":
     import argparse, os, sys
     parser = argparse.ArgumentParser(description='Meta-labeling from CPCV OOS predictions')
     parser.add_argument('--tf', type=str, default=None, help='Timeframe (e.g. 1w, 1d)')
-    parser.add_argument('--db-dir', type=str, default='.', help='Directory with predictions')
+    parser.add_argument('--db-dir', type=str, default=_DEFAULT_DB_DIR, help='Directory with predictions')
     args = parser.parse_args()
 
     if args.tf:

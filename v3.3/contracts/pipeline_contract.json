@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "contract_name": "Savage22 unified pipeline contract",
   "heartbeat_statuses": ["running", "validated", "failed", "complete"],
   "timeframes": {
@@ -7,33 +7,33 @@
       "cross_policy": "forbidden",
       "resume_boundaries": ["features_validated", "optuna_validated", "train_validated", "optimizer_validated"],
       "machine_minimums": {"ram_gb": 64, "gpu_count": 1},
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": false
+      },
       "phases": {
         "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
         "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_1w.parquet"]},
-        "step2_crosses": {
-          "phase_seq": 2,
-          "required_artifacts": [],
-          "policy": "skipped",
-          "skip_reason": "Maintained 1w runs are base-features-only"
-        },
-        "step3_baseline": {
-          "phase_seq": 3,
-          "required_artifacts": ["model_1w.json", "cpcv_oos_predictions_1w.pkl"]
-        },
-        "step4_optuna": {
-          "phase_seq": 4,
-          "required_artifacts": ["optuna_configs_1w.json", "lgbm_dataset_1w.bin"]
-        },
+        "step2_crosses": {"phase_seq": 2, "required_artifacts": [], "policy": "skipped", "skip_reason": "Maintained 1w runs are base-features-only"},
+        "step3_baseline": {"phase_seq": 3, "required_artifacts": ["model_1w.json", "cpcv_oos_predictions_1w.pkl"]},
+        "step4_optuna": {"phase_seq": 4, "required_artifacts": ["optuna_configs_1w.json", "lgbm_dataset_1w.bin"]},
         "step5_retrain": {
           "phase_seq": 5,
-          "required_artifacts": ["model_1w.json", "cpcv_oos_predictions_1w.pkl", "platt_1w.pkl"]
+          "required_artifacts": ["model_1w.json", "cpcv_oos_predictions_1w.pkl", "platt_1w.pkl"],
+          "execution_policy": {"execution_tier": "cpu_parallel", "degradation_policy": "fail_fast", "min_parallelism": 1}
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optimizer_configs_1w.json"]
+          "required_artifacts": ["optimizer_configs_1w.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "fanout_barrier": false}
         },
+        "step7_meta": {"phase_seq": 7, "required_artifacts": [], "policy": "skipped", "skip_reason": "Maintained 1w runs stop after optimizer"},
+        "step8_lstm": {"phase_seq": 8, "required_artifacts": [], "policy": "skipped", "skip_reason": "Maintained 1w runs stop after optimizer"},
+        "step9_pbo": {"phase_seq": 9, "required_artifacts": [], "policy": "skipped", "skip_reason": "Maintained 1w runs stop after optimizer"},
+        "step10_audit": {"phase_seq": 10, "required_artifacts": [], "policy": "skipped", "skip_reason": "Maintained 1w runs stop after optimizer"},
         "complete": {
-          "phase_seq": 7,
+          "phase_seq": 11,
           "required_artifacts": [
             "features_BTC_1w.parquet",
             "model_1w.json",
@@ -49,31 +49,49 @@
       "cross_policy": "required",
       "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
       "machine_minimums": {"ram_gb": 128, "gpu_count": 1},
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
       "phases": {
         "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
         "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_1d.parquet"]},
-        "step2_crosses": {
-          "phase_seq": 2,
-          "required_artifacts": ["v2_crosses_BTC_1d.npz", "v2_cross_names_BTC_1d.json"]
-        },
-        "step3_baseline": {
-          "phase_seq": 3,
-          "required_artifacts": ["model_1d.json", "cpcv_oos_predictions_1d.pkl"]
-        },
-        "step4_optuna": {
-          "phase_seq": 4,
-          "required_artifacts": ["optuna_configs_1d.json", "lgbm_dataset_1d.bin"]
-        },
+        "step2_crosses": {"phase_seq": 2, "required_artifacts": ["v2_crosses_BTC_1d.npz", "v2_cross_names_BTC_1d.json"]},
+        "step3_baseline": {"phase_seq": 3, "required_artifacts": ["model_1d.json", "cpcv_oos_predictions_1d.pkl"]},
+        "step4_optuna": {"phase_seq": 4, "required_artifacts": ["optuna_configs_1d.json", "lgbm_dataset_1d.bin"]},
         "step5_retrain": {
           "phase_seq": 5,
-          "required_artifacts": ["model_1d.json", "cpcv_oos_predictions_1d.pkl", "platt_1d.pkl"]
+          "required_artifacts": ["model_1d.json", "cpcv_oos_predictions_1d.pkl", "platt_1d.pkl"],
+          "execution_policy": {"execution_tier": "cpu_parallel", "degradation_policy": "fail_fast", "min_parallelism": 2}
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optimizer_configs_1d.json"]
+          "required_artifacts": ["optimizer_configs_1d.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "fanout_barrier": true}
+        },
+        "step7_meta": {
+          "phase_seq": 7,
+          "required_artifacts": ["meta_model_1d.pkl"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step8_lstm": {
+          "phase_seq": 8,
+          "required_artifacts": ["lstm_1d.pt"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step9_pbo": {
+          "phase_seq": 9,
+          "required_artifacts": ["validation_report_1d.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step10_audit": {
+          "phase_seq": 10,
+          "required_artifacts": ["audit_report.json", "audit_report.txt", "audit_heatmap.html"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
         },
         "complete": {
-          "phase_seq": 7,
+          "phase_seq": 11,
           "required_artifacts": [
             "features_BTC_1d.parquet",
             "v2_crosses_BTC_1d.npz",
@@ -82,7 +100,13 @@
             "cpcv_oos_predictions_1d.pkl",
             "optuna_configs_1d.json",
             "optimizer_configs_1d.json",
-            "platt_1d.pkl"
+            "platt_1d.pkl",
+            "meta_model_1d.pkl",
+            "lstm_1d.pt",
+            "validation_report_1d.json",
+            "audit_report.json",
+            "audit_report.txt",
+            "audit_heatmap.html"
           ]
         }
       }
@@ -91,31 +115,49 @@
       "cross_policy": "required",
       "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
       "machine_minimums": {"ram_gb": 256, "gpu_count": 1},
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
       "phases": {
         "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
         "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_4h.parquet"]},
-        "step2_crosses": {
-          "phase_seq": 2,
-          "required_artifacts": ["v2_crosses_BTC_4h.npz", "v2_cross_names_BTC_4h.json"]
-        },
-        "step3_baseline": {
-          "phase_seq": 3,
-          "required_artifacts": ["model_4h.json", "cpcv_oos_predictions_4h.pkl"]
-        },
-        "step4_optuna": {
-          "phase_seq": 4,
-          "required_artifacts": ["optuna_configs_4h.json", "lgbm_dataset_4h.bin"]
-        },
+        "step2_crosses": {"phase_seq": 2, "required_artifacts": ["v2_crosses_BTC_4h.npz", "v2_cross_names_BTC_4h.json"]},
+        "step3_baseline": {"phase_seq": 3, "required_artifacts": ["model_4h.json", "cpcv_oos_predictions_4h.pkl"]},
+        "step4_optuna": {"phase_seq": 4, "required_artifacts": ["optuna_configs_4h.json", "lgbm_dataset_4h.bin"]},
         "step5_retrain": {
           "phase_seq": 5,
-          "required_artifacts": ["model_4h.json", "cpcv_oos_predictions_4h.pkl", "platt_4h.pkl"]
+          "required_artifacts": ["model_4h.json", "cpcv_oos_predictions_4h.pkl", "platt_4h.pkl"],
+          "execution_policy": {"execution_tier": "hybrid_parallel", "degradation_policy": "fail_fast", "min_parallelism": 2}
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optimizer_configs_4h.json"]
+          "required_artifacts": ["optimizer_configs_4h.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "fanout_barrier": true}
+        },
+        "step7_meta": {
+          "phase_seq": 7,
+          "required_artifacts": ["meta_model_4h.pkl"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step8_lstm": {
+          "phase_seq": 8,
+          "required_artifacts": ["lstm_4h.pt"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step9_pbo": {
+          "phase_seq": 9,
+          "required_artifacts": ["validation_report_4h.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step10_audit": {
+          "phase_seq": 10,
+          "required_artifacts": ["audit_report.json", "audit_report.txt", "audit_heatmap.html"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
         },
         "complete": {
-          "phase_seq": 7,
+          "phase_seq": 11,
           "required_artifacts": [
             "features_BTC_4h.parquet",
             "v2_crosses_BTC_4h.npz",
@@ -124,7 +166,13 @@
             "cpcv_oos_predictions_4h.pkl",
             "optuna_configs_4h.json",
             "optimizer_configs_4h.json",
-            "platt_4h.pkl"
+            "platt_4h.pkl",
+            "meta_model_4h.pkl",
+            "lstm_4h.pt",
+            "validation_report_4h.json",
+            "audit_report.json",
+            "audit_report.txt",
+            "audit_heatmap.html"
           ]
         }
       }
@@ -133,31 +181,49 @@
       "cross_policy": "required",
       "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
       "machine_minimums": {"ram_gb": 512, "gpu_count": 1},
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
       "phases": {
         "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
         "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_1h.parquet"]},
-        "step2_crosses": {
-          "phase_seq": 2,
-          "required_artifacts": ["v2_crosses_BTC_1h.npz", "v2_cross_names_BTC_1h.json"]
-        },
-        "step3_baseline": {
-          "phase_seq": 3,
-          "required_artifacts": ["model_1h.json", "cpcv_oos_predictions_1h.pkl"]
-        },
-        "step4_optuna": {
-          "phase_seq": 4,
-          "required_artifacts": ["optuna_configs_1h.json", "lgbm_dataset_1h.bin"]
-        },
+        "step2_crosses": {"phase_seq": 2, "required_artifacts": ["v2_crosses_BTC_1h.npz", "v2_cross_names_BTC_1h.json"]},
+        "step3_baseline": {"phase_seq": 3, "required_artifacts": ["model_1h.json", "cpcv_oos_predictions_1h.pkl"]},
+        "step4_optuna": {"phase_seq": 4, "required_artifacts": ["optuna_configs_1h.json", "lgbm_dataset_1h.bin"]},
         "step5_retrain": {
           "phase_seq": 5,
-          "required_artifacts": ["model_1h.json", "cpcv_oos_predictions_1h.pkl", "platt_1h.pkl"]
+          "required_artifacts": ["model_1h.json", "cpcv_oos_predictions_1h.pkl", "platt_1h.pkl"],
+          "execution_policy": {"execution_tier": "gpu_parallel", "degradation_policy": "fail_fast", "min_parallelism": 2}
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optimizer_configs_1h.json"]
+          "required_artifacts": ["optimizer_configs_1h.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "fanout_barrier": true}
+        },
+        "step7_meta": {
+          "phase_seq": 7,
+          "required_artifacts": ["meta_model_1h.pkl"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step8_lstm": {
+          "phase_seq": 8,
+          "required_artifacts": ["lstm_1h.pt"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step9_pbo": {
+          "phase_seq": 9,
+          "required_artifacts": ["validation_report_1h.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step10_audit": {
+          "phase_seq": 10,
+          "required_artifacts": ["audit_report.json", "audit_report.txt", "audit_heatmap.html"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
         },
         "complete": {
-          "phase_seq": 7,
+          "phase_seq": 11,
           "required_artifacts": [
             "features_BTC_1h.parquet",
             "v2_crosses_BTC_1h.npz",
@@ -166,7 +232,13 @@
             "cpcv_oos_predictions_1h.pkl",
             "optuna_configs_1h.json",
             "optimizer_configs_1h.json",
-            "platt_1h.pkl"
+            "platt_1h.pkl",
+            "meta_model_1h.pkl",
+            "lstm_1h.pt",
+            "validation_report_1h.json",
+            "audit_report.json",
+            "audit_report.txt",
+            "audit_heatmap.html"
           ]
         }
       }
@@ -175,31 +247,49 @@
       "cross_policy": "required",
       "resume_boundaries": ["features_validated", "crosses_validated", "optuna_validated", "train_validated", "optimizer_validated"],
       "machine_minimums": {"ram_gb": 768, "gpu_count": 1},
+      "execution_policy": {
+        "failure_mode": "fail_fast",
+        "phase_order": "strict",
+        "post_train_fanout": true
+      },
       "phases": {
         "step0_preflight": {"phase_seq": 0, "required_artifacts": [], "policy": "must_pass"},
         "step1_features": {"phase_seq": 1, "required_artifacts": ["features_BTC_15m.parquet"]},
-        "step2_crosses": {
-          "phase_seq": 2,
-          "required_artifacts": ["v2_crosses_BTC_15m.npz", "v2_cross_names_BTC_15m.json"]
-        },
-        "step3_baseline": {
-          "phase_seq": 3,
-          "required_artifacts": ["model_15m.json", "cpcv_oos_predictions_15m.pkl"]
-        },
-        "step4_optuna": {
-          "phase_seq": 4,
-          "required_artifacts": ["optuna_configs_15m.json", "lgbm_dataset_15m.bin"]
-        },
+        "step2_crosses": {"phase_seq": 2, "required_artifacts": ["v2_crosses_BTC_15m.npz", "v2_cross_names_BTC_15m.json"]},
+        "step3_baseline": {"phase_seq": 3, "required_artifacts": ["model_15m.json", "cpcv_oos_predictions_15m.pkl"]},
+        "step4_optuna": {"phase_seq": 4, "required_artifacts": ["optuna_configs_15m.json", "lgbm_dataset_15m.bin"]},
         "step5_retrain": {
           "phase_seq": 5,
-          "required_artifacts": ["model_15m.json", "cpcv_oos_predictions_15m.pkl", "platt_15m.pkl"]
+          "required_artifacts": ["model_15m.json", "cpcv_oos_predictions_15m.pkl", "platt_15m.pkl"],
+          "execution_policy": {"execution_tier": "gpu_parallel", "degradation_policy": "fail_fast", "min_parallelism": 2}
         },
         "step6_optimizer": {
           "phase_seq": 6,
-          "required_artifacts": ["optimizer_configs_15m.json"]
+          "required_artifacts": ["optimizer_configs_15m.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "fanout_barrier": true}
+        },
+        "step7_meta": {
+          "phase_seq": 7,
+          "required_artifacts": ["meta_model_15m.pkl"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step8_lstm": {
+          "phase_seq": 8,
+          "required_artifacts": ["lstm_15m.pt"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step9_pbo": {
+          "phase_seq": 9,
+          "required_artifacts": ["validation_report_15m.json"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
+        },
+        "step10_audit": {
+          "phase_seq": 10,
+          "required_artifacts": ["audit_report.json", "audit_report.txt", "audit_heatmap.html"],
+          "execution_policy": {"failure_mode": "fail_fast", "parallel_group": "post_train_fanout"}
         },
         "complete": {
-          "phase_seq": 7,
+          "phase_seq": 11,
           "required_artifacts": [
             "features_BTC_15m.parquet",
             "v2_crosses_BTC_15m.npz",
@@ -208,7 +298,13 @@
             "cpcv_oos_predictions_15m.pkl",
             "optuna_configs_15m.json",
             "optimizer_configs_15m.json",
-            "platt_15m.pkl"
+            "platt_15m.pkl",
+            "meta_model_15m.pkl",
+            "lstm_15m.pt",
+            "validation_report_15m.json",
+            "audit_report.json",
+            "audit_report.txt",
+            "audit_heatmap.html"
           ]
         }
       }

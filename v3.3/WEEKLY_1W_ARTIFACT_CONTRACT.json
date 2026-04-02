@@ -61,8 +61,32 @@
         "optimizer_configs_1w.json"
       ]
     },
-    "complete": {
+    "step7_meta": {
       "phase_seq": 7,
+      "required_artifacts": [],
+      "policy": "skipped",
+      "skip_reason": "Maintained 1w runs stop after optimizer"
+    },
+    "step8_lstm": {
+      "phase_seq": 8,
+      "required_artifacts": [],
+      "policy": "skipped",
+      "skip_reason": "Maintained 1w runs stop after optimizer"
+    },
+    "step9_pbo": {
+      "phase_seq": 9,
+      "required_artifacts": [],
+      "policy": "skipped",
+      "skip_reason": "Maintained 1w runs stop after optimizer"
+    },
+    "step10_audit": {
+      "phase_seq": 10,
+      "required_artifacts": [],
+      "policy": "skipped",
+      "skip_reason": "Maintained 1w runs stop after optimizer"
+    },
+    "complete": {
+      "phase_seq": 11,
       "required_artifacts": [
         "features_BTC_1w.parquet",
         "model_1w.json",
